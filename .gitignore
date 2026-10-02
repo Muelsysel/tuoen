@@ -1,0 +1,26 @@
+# Rust
+/target/
+**/*.rs.bk
+*.pdb
+*.ilk
+*.exp
+
+# Local research / reconnaissance — not part of the published project.
+# Contains machine-specific findings about the author's own PC (paths, installed
+# software, and the inventory of which config files hold credentials). Keep it
+# local; promote anything reusable into docs/ before publishing.
+/research/
+
+# Vendored upstream clones and install scripts used to set up the agent toolchain.
+/_vendor/
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+desktop.ini
+
+# Local overrides
+*.local.toml
+.env

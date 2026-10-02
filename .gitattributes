@@ -1,0 +1,37 @@
+# Normalize line endings in the repository to LF.
+#
+# Rationale: this project is Windows-first but keeps a clean platform seam, and
+# contributors may be on other platforms later. Without this, Git's autocrlf
+# setting decides per-machine and the repository accumulates mixed endings —
+# which then shows up as spurious diffs in files whose content never changed.
+#
+# Text files are normalized to LF *in the repository*; the working tree keeps
+# whatever the platform prefers.
+
+* text=auto
+
+# Source and build files
+*.rs    text diff=rust
+*.toml  text
+*.lock  text
+Cargo.lock text -diff
+
+# Docs and config
+*.md    text
+*.json  text
+*.yml   text
+*.yaml  text
+*.ps1   text
+*.cmd   text
+
+# Binary — never normalize
+*.exe   binary
+*.dll   binary
+*.png   binary
+*.jpg   binary
+*.ico   binary
+*.zip   binary
+*.7z    binary
+*.gz    binary
+*.tar   binary
+*.zst   binary
