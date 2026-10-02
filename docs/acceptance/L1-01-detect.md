@@ -1,6 +1,6 @@
 # L1-01 检测引擎 —— 真机验收证据
 
-**采集时间**：2026-10-02
+**采集时间**：2026-10-02（**修完 §6 的 #11/#12/#13 之后重新生成过**）
 **机器**：MUELSYSE（Windows 11 25H2 build 26200.9457，16 核 / 16.98 GB）
 **命令**：`tuoen detect` 与 `tuoen detect --json`
 **二进制**：`cargo build -p tuoen-cli --release`（release profile）
@@ -19,7 +19,7 @@
 | `cargo test --workspace` 全绿 | ✅ **227 passed / 0 failed** | 见下方 §4 |
 | clippy `-D warnings` 干净 | ✅ exit 0 | 见下方 §4 |
 | `cargo fmt --all --check` 干净 | ✅ exit 0 | 见下方 §4 |
-| 本机能跑出真实结果 | ✅ **27 条记录**，六个来源全部命中 | `L1-01-detect-machine.txt` |
+| 本机能跑出真实结果 | ✅ **28 条记录**，六个来源全部命中 | `L1-01-detect-machine.txt` |
 | 人工核对至少 3 条 | ✅ 见 §2（核对了 6 条） | 下方 |
 | 没有写操作 | ✅ 代码审查 + 只读 trait 设计 | 见 §3 |
 
@@ -54,20 +54,37 @@ python  ?   alias-ghost   ✗ C:\Users\Muelsyse\AppData\Local\Microsoft\WindowsA
 node  24.19.0  manager-owned  ✗ C:\Users\Muelsyse\AppData\Local\nvm
 ```
 
-`evidence` 字段原文：
+`evidence` 字段原文（**以提交的 `L1-01-detect-machine.json` 为准**）：
 
-> 环境变量 NVM_HOME=C:\Users\Muelsyse\AppData\Local\nvm（user）、NVM_SYMLINK=C:\nvm4w\nodejs（user）、
-> NVM_HOME=C:\nvm4w（machine）说明这台机器由 `nvm4w` 管理 node；**同名变量同时存在于用户级与机器级** —— 双重管理腐坏
+> 环境变量 NVM_HOME=C:\Users\Muelsyse\AppData\Local\nvm（user）、
+> NVM_HOME=C:\Users\Muelsyse\AppData\Local\nvm（machine）、
+> NVM_SYMLINK=C:\nvm4w\nodejs（user）、NVM_SYMLINK=C:\nvm4w\nodejs（machine）
+> 说明这台机器由 `nvm4w` 管理 node；**同名变量同时存在于用户级与机器级** —— 双重管理腐坏
 
 **核对通过。** 三点值得记录：
 
-1. **版本 `24.19.0` 是从 junction 的目标里读出来的** —— 没有执行任何东西。
+1. **版本 `24.19.0` 是从符号链接的目标里读出来的**（`NVM_SYMLINK` → `…\nvm\v24.19.0`）
+   —— 没有执行任何东西。
 2. **`path` 是版本库根目录（`NVM_HOME`）而不是某个 exe** —— 因为"nvm4w 管着 node"这条事实
    的对象是那个版本库，不是某一个版本里的可执行文件。
-3. **双重管理腐坏被自动抓到了** —— 取证报告里说 `NVM_HOME` 与 `NVM_SYMLINK`
-   **同时存在于 `HKCU\Environment` 和 `HKLM\Session Manager\Environment`**，
-   而这里的输出把三个命中全部列了出来。这是设计时没有专门去做的发现，
-   它是"两个 scope 都读"这条规则的自然结果。
+3. **双重管理腐坏被自动抓到了** —— `NVM_HOME` 与 `NVM_SYMLINK` **同时存在于
+   `HKCU\Environment` 和 `HKLM\Session Manager\Environment`**，而这里的输出把**四个**
+   命中全部列了出来。这是设计时没有专门去做的发现，它是"两个 scope 都读"这条规则的自然结果。
+
+> **⚠️ 这一节曾经与提交的证据不符，而且是两个 bug 叠加的结果。**
+>
+> 早先写的是 `NVM_HOME=C:\nvm4w（machine）`，而提交的 JSON 里只有 `（machine）` 的命中
+> —— 独立验收据此指出"那段引用与提交代码不符"。追下去发现两件事：
+>
+> 1. **`HKLM` 里的 `NVM_HOME` 是 `C:\Users\Muelsyse\AppData\Local\nvm`，不是 `C:\nvm4w`**
+>    （`C:\nvm4w` 是 `NVM_SYMLINK` 的**父目录**，取证报告早期的写法把它混进来了）。
+> 2. **更要紧的是：用户级那一半根本没被读出来。** 真因是 `RegHive::Hkcu` 会给不带绝对
+>    前缀的子键自动拼 `SOFTWARE\`，于是读的是 `HKCU\SOFTWARE\Environment` ——
+>    **那个键不存在**，用户级环境变量**静默返回空表**。
+>
+> 第二个 bug 的修法记在 §6 的 #11。修好之后这一节的内容才真的成立：那四个命中
+> 是**修好之后**的输出。**"文档写得像是已经做到了"比"文档写错"更危险**，
+> 所以这段连同它的来龙去脉一起留在仓库里。
 
 ### 2.3 `java` 与 `javac` 的厂商分裂 ✅（形状与票据原文设想的不同）
 
@@ -204,7 +221,18 @@ pub struct DetectContext<'a> {
 下一次检测的结果（多一个工具、少一个工具、`PATH` 变长）。
 
 **注意这一条的强度**：它证明的是"两次运行之间没有可观测的变化"，
-**不是**"没有写操作"。真正的证明是 §3.1 的类型保证与 §3.2 的调用面清点。
+**不是**"没有写操作" —— 一个"每次都写同样内容"的实现会让它通过。
+真正的证明是 §3.1 的类型保证与 §3.2 的调用面清点。
+
+### 3.5 一份独立的运行时快照
+
+独立验收在仓库外做过一次运行前后的机器状态对比（`HKCU\Environment` 的值名与
+`Path` 的类型+原文、`HKLM\...\Session Manager\Environment` 同上、
+`%APPDATA%\tuoen` 的存在性与内容、`git status --porcelain`、有效 `PATH` 的长度与
+SHA256、`%LOCALAPPDATA%\Microsoft\WindowsApps` / `C:\nvm4w` / `C:\Dev\Tool` /
+`%LOCALAPPDATA%\nvm` 的 mtime），结论是**完全无差异**。脚本与输出在仓库外
+（`%TEMP%\tuoen-acceptance\`），所以这里只作为**佐证**引用，不作为可重现的门禁。
+
 
 ---
 
@@ -212,7 +240,7 @@ pub struct DetectContext<'a> {
 
 ```
 $ cargo test --workspace
-  227 passed / 0 failed   （9 个测试目标）
+  232 passed / 0 failed   （9 个测试目标）
 
 $ cargo clippy --workspace --all-targets -- -D warnings
   exit 0
@@ -228,11 +256,11 @@ $ cargo fmt --all --check
 | `tuoen-cli` bin 单测 | 26 | 参数解析、视图、宽度计算 |
 | `catalog_contract` | 13 | `catalog` 的进程边界契约（ticket #3） |
 | `cli_contract` | 10 | `list` 的进程边界契约（ticket #2） |
-| `detect_contract` | 13 | **`detect` 的形状契约（不读真机）** |
+| `detect_contract` | 13 | **`detect` 的形状契约（只断言形状，不依赖机器状态）** |
 | `real_machine_acceptance` | 5 | **`detect` 的真机验收（有意读真机）** |
-| `tuoen-core` | 47 | 检测引擎、spec 表、固定装置适配 |
+| `tuoen-core` | 50 | 检测引擎、spec 表、固定装置适配 |
 | `tuoen-manifest` | 65 | 两层 schema、许可证门禁、版本解析 |
-| `tuoen-platform` | 46 | Win32 只读原语、reparse、注册表、进程 |
+| `tuoen-platform` | 48 | Win32 只读原语、reparse、注册表、进程 |
 | `tuoen-shim` | 2 | shim spec 形状 |
 
 ---
@@ -268,6 +296,33 @@ App Paths、两个扫描根）是主要开销，版本探测大约 20 次进程�
 | 8 | `path` 字段里是一句中文说明 | 没有 `InstallLocation` 时塞了 `（无 InstallLocation；卸载键 {…}）` | 改成 `<无 InstallLocation，卸载键 {…}>` 占位符；说明留在 `evidence` |
 | 9 | ARP 条目被标成 `executable`，但它们是**目录**且不在 `PATH` 上 | 六层里没有合适的一层 | 新增第七层 `registered` |
 | 10 | `node` 报了 4 行（版本 24.19.0 / 11.17.0 / 11.17.0 / 0.35.0） | 次要命令与主命令混在一起报 | `ExecutableName::primary`：只报主命令；次要命令仍参与遮蔽判定但不进报告 |
+| **11** | **用户级环境变量整个读不到（`HKCU\Environment`）** | `RegHive::Hkcu` 会给不带绝对前缀的子键自动拼 `SOFTWARE\`，于是读的是 `HKCU\SOFTWARE\Environment` —— **那个键不存在**。`RegOpenKeyExW` 返回 `ERROR_FILE_NOT_FOUND`，`list()` 把错误吃成空表 | 把 `Environment` 登记为**单段但是绝对**的子键名（`ABSOLUTE_EXACT`），并加两条用例钉住"只有精确匹配 `Environment` 才绝对"与"`EnvironmentFoo` 必须仍走相对解析" |
+| **12** | **`uv` 那条记录的 `path` 是 `3.13`** | 管理器表按名字猜路径变量（"以 `_HOME` / `_ROOT` 结尾，否则用第一个命中"），而 `UV_PYTHON=3.13` 是**版本号**不是路径 | `ManagerSpec` 显式声明 `path_env_var`（路径型）与 `version_link_var`（版本型）；两者都没有时给 `<…>` 占位符**而不是空串或假路径** |
+| **13** | 固定装置里 `FixturePath::symlink_dir` 被静默变成普通目录 | `FakeFileSystem::from_fixture` 先写 `paths` 后写 `dirs`，同名的 `FixtureDir` 把符号链接覆盖了 —— `link_target` 永远是 `None`，依赖它的检测**测的就不是符号链接那条路径** | 调换顺序：`paths` 覆盖 `dirs`（`paths` 说"这个路径本身是什么"，`dirs` 说"这个目录里装着什么"；后者仍提供目录内容） |
+
+### 6.1 关于 #11：为什么它值一整节
+
+这条 bug 的形状是所有 bug 里最坏的一种 —— **不报错、只是少了一半数据**。
+
+`NVM_HOME` 与 `NVM_SYMLINK` 在 `HKCU\Environment` 与
+`HKLM\...\Session Manager\Environment` **两处都有**。`detect` 读两个 scope 并把命中
+列进 `evidence`。用户级读不到时，报告只显示 `（machine）` ——
+**看起来像一份正常的报告，只是措辞略短**。
+
+它是怎么被发现的：独立验收核对"提交的 JSON 里 manager 那条的 `evidence`"
+与"验收文档 §2.2 里引用的那一段"不一致，指出**文档与提交代码不符**。
+追下去才分成两件事 —— 文档里那个值确实写错了（`C:\nvm4w` 是 `NVM_SYMLINK`
+的父目录，不是 `NVM_HOME`），而更要紧的是**用户级那一半从来没被读出来过**。
+
+**两个教训**：
+
+1. **"少一半数据"比"报错"危险得多。** 报错会有人去修；少一半只会让人
+   慢慢不信任这个工具。所以"读不到 → 空表"这个默认行为本身就是可疑的：
+   它把"这个键不存在"与"我拼错了路径"变成同一件事。
+   下一票（`capture`）要读的东西更多，**这条必须在那一票里被正视**。
+2. **验收文档必须从提交的工件里抄，不能靠记忆写。** §2.2 那段是按印象写的，
+   而印象里混进了取证报告早期的写法。现在这一段是**从 `L1-01-detect-machine.json`
+   里逐字抄的**，并且修好 #11 之后**重新生成过**那一份工件。
 
 ---
 
@@ -282,11 +337,19 @@ App Paths、两个扫描根）是主要开销，版本探测大约 20 次进程�
    把这种重复判成 finding。
 2. **`dotnet` 的 `--version` 失败**（本机没有 SDK），所以版本是 `?`。
    这是正确行为（不编版本），但报告里看不出"为什么问不到"。
-3. **`wsl` 报了 4 条**（`registered-missing` / `executable` ×2 / `alias-ghost` / `registered`）。
+3. **`wsl` 报了 5 条**（`registered-missing` / `executable` ×2 / `alias-ghost` / `registered`）。
    同样属于第 1 条。
-4. **`HKCU\SOFTWARE\Python\PythonCore` 的绝对路径处理是特例。**
-   `RegHive::resolve` 里加了一个 `Python\` 前缀走绝对解析。这有点丑，
-   但目前只有 CPython 有官方的注册表位置，别的工具没有。
+4. **`HKCU\SOFTWARE\Python\PythonCore` 与 `HKCU\Environment` 的绝对路径处理都是特例。**
+   `RegHive::resolve` 里有一个 `Python\` 前缀与一个 `Environment` 精确名走绝对解析。
+   这有点丑，而且**`ABSOLUTE_EXACT` 这种"精确名单"每加一个都是同样的坑** ——
+   凡是"不在 `SOFTWARE` 下面"的键都会踩。
+   更好的做法是让调用方**显式**说"这条路径是绝对的"（例如一个 `AbsolutePath` 新类型），
+   而不是让 `resolve` 去猜。留着，因为现在只有两个特例，而多一个类型会牵动所有调用点。
 5. **`fixtures/detect/*.toml` 还没有落盘。** `tuoen_platform::fixture::MachineFixture`
    支持从 TOML 反序列化，但目前的用例都是在 Rust 里构造的。
    等需要跨 crate 共享同一份机器描述时再落盘。
+6. **`detect_contract.rs` 在进程边界上仍然读了真机。** 它不依赖机器状态（只断言形状），
+   但票据那条硬约束的**字面**没被满足。真正的满足需要给 `detect` 加一个
+   "从 fixture 文件读机器描述"的注入入口 —— 那是 L0 之后的事。
+   现在这一条在 `crates/cli/tests/detect_contract.rs` 与
+   `crates/core/src/detect.rs` 的模块文档里都**写在明处**，不再是一句让人放心的假话。

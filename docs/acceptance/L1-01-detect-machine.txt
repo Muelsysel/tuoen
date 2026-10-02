@@ -1,6 +1,7 @@
 工具      版本              置信度                路径
 node    24.19.0         executable           C:\nvm4w\nodejs\node.exe
 node    24.19.0         manager-owned      ✗ C:\Users\Muelsyse\AppData\Local\nvm
+python  ?               manager-owned      ✗ <uv 管理，版本库位置未知>
 python  ?               registered-missing  ✗ <无 InstallLocation，卸载键 {665A0435-D5D5-4A49-9DE0-FBC23C5425ED}>
 python  ?               alias-ghost        ✗ C:\Users\Muelsyse\AppData\Local\Microsoft\WindowsApps\python.exe
 python  ?               registered-missing  ✗ C:\Users\Muelsyse\AppData\Local\Programs\Python\Python311\
@@ -27,9 +28,9 @@ wsl     ?               registered           C:\Program Files\WSL Dashboard\
 wsl     ?               alias-ghost        ✗ C:\Users\Muelsyse\AppData\Local\Microsoft\WindowsApps\wsl.exe
 wsl     2.7.11.0        executable           C:\Windows\system32\wsl.exe
 
-共 27 条记录。
-来源：path-resolution 13 · app-paths 1 · registry-arp 10 · filesystem-scan 2 · manager 1
-置信度：executable 12 · registered 4 · manager-owned 1 · directory-only 2 · registered-missing 6 · alias-ghost 2
+共 28 条记录。
+来源：path-resolution 13 · app-paths 1 · registry-arp 10 · filesystem-scan 2 · manager 2
+置信度：executable 12 · registered 4 · manager-owned 2 · directory-only 2 · registered-missing 6 · alias-ghost 2
 
 注意：
   · 6 条是**幽灵条目** —— 注册表声称已安装，但文件不存在。
@@ -37,7 +38,7 @@ wsl     2.7.11.0        executable           C:\Windows\system32\wsl.exe
   · 2 条是**App Execution Alias** —— 0 字节，`Test-Path` 通过，
     但它不是文件。`Get-Command` 会成功，实际执行会打开应用商店。
 
-标 ✗ 的 11 条**不能由 tuoen 自动重建**（它们是别人的安装、
+标 ✗ 的 12 条**不能由 tuoen 自动重建**（它们是别人的安装、
 只剩目录、或根本不存在）。其余条目是 `capture` 的捕获对象。
 
 用 `tuoen detect --json` 拿机器可读的输出。

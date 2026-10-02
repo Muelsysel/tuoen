@@ -12,10 +12,23 @@
 //!
 //! **这一层只读。** 六个来源的实现见 [`engine`]。
 //!
-//! ## 测试约束
+//! ## 测试约束（**这份文档曾经是假的，留下来当教训**）
 //!
-//! 检测引擎只依赖 [`context::DetectContext`] 里的 trait，所以测试可以注入固定装置，
-//! **绝不读真实的 `HKCU\Environment` / `HKLM` / 真实 `PATH` / 用户真实安装目录**。
+//! 检测引擎只依赖 [`context::DetectContext`] 里的 trait，所以**引擎自己的单测**
+//! 全部注入固定装置，绝不读真机 —— `crates/core/src/detect/test_support.rs` 里
+//! 的用例就是这样。
+//!
+//! **但 `crates/cli/tests/real_machine_acceptance.rs` 是有意读真机的**，
+//! 而这一行早先写着"绝不读真实的 `HKCU\Environment` / `HKLM` / 真实 `PATH`"——
+//! 那是一句**不成立的宣称**：CLI 那一侧的契约测试跑的也是真的 `detect` 二进制
+//! （它只断言形状与不变量，但**确实**读了这台机器）。
+//!
+//! 教训写在 `docs/acceptance/L1-01-detect.md`：**"测试不读真机"这句话在 trait 边界
+//! 上成立，在进程边界上不成立。** 把两者混为一谈，得到的就是一句让人放心的假话 ——
+//! 而一句假话比一个已知的取舍危险得多。
+//!
+//! 真实情况：**契约测试只断言形状**（干净 CI 上同样通过），
+//! **真机验收测试有意读真机**，并在文件名与文件头注释里写明它是偏离。
 
 pub mod context;
 pub mod engine;
@@ -23,8 +36,10 @@ pub mod spec;
 /// 测试支撑：把 `tuoen_platform::fixture` 的假机器接成 [`context::DetectContext`]。
 ///
 /// **是公开 API 而不是 `#[cfg(test)]`**：`crates/cli/tests/*.rs` 是独立 crate，
-/// 拿不到 `#[cfg(test)]` 的东西，而"测试绝不读真机"是硬约束。
-/// 代价是它也会进生产二进制 —— 几百行零依赖代码换"测试不会改开发者的机器"，值。
+/// 拿不到 `#[cfg(test)]` 的东西。
+///
+/// 注意它服务的对象（别把这句话读成"所有测试都不读真机"，见模块文档）：
+/// 需要**固定装置**的用例走 `DetectFixture`，读真机的是另一个文件。
 pub mod test_support;
 
 pub use context::{DetectContext, PathEntry, PathScope, ScanRoot};

@@ -67,16 +67,24 @@ impl RegHive {
 
     /// 真实实现要打开的根键与完整子键路径。
     ///
-    /// **以 `SYSTEM\` 或 `SOFTWARE\` 开头的路径是绝对路径**（相对该 hive 的根，而不是
-    /// 相对 `SOFTWARE`）。这条存在的唯一理由是机器级环境变量：
-    /// `HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment`
-    /// **不在 `SOFTWARE` 下面**，所以它没法用"相对 `SOFTWARE`"的写法表达。
+    /// **以 `SYSTEM\` / `SOFTWARE\` / `Python\` 开头的路径是绝对路径**（相对该 hive 的根，
+    /// 而不是相对 `SOFTWARE`），另外 `Environment` 这个名字本身也是绝对的。
+    ///
+    /// 这条存在的理由是**两个都不在 `SOFTWARE` 下面的键**：
+    /// - 机器级环境变量：`HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment`
+    /// - 用户级环境变量：`HKCU\Environment`
+    ///
+    /// 二者都只能用绝对写法表达。《—— **`HKCU\Environment` 这条曾经漏掉，代价是一条真 bug**：
+    /// `USER_ENV_SUBKEY` 写 `"Environment"` 时会被拼成 `HKCU\SOFTWARE\Environment`，
+    /// 那个键**不存在**，于是用户级环境变量**静默返回空表**。症状是"没有报错、
+    /// 只是少了一半数据"：`NVM_HOME` 在 `HKCU\Environment` 与 `HKLM\...\Session Manager\
+    /// Environment` 两处都有，而报告里只出现 `（machine）`。
     ///
     /// 判定前缀是**注册表不区分大小写**的，所以这里也大小写不敏感。
-    /// ARP 与 App Paths 用的都是 `Microsoft\Windows\...`，不匹配这两个前缀，
+    /// ARP 与 App Paths 用的都是 `Microsoft\Windows\...`，不匹配这些前缀，
     /// 所以它们的解析完全不受影响。
     #[must_use]
-    fn resolve(self, subkey: &str) -> (sys::RootKey, String) {
+    pub(crate) fn resolve(self, subkey: &str) -> (sys::RootKey, String) {
         let subkey = subkey.trim_matches('\\');
         let root = match self {
             Self::Hkcu => sys::RootKey::CurrentUser,
@@ -98,20 +106,36 @@ impl RegHive {
 /// - `SYSTEM\` —— 机器级环境变量在那里
 /// - `SOFTWARE\` —— 显式写全的路径
 /// - `Python\` —— CPython 官方安装器的键（`HKCU\SOFTWARE\Python\PythonCore\<ver>\InstallPath`）
+/// - `Environment\` —— 用户级环境变量的子键（见 [`ABSOLUTE_EXACT`] 关于裸名字的说明）
 ///
 /// `Python\` 这条**不是**为了绕过 `SOFTWARE` 前缀，而是因为它必须**同时**用于
 /// `HKCU` 与 `HKLM` 两个 hive，而 `RegHive::HklmWow6432` 会额外插一层
 /// `WOW6432Node`。显式走绝对路径能让调用方说清楚"我要的是这个 hive 的根下面的 Python"。
-const ABSOLUTE_PREFIXES: &[&str] = &["SYSTEM\\", "SOFTWARE\\", "Python\\"];
+const ABSOLUTE_PREFIXES: &[&str] = &["SYSTEM\\", "SOFTWARE\\", "Python\\", "ENVIRONMENT\\"];
 
+/// **单段但是绝对**的子键名。见 [`strip_absolute_prefix`]。
+///
+/// `Environment` 在这里是因为**用户级环境变量在 `HKCU\Environment`，不在
+/// `HKCU\SOFTWARE\Environment`** —— 与机器级环境变量一样，它不在 `SOFTWARE` 下面。
+/// 而 `RegHive::Hkcu` 的默认行为就是往前面拼 `SOFTWARE\`。
+///
+/// **这条曾经漏掉，代价是一条真 bug**：用户级环境变量静默返回空表，
+/// 而症状只是"报告里少了 `（user）` 那半"。
+const ABSOLUTE_EXACT: &[&str] = &["ENVIRONMENT"];
+
+/// 把绝对路径的子键原样返回，相对路径返回 `None`。
+///
+/// 两种写法：**带分隔符的前缀**（`SYSTEM\`…）与**单段但绝对的名字**（`Environment`）。
+/// 后者必须精确匹配 —— `starts_with` 会让 `EnvironmentFoo` 也被当成绝对路径。
 fn strip_absolute_prefix(subkey: &str) -> Option<String> {
     let upper = subkey.to_uppercase();
-    ABSOLUTE_PREFIXES
-        .iter()
-        .find(|prefix| upper.starts_with(**prefix))
-        // 用**原样**的子键，不是大写后的 —— 注册表不区分大小写，但把用户给的路径
-        // 原样传下去更容易在错误信息里认出来。
-        .map(|_| subkey.to_owned())
+    let is_absolute = ABSOLUTE_EXACT.contains(&upper.as_str())
+        || ABSOLUTE_PREFIXES
+            .iter()
+            .any(|prefix| upper.starts_with(*prefix));
+    // 用**原样**的子键，不是大写后的 —— 注册表不区分大小写，但把用户给的路径
+    // 原样传下去更容易在错误信息里认出来。
+    is_absolute.then(|| subkey.to_owned())
 }
 
 /// 一个注册表值。

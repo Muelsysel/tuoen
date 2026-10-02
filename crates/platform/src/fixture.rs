@@ -305,10 +305,6 @@ impl FakeFileSystem {
         let mut index: HashMap<String, FileFacts> = HashMap::new();
         let mut dirs: HashMap<String, Vec<DirEntryFacts>> = HashMap::new();
 
-        for entry in &fixture.paths {
-            let facts = entry.to_facts(Path::new(&entry.path));
-            index.insert(normalize_path(&entry.path), facts);
-        }
         for dir in &fixture.dirs {
             let mut entries = Vec::new();
             for entry in &dir.entries {
@@ -337,6 +333,22 @@ impl FakeFileSystem {
                 );
             }
             dirs.insert(normalize_path(&dir.path), entries);
+        }
+
+        // **`paths` 覆盖 `dirs`，不是反过来。**
+        //
+        // 顺序在这里有语义：一条显式的 `paths` 条目说的是"**这个路径本身**是什么"
+        // （一个符号链接、一个 0 字节的别名、一个不存在的东西），
+        // 而 `dirs` 里的条目说的是"这个目录里**装着**什么"。
+        // 两者不冲突，但之前 `paths` 先写、`dirs` 后写，于是
+        // `FixturePath::symlink_dir("C:\\nvm4w\\nodejs", …)` 会被同名的
+        // `FixtureDir` 覆盖成一个普通目录 —— 符号链接**静默变成目录**，
+        // 而依赖 `link_target` 的检测（nvm4w 的当前版本）就再也读不到版本。
+        //
+        // 现在显式路径赢：`dirs` 仍然提供目录里的文件，`paths` 决定目录节点本身。
+        for entry in &fixture.paths {
+            let facts = entry.to_facts(Path::new(&entry.path));
+            index.insert(normalize_path(&entry.path), facts);
         }
 
         Self { index, dirs }

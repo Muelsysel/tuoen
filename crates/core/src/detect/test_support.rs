@@ -387,6 +387,140 @@ mod tests {
     }
 
     #[test]
+    fn the_manager_table_is_self_consistent() {
+        // 这张表被三个人读：识别（`env_vars`）、路径（`path_env_var`）、
+        // 版本（`version_link_var`）。三者指错一个都不会让编译失败，
+        // 只会让报告悄悄变差 —— 所以这里逐条钉住。
+        for manager in crate::detect::engine::KNOWN_MANAGERS {
+            assert!(
+                crate::detect::spec::spec_for_id(manager.tool).is_some(),
+                "{} 声称管着 `{}`，但那个工具不在 KNOWN_TOOLS 里",
+                manager.id,
+                manager.tool
+            );
+            assert!(
+                manager.env_vars.contains(&manager.path_env_var),
+                "{} 的 path_env_var `{}` 不在 env_vars 里 —— 那个变量永远不会被读到",
+                manager.id,
+                manager.path_env_var
+            );
+            if let Some(link) = manager.version_link_var {
+                assert!(
+                    manager.env_vars.contains(&link),
+                    "{} 的 version_link_var `{link}` 不在 env_vars 里",
+                    manager.id
+                );
+                assert_ne!(
+                    link, manager.path_env_var,
+                    "{} 把同一个变量既当版本库根目录又当版本链接 —— \
+                     版本库根目录不携带版本信息，读出来只会在 `path` 里放一个版本号",
+                    manager.id
+                );
+            }
+            assert!(
+                manager.env_vars.iter().all(|name| !name.is_empty()),
+                "{} 有一个空的环境变量名",
+                manager.id
+            );
+        }
+    }
+
+    #[test]
+    fn a_manager_whose_path_variable_is_a_version_number_does_not_put_it_in_path() {
+        // **真机踩到的 bug，钉在这里。** 本机 `UV_PYTHON=3.13` —— 一个**版本号**。
+        // 早先的实现按名字猜路径变量（"以 `_HOME` / `_ROOT` 结尾，否则用第一个命中"），
+        // 于是 `uv` 那条记录的 `path` 变成了 `3.13`。
+        //
+        // 一个叫 `path` 的字段里放版本号，任何按路径解析它的消费者都会失败。
+        // 是契约测试 `every_record_carries_a_source_a_confidence_and_evidence` 抓到的
+        // —— 它断言 `path` 必须像路径或 `<…>` 占位符。
+        let mut description = realistic_machine();
+        // 持久环境变量走**注册表**，不走 `env` 表（`env` 是**进程**环境，
+        // 而管理器识别读的是持久的那一份）。
+        description.registry.push(FixtureKey::new(
+            RegHive::Hkcu,
+            "Environment",
+            std::collections::BTreeMap::from([(
+                "UV_PYTHON".to_owned(),
+                RegValue::Sz("3.13".to_owned()),
+            )]),
+        ));
+        let fixture = DetectFixture::build(&description);
+        let summary = crate::detect::detect_all(&fixture.context());
+
+        let uv = summary
+            .tools
+            .iter()
+            .find(|tool| tool.manager.as_deref() == Some("uv"))
+            .expect("UV_PYTHON 存在时 uv 必须被报出来");
+        assert_eq!(uv.name, "python");
+        assert_ne!(uv.path, "3.13", "版本号绝不能出现在 path 字段里");
+        assert!(
+            uv.path.starts_with('<') && uv.path.ends_with('>'),
+            "没有路径型变量时必须给明确的占位符，实际是 `{}`",
+            uv.path
+        );
+        // 但识别信号必须保留 —— 用户需要知道"uv 在这台机器上管着 python"。
+        assert!(uv.evidence.contains("UV_PYTHON=3.13"), "{}", uv.evidence);
+    }
+
+    #[test]
+    fn nvm4w_reads_the_version_from_the_symlink_not_from_the_repo_root() {
+        // `NVM_HOME` 指向装着**所有**版本的目录（`…\nvm`），它本身不携带版本信息；
+        // 版本在 `NVM_SYMLINK`（`C:\nvm4w\nodejs`）的链接目标 `…\nvm\v24.19.0` 里。
+        //
+        // 这条用例同时钉住假文件系统的一个语义：**显式的 `paths` 条目覆盖同名的
+        // `dirs` 条目**。不覆盖的话，下面这个符号链接会被固定装置里的
+        // `FixtureDir::new(r"C:\nvm4w\nodejs", …)` 静默变成一个普通目录，
+        // `link_target` 永远是 `None`，而我们**测的就不再是符号链接那条路径**。
+        let mut description = realistic_machine();
+        description.paths.push(FixturePath::symlink_dir(
+            r"C:\nvm4w\nodejs",
+            r"C:\Users\x\AppData\Local\nvm\v24.19.0",
+        ));
+        description.dirs.push(FixtureDir::new(
+            r"C:\Users\x\AppData\Local\nvm\v24.19.0",
+            vec![FixturePath::file("node.exe", 80_000)],
+        ));
+
+        let fixture = DetectFixture::build(&description);
+        // 先确认固定装置**真的**把那个目录做成了符号链接 —— 否则后面的断言
+        // 会因为错误的原因通过（例如读到 `FixtureDir` 造出来的普通目录）。
+        use tuoen_platform::FileSystem as _;
+        let facts = fixture
+            .machine
+            .fs
+            .inspect(std::path::Path::new(r"C:\nvm4w\nodejs"));
+        assert!(
+            matches!(facts.reparse, tuoen_platform::ReparseKind::SymlinkDir),
+            "固定装置必须把它做成符号链接，实际是 {:?}",
+            facts.reparse
+        );
+
+        let summary = crate::detect::detect_all(&fixture.context());
+        let node = summary
+            .tools
+            .iter()
+            .find(|tool| tool.manager.as_deref() == Some("nvm4w"))
+            .expect("nvm4w 必须被报出来");
+
+        assert_eq!(
+            node.path, r"C:\Users\x\AppData\Local\nvm",
+            "path 必须是版本库根目录"
+        );
+        assert_eq!(
+            node.version.as_deref(),
+            Some("24.19.0"),
+            "version 必须从符号链接的目标里读出来"
+        );
+        assert_eq!(
+            node.confidence,
+            Confidence::ManagerOwned,
+            "第三方管理器管的工具是只读采纳"
+        );
+    }
+
+    #[test]
     fn an_app_paths_entry_that_is_not_on_path_is_still_found() {
         // **纯 PATH 扫描会整个漏掉这套查找机制**：Windows 的解析顺序是
         // 先 PATH、后 App Paths，所以一条只在 App Paths 里的安装是"真的能敲，

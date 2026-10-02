@@ -130,7 +130,23 @@ impl ProcessEnv for InMemoryEnv {
 // 真实实现
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// 用户级环境变量所在的子键（相对 `HKCU` 的 `SOFTWARE`）。
+/// 用户级环境变量所在的子键。
+///
+/// **是 `Environment`，不带任何前缀。** 用户级环境变量与机器级的一样，
+/// **不在 `SOFTWARE` 下面**：真实位置就是 `HKCU\Environment`。
+///
+/// 这条曾经写成 `"Environment"` 却被 `RegHive::Hkcu` 自动拼成
+/// `HKCU\SOFTWARE\Environment` —— **那个键不存在**，于是用户级环境变量
+/// **静默返回空表**。后来改成 `"SOFTWARE\Environment"` 是**错的修法**：
+/// 它让前缀看起来对了，实际读的仍然是一个不存在的键。
+///
+/// 正确的修法在 `RegHive::resolve` 那一侧：`Environment` 被登记为
+/// **单段但是绝对**的子键名（见 `ABSOLUTE_EXACT`）。
+///
+/// 症状是"没有报错、只是少了一半数据"：`NVM_HOME` 在 `HKCU\Environment` 与
+/// `HKLM\...\Session Manager\Environment` 两处都有，而报告里只出现 `（machine）`。
+///
+/// 见 `crates/platform/src/env_block.rs` 的 `user_env_subkey_is_absolute` 用例。
 pub const USER_ENV_SUBKEY: &str = "Environment";
 
 /// 机器级环境变量所在的子键。
@@ -260,6 +276,55 @@ mod tests {
         assert_eq!(EnvScope::User.as_str(), "user");
         assert_eq!(EnvScope::Machine.as_str(), "machine");
         assert_eq!(EnvScope::ProcessOnly.as_str(), "process-only");
+    }
+
+    #[test]
+    fn user_env_subkey_is_absolute_so_it_does_not_get_the_software_prefix_twice() {
+        // **这条用例守着一个真机上活过的 bug。**
+        //
+        // `RegHive::Hkcu.resolve()` 会给不带绝对前缀的子键自动加 `SOFTWARE\`。
+        // 而**用户级环境变量在 `HKCU\Environment`，不在 `HKCU\SOFTWARE\Environment`**
+        // —— 那个键不存在，于是用户级环境变量**静默返回空表**。
+        //
+        // 症状是"没有报错、只是少了一半数据"：`NVM_HOME` 在 `HKCU\Environment`
+        // 与 `HKLM\...\Session Manager\Environment` 两处都有，而报告里只出现 `（machine）`。
+        let (_, resolved) = crate::RegHive::Hkcu.resolve(USER_ENV_SUBKEY);
+        assert_eq!(
+            resolved, r"Environment",
+            "用户级环境变量在 HKCU\\Environment —— 它不在 SOFTWARE 下面，不能被拼上那个前缀"
+        );
+
+        let (_, machine) = crate::RegHive::Hklm.resolve(MACHINE_ENV_SUBKEY);
+        assert_eq!(
+            machine, r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
+            "机器级环境变量不在 SOFTWARE 下面"
+        );
+        // 两者必须落在**不同**的注册表路径上 —— 否则读两遍同一个键，
+        // "双重管理"这类跨 scope 的发现会整个消失。
+        assert_ne!(resolved, machine);
+    }
+
+    #[test]
+    fn only_the_exact_name_environment_is_treated_as_absolute() {
+        // `strip_absolute_prefix` 对单段名字必须**精确匹配**：
+        // 用 `starts_with` 会让 `EnvironmentFoo` 也被当成绝对路径，
+        // 于是它绕过 `SOFTWARE\` 前缀去读一个不存在的键 —— 又是一次静默返空。
+        let (_, real) = crate::RegHive::Hkcu.resolve("Environment");
+        assert_eq!(real, r"Environment");
+
+        let (_, fake) = crate::RegHive::Hkcu.resolve("EnvironmentFoo");
+        assert_eq!(
+            fake, r"SOFTWARE\EnvironmentFoo",
+            "只有 Environment 这个名字本身是绝对的，加了后缀就必须走相对解析"
+        );
+
+        // 大小写不敏感（注册表就是不敏感的）。
+        let (_, upper) = crate::RegHive::Hkcu.resolve("ENVIRONMENT");
+        assert_eq!(upper, r"ENVIRONMENT");
+
+        // 但带分隔符的绝对前缀仍然只按前缀判定。
+        let (_, sub) = crate::RegHive::Hkcu.resolve(r"Environment\Sub");
+        assert_eq!(sub, r"Environment\Sub", "带分隔符时按前缀判定");
     }
 
     #[test]

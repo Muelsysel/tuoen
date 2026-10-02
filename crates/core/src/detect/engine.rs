@@ -653,8 +653,22 @@ pub struct ManagerSpec {
     pub id: &'static str,
     /// 它管的是哪个逻辑工具。
     pub tool: &'static str,
-    /// 识别它的环境变量名。
+    /// 识别它的环境变量名。**这些变量都是路径**。
     pub env_vars: &'static [&'static str],
+    /// 其中哪一个指向**版本库根目录**（`path` 字段用它）。
+    ///
+    /// 必须显式写出来，**不能靠名字猜**：早先的实现是"名字以 `_HOME` / `_ROOT` 结尾
+    /// 就用它，否则用第一个命中"，于是 `uv` 的 `path` 变成了 `3.13` ——
+    /// 那是 `UV_PYTHON` 的**版本号**，不是路径。一个叫 `path` 的字段里放版本号，
+    /// 任何按路径解析它的消费者都会失败（这个 bug 是契约测试
+    /// `every_record_carries_a_source_a_confidence_and_evidence` 抓到的）。
+    pub path_env_var: &'static str,
+    /// 哪一个是指向**当前生效版本**的链接（有的话）。`version` 字段从它的链接目标读。
+    ///
+    /// **不能拿版本库根目录来读版本**：nvm4w 的 `NVM_HOME` 指向的是装着**所有**
+    /// 版本的那个目录，它本身不携带版本信息 —— 版本在 `NVM_SYMLINK` 的链接目标里。
+    /// 也不能靠名字猜（`NVM_SYMLINK` 不以 `_HOME` / `_ROOT` 结尾）。
+    pub version_link_var: Option<&'static str>,
     /// 识别它的目录（存在即认为装了）。
     pub probe_dirs: &'static [&'static str],
 }
@@ -664,35 +678,53 @@ pub struct ManagerSpec {
 /// **本机活证据**：`NVM_HOME` 与 `NVM_SYMLINK` **同时存在于 `HKCU\Environment`
 /// 和 `HKLM\Session Manager\Environment`** —— 这是真实的双重管理腐坏症状，
 /// 也是"采纳而不是接管"（ADR-0004）的证据来源。
+///
+/// **`UV_PYTHON` 不是路径。** 本机它是 `3.13`（一个版本号）。它仍然是有用的识别信号
+/// （它证明 uv 在这台机器上并且管着 Python），但**不能进 `path` 字段**，
+/// 所以它留在 `env_vars`（用于识别）而 `path_env_var` 指向一个真正的路径变量。
+/// uv 没设那个变量时 `path` 是一个明确的占位符，**不是一个假路径**。
 pub const KNOWN_MANAGERS: &[ManagerSpec] = &[
     ManagerSpec {
         id: "nvm4w",
         tool: "node",
         env_vars: &["NVM_HOME", "NVM_SYMLINK"],
+        path_env_var: "NVM_HOME",
+        version_link_var: Some("NVM_SYMLINK"),
         probe_dirs: &[],
     },
     ManagerSpec {
         id: "uv",
         tool: "python",
-        env_vars: &["UV_PYTHON"],
+        env_vars: &["UV_PYTHON_INSTALL_DIR", "UV_PYTHON", "UV_CACHE_DIR"],
+        // **uv 的版本库根目录**：`uv python install` 把解释器装在这里。
+        // 没设这个变量时它默认在 `%APPDATA%\uv\python`，但**那是默认值不是事实** ——
+        // 所以我们只在它显式设了的时候才报路径。
+        path_env_var: "UV_PYTHON_INSTALL_DIR",
+        version_link_var: None,
         probe_dirs: &[],
     },
     ManagerSpec {
         id: "pyenv-win",
         tool: "python",
         env_vars: &["PYENV", "PYENV_ROOT"],
+        path_env_var: "PYENV_ROOT",
+        version_link_var: None,
         probe_dirs: &[],
     },
     ManagerSpec {
         id: "mise",
         tool: "node",
         env_vars: &["MISE_DATA_DIR"],
+        path_env_var: "MISE_DATA_DIR",
+        version_link_var: None,
         probe_dirs: &[],
     },
     ManagerSpec {
         id: "asdf",
         tool: "node",
         env_vars: &["ASDF_DATA_DIR"],
+        path_env_var: "ASDF_DATA_DIR",
+        version_link_var: None,
         probe_dirs: &[],
     },
 ];
@@ -736,13 +768,19 @@ pub fn from_managers(ctx: &DetectContext<'_>) -> Vec<DetectedTool> {
         scopes.dedup();
         let duplicated = scopes.len() > 1;
 
-        // 报告里用的路径：优先 NVM_HOME 这类"版本库根目录"，否则第一个命中。
+        // 报告里用的路径：**必须是路径型变量**。
+        //
+        // 早先按名字猜（"以 `_HOME` / `_ROOT` 结尾"）会让 `uv` 的 `path` 变成 `3.13`
+        // —— 那是 `UV_PYTHON` 的版本号。现在只有显式声明的 `path_env_var` 能进这里。
+        //
+        // **一个路径型变量都没有时给一个明确的占位符，不给空串。**
+        // 空串在 `path` 字段里是最糟的答案：它既不是路径，也不说明"我们不知道"——
+        // 消费者只会把它当成"路径是空的"。`<…>` 形式的占位符与 ARP 那一侧一致。
         let path = hits
             .iter()
-            .find(|(name, _, _)| name.ends_with("_HOME") || name.ends_with("_ROOT"))
-            .or_else(|| hits.first())
+            .find(|(name, _, _)| name == manager.path_env_var)
             .map(|(_, value, _)| value.clone())
-            .unwrap_or_default();
+            .unwrap_or_else(|| format!("<{} 管理，版本库位置未知>", manager.id));
 
         let mut evidence = format!(
             "环境变量 {} 说明这台机器由 `{}` 管理 {}",
@@ -757,14 +795,15 @@ pub fn from_managers(ctx: &DetectContext<'_>) -> Vec<DetectedTool> {
             evidence.push_str("；**同名变量同时存在于用户级与机器级** —— 双重管理腐坏");
         }
 
-        // 该管理器当前生效的版本目录（nvm4w 的符号链接指向它）。
-        let version = hits
-            .iter()
-            .find(|(name, _, _)| name == "NVM_SYMLINK")
-            .and_then(|(_, value, _)| {
-                let facts = ctx.fs.inspect(Path::new(value));
-                facts.link_target.clone()
-            })
+        // 该管理器当前生效的版本 —— 从**指向当前版本的链接**的链接目标读。
+        //
+        // **不能拿 `path_env_var` 读版本**：nvm4w 的 `NVM_HOME` 指向的是装着
+        // **所有**版本的那个目录，它本身不携带版本信息。版本在 `NVM_SYMLINK`
+        // （`C:\nvm4w\nodejs`）的链接目标 `…\nvm\v24.19.0` 里。
+        let version = manager
+            .version_link_var
+            .and_then(|name| hits.iter().find(|(hit, _, _)| hit == name))
+            .and_then(|(_, value, _)| ctx.fs.inspect(Path::new(value)).link_target.clone())
             .and_then(|target| spec::version_from_path_hint(&target));
 
         out.push(DetectedTool {
