@@ -39,6 +39,10 @@ windows-sys = { version = "0.61", features = [
     # 但**要拿到那个符号就必须开这个 feature** —— 这是实测出来的，
     # 报错是 `unresolved import windows_sys::Win32::Storage::FileSystem::CreateFileW`。
     "Win32_Security",
+    # `SendMessageTimeoutW` 与 `HWND_BROADCAST` / `WM_SETTINGCHANGE` 在这里。
+    # 这个 feature 的面很大，但它是**编译期**的：`platform` 不在任何热路径上
+    # （shim 的依赖图里只有 `windows-sys` 的五个 feature，不含这一个）。
+    "Win32_UI_WindowsAndMessaging",
 ] }
 
 [dev-dependencies]

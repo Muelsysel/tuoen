@@ -20,6 +20,9 @@ mod manage;
 mod manage_cmd;
 mod manage_view;
 mod managed;
+mod path;
+mod path_cmd;
+mod path_view;
 mod shim;
 mod shim_cmd;
 mod shim_view;
@@ -41,7 +44,7 @@ fn main() {
 }
 
 fn run() -> i32 {
-    let cli = Cli::parse();
+    let cli = Cli::parse_from(parse_args());
 
     match cli.command {
         Command::List(args) => {
@@ -69,7 +72,19 @@ fn run() -> i32 {
             ShimCommand::List(args) => shim_cmd::run_list(&args),
             ShimCommand::Path(args) => shim_cmd::run_path(&args),
         },
+        // `path` 那一族**只动用户级 `PATH`**，而且 `show` 只读。
+        // `--json` 在每一个叶子命令上（与 `shim` 那一族一致）。
+        Command::Path(command) => path_cmd::run_command(&command),
     }
+}
+
+/// 命令行参数的**补齐**：`tuoen path` → `tuoen path show`。
+///
+/// 存在的理由写在 [`path::default_path_subcommand`] 里（clap 4 没有
+/// `default_subcommand`，而"不带子命令 = show"是本族的核心契约）。
+/// 这是**唯一**一处改命令行的地方，而且它只做**插入**、不删不改任何已有参数。
+fn parse_args() -> Vec<std::ffi::OsString> {
+    path::default_path_subcommand(std::env::args_os().collect())
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

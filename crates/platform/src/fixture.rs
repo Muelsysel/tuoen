@@ -10,11 +10,14 @@
 //! 2. 三个假后端 —— [`FakeFileSystem`] / [`FakeRegistry`] / [`FakeProcessRunner`]。
 //! 3. [`FakeMachine`] —— 把假后端按 `&dyn Trait` 交给业务逻辑的那一层。
 //!
-//! **假后端只有读方法**（与真实实现一致），所以"这一票只读"在固定装置这一侧同样成立。
+//! **假后端只有必要的方法**：`FakeFileSystem` / `FakeProcessRunner` / `FakeManagedStore`
+//! 全是只读的，只有 `FakeRegistry` 在票据 #8 之后多了 `set_value` / `delete_value`
+//! —— 因为 `PATH` 的 plan/apply 必须在**不碰真注册表**的前提下可测。
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
+use std::rc::Rc;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -391,7 +394,14 @@ impl FileSystem for FakeFileSystem {
 /// 读固定装置的假注册表。
 #[derive(Debug, Clone, Default)]
 pub struct FakeRegistry {
-    keys: HashMap<(RegHive, String), FixtureKey>,
+    /// `RefCell` 是因为票据 #8 起 `Registry` 有了写方法，而这个实现要在
+    /// `&self` 下改内容。与 `FakeProcessRunner.calls` 同一个理由、同一个做法。
+    ///
+    /// **`Rc` 也是必须的**：克隆一份假注册表必须克隆出**同一个**注册表，
+    /// 而不是一张独立的副本。真实注册表是全局的 —— `RealEnvBlock` 与 `RealRegistry`
+    /// 都是零大小类型、读的是同一个真注册表；假实现如果克隆出副本，
+    /// 「写进去之后再读一遍」这种用例就会读到一份永远不变的旧快照。
+    keys: Rc<RefCell<HashMap<(RegHive, String), FixtureKey>>>,
 }
 
 impl FakeRegistry {
@@ -409,11 +419,15 @@ impl FakeRegistry {
                 )
             })
             .collect();
-        Self { keys }
+        Self {
+            keys: Rc::new(RefCell::new(keys)),
+        }
     }
 
-    fn declared(&self, hive: RegHive, key: &str) -> Option<&FixtureKey> {
-        self.keys.get(&(hive, key.to_owned()))
+    /// 取一个已声明的键。**返回克隆而不是引用**：写方法会在 `&self` 下改这个表，
+    /// 所以不能把内部借用交出去。
+    fn declared(&self, hive: RegHive, key: &str) -> Option<FixtureKey> {
+        self.keys.borrow().get(&(hive, key.to_owned())).cloned()
     }
 
     /// 从声明里**推导**直接子键。
@@ -426,8 +440,8 @@ impl FakeRegistry {
         } else {
             format!("{key}\\")
         };
-        let mut children: Vec<String> = self
-            .keys
+        let borrowed = self.keys.borrow();
+        let mut children: Vec<String> = borrowed
             .keys()
             .filter(|(child_hive, path)| {
                 *child_hive == hive
@@ -485,6 +499,39 @@ impl Registry for FakeRegistry {
             return Err(Self::absent(hive, &key));
         }
         Ok(Vec::new())
+    }
+
+    /// 假注册表的写：直接改内存里的那张表。
+    ///
+    /// **刻意不做任何"真实感"的加工**（不写日志、不延时）。测试要断言的是
+    /// 「我们的代码写了什么值、什么类型、写到哪个键」，而不是模拟注册表的行为。
+    fn set_value(
+        &self,
+        hive: RegHive,
+        subkey: &str,
+        name: &str,
+        value: &RegValue,
+    ) -> Result<(), PlatformError> {
+        let key = normalize_key(subkey);
+        let mut keys = self.keys.borrow_mut();
+        let entry = keys
+            .entry((hive, key.clone()))
+            .or_insert_with(|| FixtureKey {
+                hive,
+                path: key.clone(),
+                exists: true,
+                values: BTreeMap::new(),
+            });
+        entry.values.insert(name.to_owned(), value.clone());
+        Ok(())
+    }
+
+    fn delete_value(&self, hive: RegHive, subkey: &str, name: &str) -> Result<(), PlatformError> {
+        let key = normalize_key(subkey);
+        if let Some(entry) = self.keys.borrow_mut().get_mut(&(hive, key)) {
+            entry.values.remove(name);
+        }
+        Ok(())
     }
 }
 

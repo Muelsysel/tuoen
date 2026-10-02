@@ -8,6 +8,7 @@ use clap::{Args, Parser, Subcommand};
 use crate::catalog::CatalogCommand;
 use crate::detect::DetectArgs;
 use crate::manage::{InstallArgs, UninstallArgs, UseArgs};
+use crate::path::PathCommand;
 use crate::shim::ShimCommand;
 
 /// 拓境 — 让你的 Windows 开发环境可搬运、可复现。
@@ -131,7 +132,77 @@ shim 目录与存储**并列**（`<家目录>/shims`），不在 `store/` 里面
 把这个目录加进 `PATH`（`tuoen shim path` 给你它的绝对路径）。"#
     )]
     Shim(ShimCommand),
+
+    /// 看清并修改 `PATH`（`show` 只读，`add` / `remove` 先出计划再落盘）。
+    #[command(
+        subcommand,
+        long_about = r#"看清并修改 `PATH`。
+
+**不带子命令时等于 `tuoen path show`** —— 看是最安全的默认动作，而"敲了
+`tuoen path` 就改了 `PATH`"是最不该发生的默认动作。
+
+三个子命令：
+  show          只读地报告现状（长度预算、重复、失效条目、遮蔽……）
+  add <dir>     把目录追加到**用户级** `PATH`
+  remove <dir>  从**用户级** `PATH` 里删掉目录
+
+## 为什么这件事必须这么小心
+
+`PATH` 是本项目里**唯一**一处「一次调用就能让整台机器所有命令失效」的地方：
+
+* `setx` 在 **1024** 字符处**静默裁剪**，并把你值里所有 `%VAR%` **永久展开**成
+  字面量 —— 所以 **tuoen 绝不调用 `setx`**。写回走的是一次整条值写完
+  （不是逐段改：逐段改会有"`PATH` 暂时少了几个目录"的中间状态），
+  然后广播 `WM_SETTINGCHANGE`。
+* `cmd.exe` 在 `PATH` 超过 **8191** 字符后**完全忽略整条 `PATH`** —— 不是部分失效，
+  是所有命令一起失效。这两个数字是**不同的悬崖**，混为一谈会让告警出现在错误的位置上。
+
+## 四件平台事实
+
+1. 进程 `PATH` = **机器条目在前、用户条目在后**，所以用户级工具永远输掉名字冲突
+   —— 这就是 shim 存在的理由（决策 10）。
+2. 机器级 `PATH` 要**提权**才能写，而 tuoen **不做"顺手提权"**：`add` / `remove`
+   只动用户级，机器级只读。
+3. 进程 `PATH` 里可能有**注册表里没有的条目**（进程注入，本机实测有 PowerShell 的
+   MSIX 别名）。`show` 单独把它们列出来，因为只看注册表会漏掉它们，而它们真的占长度。
+4. **已经跑着的终端 / IDE 拿不到新环境**（环境块是 `CreateProcess` 时复制的）——
+   写完要新开一个终端。这是平台限制，不是命令没生效。
+
+## 只报告，不自动清理
+
+重复条目、指向不存在目录的条目、硬编码了用户名的条目、被别的目录抢在前面的 shim
+—— 这些 `show` **全部只报告**（决策 24）。`PATH` 上的东西是用户的。
+
+## `--dry-run`
+
+`add` / `remove` 都有 `--dry-run`，它走的是与真写**同一套**计划代码，只是不落盘。"#
+    )]
+    Path(PathCommand),
 }
+
+/// `tuoen path` 的参数。
+///
+/// # 为什么这里没有第二层
+///
+/// clap 的 `#[derive(Subcommand)]` **只支持枚举**，而"带 `#[command(subcommand)]`
+/// 的结构体"必须自己是一个枚举 —— 于是 `PathArgs`（结构体）会被当成叶子命令，
+/// 它里面的子命令**根本不会被注册**（症状是 `tuoen path show` 报
+/// `unrecognized subcommand`）。所以这一族只有**一层**枚举：
+/// [`crate::path::PathCommand`] 直接挂在 [`Command::Path`] 上。
+///
+/// # 为什么 `command` 不是 `Option`
+///
+/// clap 4 没有 `default_subcommand`，而"不带子命令时做什么"是**本族的核心契约**
+/// （`tuoen path` ≡ `tuoen path show`）。它由 [`crate::path::default_path_subcommand`]
+/// 在**进入 clap 之前**补上 —— 于是 `tuoen path` 与 `tuoen path show` 在 clap 眼里
+/// 是**同一条命令行**，不可能走岔。见那个函数的文档。
+///
+/// # `--json` 在哪儿
+///
+/// 在**每一个叶子命令**上（`tuoen path show --json` / `add … --json` /
+/// `remove … --json`），与 `shim` 那一族一致。父级上没有 `--json`
+/// （`tuoen path --json` 是用法的错），因为不带子命令时它已经被补成 `show`，
+/// 而"`--json` 属于哪一个命令"只有一个答案比两个答案更难写错。
 
 #[derive(Debug, Args)]
 pub struct ListArgs {

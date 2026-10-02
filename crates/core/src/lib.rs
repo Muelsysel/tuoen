@@ -12,4 +12,4 @@ pub mod shim;
 
 pub use detect::{Confidence, DetectedTool, DetectionSource, DetectionSummary};
 pub use list::{ListResult, ToolRecord, ToolSource};
-pub use shim::{ShimCommand, shim_commands};
+pub use shim::{ShimCommand, command_names, shim_commands, tool_for_command};

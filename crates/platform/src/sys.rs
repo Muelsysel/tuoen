@@ -129,15 +129,19 @@ mod imp {
     use std::ptr;
 
     use windows_sys::Win32::Foundation::{
-        ERROR_SUCCESS, GetLastError, INVALID_HANDLE_VALUE, WIN32_ERROR,
+        ERROR_FILE_NOT_FOUND, ERROR_SUCCESS, GetLastError, INVALID_HANDLE_VALUE, WIN32_ERROR,
     };
     use windows_sys::Win32::Storage::FileSystem::{
         FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FindClose, FindFirstFileW,
         WIN32_FIND_DATAW,
     };
     use windows_sys::Win32::System::Registry::{
-        HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, RegCloseKey, RegEnumKeyExW,
-        RegEnumValueW, RegOpenKeyExW,
+        HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_QUERY_VALUE, KEY_READ, KEY_SET_VALUE,
+        RegCloseKey, RegCreateKeyExW, RegDeleteValueW, RegEnumKeyExW, RegEnumValueW, RegOpenKeyExW,
+        RegSetValueExW,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        HWND_BROADCAST, SMTO_ABORTIFHUNG, SendMessageTimeoutW, WM_SETTINGCHANGE,
     };
 
     use super::{ERROR_INVALID_NAME, FindFacts, RawRegValue, RootKey, Win32Code};
@@ -384,6 +388,120 @@ mod imp {
         }
     }
 
+    // ───────────────────────── 写 ─────────────────────────
+    //
+    // **本文件在此之前是纯只读的，这一段是唯一的例外。** 它只服务于一件事：
+    // 把用户级 `PATH` 整条写回 `HKCU\Environment`。理由写在 `src/path.rs` 的模块文档里
+    // （`setx` 会在 1024 处静默裁剪并永久展开 `%VAR%`）。
+    //
+    // 三个刻意的限制：
+    // 1. **没有任何"追加"或"删除某一项"的函数** —— 只有"整条值一次写完"。
+    //    逐段改会产生"`PATH` 暂时少了几个目录"的中间状态，而那个状态是活的。
+    // 2. `RegCreateKeyExW` 只在键不存在时创建（`HKCU\Environment` 正常总是存在，
+    //    但"不存在"不该变成一次失败的写）。
+    // 3. 返回 `Win32Code`，不在这里翻译成业务错误 —— 与读函数一致。
+
+    /// 打开（或创建）一个可写的键。
+    fn open_writable(root: RootKey, subkey: &str) -> Result<OpenKey, Win32Code> {
+        let subkey = wide(subkey);
+        let mut hkey: HKEY = ptr::null_mut();
+        let mut disposition: u32 = 0;
+        // SAFETY: `subkey` 以 NUL 结尾；出参都在本栈上；安全属性与 `samDesired` 之外的
+        // 参数传 0/NULL 是文档允许的（`REG_OPTION_NON_VOLATILE` = 0）。
+        let rc: WIN32_ERROR = unsafe {
+            RegCreateKeyExW(
+                root_handle(root),
+                subkey.as_ptr(),
+                0,
+                ptr::null_mut(),
+                0,
+                KEY_SET_VALUE | KEY_QUERY_VALUE,
+                ptr::null(),
+                &mut hkey,
+                &mut disposition,
+            )
+        };
+        if rc != ERROR_SUCCESS {
+            return Err(rc);
+        }
+        Ok(OpenKey(hkey))
+    }
+
+    /// 写一个字符串值（`REG_SZ` 或 `REG_EXPAND_SZ`）。
+    ///
+    /// `kind` 只接受这两个：调用方要传的是 [`crate::RegType`] 的落点，
+    /// 而多传几个类型码只会让"我们到底写了什么类型"更难回答。
+    pub fn reg_set_string(
+        root: RootKey,
+        subkey: &str,
+        name: &str,
+        kind: u32,
+        text: &str,
+    ) -> Result<(), Win32Code> {
+        let key = open_writable(root, subkey)?;
+        let name = wide(name);
+        // `REG_SZ` 的数据**包含结尾的 NUL**（本机读回来的字节里就有它）。
+        let mut data: Vec<u16> = text.encode_utf16().collect();
+        data.push(0);
+        let bytes = std::mem::size_of_val(data.as_slice());
+        // SAFETY: 句柄有效；`data` 是可读缓冲，`bytes` 是它的字节长度；`name` 以 NUL 结尾。
+        let rc: WIN32_ERROR = unsafe {
+            RegSetValueExW(
+                key.0,
+                name.as_ptr(),
+                0,
+                kind,
+                data.as_ptr().cast::<u8>(),
+                u32::try_from(bytes).unwrap_or(u32::MAX),
+            )
+        };
+        if rc != ERROR_SUCCESS {
+            return Err(rc);
+        }
+        Ok(())
+    }
+
+    /// 删掉一个值。值不存在时也返回成功 —— 那是幂等，不是失败。
+    pub fn reg_delete_value(root: RootKey, subkey: &str, name: &str) -> Result<(), Win32Code> {
+        let key = open_writable(root, subkey)?;
+        let name = wide(name);
+        // SAFETY: 句柄有效；`name` 以 NUL 结尾。
+        let rc: WIN32_ERROR = unsafe { RegDeleteValueW(key.0, name.as_ptr()) };
+        if rc == ERROR_SUCCESS || rc == ERROR_FILE_NOT_FOUND {
+            return Ok(());
+        }
+        Err(rc)
+    }
+
+    /// 广播 `WM_SETTINGCHANGE`，让 Explorer 重读环境。
+    ///
+    /// 返回值是**收到应答的顶层窗口数**。它的含义必须说准：
+    ///
+    /// - `0` 不代表失败。没有顶层窗口响应是正常的（本机实测有时就是 0），
+    ///   而广播本身仍然发生了。
+    /// - 它**不是**"所有进程都更新了"的证据。环境块是 `CreateProcess` 时复制的，
+    ///   所以已经在跑的 cmd / PowerShell / IDE / 服务**永远拿不到**这次变更。
+    ///   "请重启终端"是平台限制，不是我们偷懒。
+    pub fn broadcast_environment_change() -> usize {
+        let mut result: usize = 0;
+        let param = wide("Environment");
+        // SAFETY: `param` 以 NUL 结尾；`&mut result` 是有效出参；
+        // `HWND_BROADCAST` 是文档规定的"发给所有顶层窗口"。
+        let replied = unsafe {
+            SendMessageTimeoutW(
+                HWND_BROADCAST,
+                WM_SETTINGCHANGE,
+                0,
+                param.as_ptr() as isize,
+                SMTO_ABORTIFHUNG,
+                5000,
+                &mut result,
+            )
+        };
+        // 返回 0 表示"一个应答都没收到"或"超时"，两种情况 `replied` 都是 0。
+        if replied == 0 { 0 } else { result }
+    }
+
     /// 一个路径在"链接"这件事上的形状。
     pub fn junction_state(path: &Path) -> super::JunctionState {
         match super::find_first(path) {
@@ -625,6 +743,28 @@ mod imp {
         Err(ERROR_NOT_SUPPORTED)
     }
 
+    /// 非 Windows 上没有注册表可写 —— 返回"缺能力"，而不是假装成功。
+    pub fn reg_set_string(
+        _root: RootKey,
+        _subkey: &str,
+        _name: &str,
+        _kind: u32,
+        _text: &str,
+    ) -> Result<(), Win32Code> {
+        Err(ERROR_NOT_SUPPORTED)
+    }
+
+    /// 同上。
+    pub fn reg_delete_value(_root: RootKey, _subkey: &str, _name: &str) -> Result<(), Win32Code> {
+        Err(ERROR_NOT_SUPPORTED)
+    }
+
+    /// 非 Windows 上没有 `WM_SETTINGCHANGE`。返回 0 个应答 ——
+    /// 这在 Windows 上也是合法结果（见 Windows 版本的文档），所以调用方无需分支。
+    pub fn broadcast_environment_change() -> usize {
+        0
+    }
+
     /// 非 Windows 上没有 junction：返回"缺能力"，而不是假装成功。
     pub fn junction_state(_path: &Path) -> JunctionState {
         super::JunctionState::Missing
@@ -647,8 +787,8 @@ mod imp {
 }
 
 pub use imp::{
-    create_junction, find_first, junction_state, reg_subkeys, reg_values, remove_reparse_point,
-    set_junction_data,
+    broadcast_environment_change, create_junction, find_first, junction_state, reg_delete_value,
+    reg_set_string, reg_subkeys, reg_values, remove_reparse_point, set_junction_data,
 };
 
 #[cfg(test)]

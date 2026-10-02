@@ -179,6 +179,17 @@ fn real_home_listing() -> Vec<String> {
         .map(|entry| entry.file_name().to_string_lossy().into_owned())
         .collect();
     names.sort();
+    // **`shims` 要往里看一层。** 只列顶层的话，本票最严重的那一类事故看不见：
+    // "在真实的 shim 目录里生成了一个 shim" —— 因为 `shims` 这个名字本来就在那儿，
+    // 空目录和 4 条 shim 的顶层列表长得一模一样。
+    let mut inner: Vec<String> = std::fs::read_dir(home.join("shims"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    inner.sort();
+    names.push(format!("shims/{{{}}}", inner.join(", ")));
     names
 }
 
@@ -1000,13 +1011,9 @@ fn the_real_tuoen_home_was_not_touched_by_this_files_tests() {
         before, after,
         "测试碰到了真实的 `%LOCALAPPDATA%\\tuoen` —— 这是本仓库最容易造成真实伤害的地方"
     );
-    let real_shims = std::env::var_os("LOCALAPPDATA")
-        .map(|local| PathBuf::from(local).join("tuoen").join("shims"));
-    if let Some(real_shims) = real_shims {
-        assert!(
-            !real_shims.exists(),
-            "真实的 shim 目录 `{}` 出现了 —— 有测试在往用户的 PATH 目录里放可执行文件",
-            real_shims.display()
-        );
-    }
+    // **不断言"真实的 shim 目录不存在"。** 那是机器状态，不是被测代码的性质：
+    // 任何真的用 `tuoen shim add` 装过东西的人都有这个目录（L0-07 的真机验收就有），
+    // 于是那条断言会在最不该红的时候红 —— 实测就红过一次。
+    // 上面那个 before/after 才是真要钉的东西，而 `real_home_listing` 已经往
+    // `shims` 里看了一层，所以"往用户 PATH 目录里放可执行文件"照样会红。
 }

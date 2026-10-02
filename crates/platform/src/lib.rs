@@ -18,6 +18,7 @@ pub mod fixture;
 pub mod fs_facts;
 pub mod junction;
 pub mod managed;
+pub mod path;
 pub mod process;
 pub mod registry;
 pub mod sys;
@@ -45,6 +46,12 @@ pub use fs_facts::{
 };
 pub use junction::{Repoint, junction_target, remove_junction, repoint_junction};
 pub use managed::{ManagedStore, ManagedTool, RealManagedStore};
+pub use path::{
+    BudgetLevel, DanglingEntry, Duplicate, EntryRef, NoopReason, PATH_EXTENSIONS, PATH_NAME,
+    PathAction, PathAnalysis, PathApplied, PathBudget, PathChange, PathEntry, PathPlan, ScopedPath,
+    ShadowedShim, UsernameDependency, analyze, apply, hardcoded_username, missing_from_path,
+    normalize_entry, parse_entries, plan_add, plan_remove, run, shim_commands, write_type_for,
+};
 pub use process::{DEFAULT_PROBE_TIMEOUT, ProcessOutcome, ProcessRunner, SystemProcessRunner};
 pub use registry::{RealRegistry, RegHive, RegValue, Registry, expand_vars};
 pub use sys::{FindFacts, RawRegValue, RootKey, Win32Code};

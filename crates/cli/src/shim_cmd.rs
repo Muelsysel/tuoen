@@ -92,8 +92,13 @@ impl fmt::Display for ShimCliError {
 }
 
 /// shim 目录：`<家目录>/shims`。**整个仓库里只有这一处定义它。**
+///
+/// `pub(crate)` 是给 `tuoen path` 用的：它要拿这个目录做两件事 ——
+/// 保护它不被 `path remove` 摘掉，以及判断我们发布的命令有没有被别的目录遮蔽。
+/// **另一个调用方不是"再拼一遍这个路径"的理由**：第二份定义会漂移，
+/// 而它漂移的后果是 `PATH` 报告里的遮蔽检测静默地看了一个不存在的目录。
 #[must_use]
-fn shim_dir(store: &Store) -> PathBuf {
+pub(crate) fn shim_dir(store: &Store) -> PathBuf {
     store.home().join("shims")
 }
 
@@ -582,15 +587,56 @@ pub fn run_remove(args: &ShimRemoveArgs) -> i32 {
 pub fn remove(args: &ShimRemoveArgs) -> Result<ShimRemoveView, ShimCliError> {
     let store = Store::at_default_location();
     let shim_dir = shim_dir(&store);
-    let results = args
+    let results: Vec<ShimRemoveEntryView> = args
         .names
         .iter()
         .map(|raw| remove_one(&shim_dir, raw))
         .collect();
+    let (siblings_left, tool_id) = siblings_left_behind(&shim_dir, &results);
     Ok(ShimRemoveView {
         shim_dir: shim_dir.display().to_string(),
         results,
+        siblings_left,
+        tool_id,
     })
+}
+
+/// 删完之后，**同一个工具**还有哪几条留在盘上。
+///
+/// 不对称的来源：`tuoen shim add node` 一次生成 4 条（`node` / `npm` / `npx` /
+/// `corepack`），而 `remove` 收的是**命令名**，所以 `remove node` 只删掉 `node.exe`。
+/// 这个不对称本身是对的（`remove npm` 必须能只删 npm），但**不说出来**就会让人
+/// 以为已经删干净了 —— 那是一个静默的半途状态，正是最该避免的一种。
+///
+/// 判据有三条，缺一不可：①这个名字属于某个已知工具；②那个工具**有别的**命令；
+/// ③那些命令**真的还在盘上**。只按表推断而不管盘上有没有，会在删一个从未生成过的
+/// 名字时报出一堆"漏下的兄弟"。
+fn siblings_left_behind(
+    shim_dir: &Path,
+    results: &[ShimRemoveEntryView],
+) -> (Vec<String>, Option<String>) {
+    let mut tool_id: Option<String> = None;
+    let mut left: Vec<String> = Vec::new();
+    for entry in results.iter().filter(|e| e.status == status::REMOVED) {
+        let name = strip_exe_suffix(entry.name.trim());
+        let Some(tool) = tuoen_core::tool_for_command(name) else {
+            continue;
+        };
+        tool_id = Some(tool.to_owned());
+        for sibling in tuoen_core::command_names(tool) {
+            if sibling.eq_ignore_ascii_case(name) {
+                continue;
+            }
+            // **盘上真的还在**才算。表里有、但没生成过的命令不能报。
+            if shim_dir.join(format!("{sibling}.exe")).is_file() {
+                left.push(sibling.to_owned());
+            }
+        }
+    }
+    left.sort();
+    left.dedup();
+    let tool_id = if left.is_empty() { None } else { tool_id };
+    (left, tool_id)
 }
 
 /// 删一个名字。
@@ -837,5 +883,92 @@ mod tests {
         assert_eq!(baked_prefix(b"just some bytes"), None);
         assert_eq!(baked_prefix(&[]), None);
         assert_eq!(baked_prefix(&SLOT_MAGIC), None, "半截魔数不算");
+    }
+
+    /// 一条"删成功了"的结果，用来喂 [`siblings_left_behind`]。
+    fn removed(name: &str) -> ShimRemoveEntryView {
+        ShimRemoveEntryView {
+            name: name.to_owned(),
+            file: Some(format!("{name}.exe")),
+            path: None,
+            status: status::REMOVED,
+            bytes: Some(1),
+            code: None,
+            message: None,
+            user_error: None,
+        }
+    }
+
+    /// 一条"没删成"的结果。
+    fn not_found(name: &str) -> ShimRemoveEntryView {
+        ShimRemoveEntryView {
+            name: name.to_owned(),
+            file: Some(format!("{name}.exe")),
+            path: None,
+            status: status::NOT_FOUND,
+            bytes: None,
+            code: Some("not-found"),
+            message: None,
+            user_error: Some(true),
+        }
+    }
+
+    #[test]
+    fn removing_a_tool_name_reports_the_siblings_it_left_behind() {
+        // **这条是实测抓出来的**：`tuoen shim add node` 生成 4 条，而
+        // `tuoen shim remove node` 只删 `node.exe` —— 因为 remove 收的是**命令名**。
+        // 不对称本身合理，静默才是问题：删完必须说清还剩哪几条。
+        let dir = tuoen_platform::test_support::TempDir::new("shim-siblings");
+        for name in ["node", "npm", "npx", "corepack"] {
+            std::fs::write(dir.path().join(format!("{name}.exe")), b"x").expect("write");
+        }
+        // 删掉 `node.exe`，模拟 remove 已经跑完的那一刻。
+        std::fs::remove_file(dir.path().join("node.exe")).expect("remove");
+
+        let (left, tool) = siblings_left_behind(dir.path(), &[removed("node")]);
+        assert_eq!(left, vec!["corepack", "npm", "npx"], "漏下的兄弟按名字排序");
+        assert_eq!(tool.as_deref(), Some("node"));
+    }
+
+    #[test]
+    fn siblings_are_reported_only_when_they_are_really_on_disk() {
+        // 判据里最容易漏的一条：**表里有、盘上没有**的命令不算"漏下的兄弟"。
+        // 只按表推断的话，删掉一个从没生成过全集的工具会报出一堆不存在的东西。
+        let dir = tuoen_platform::test_support::TempDir::new("shim-siblings-absent");
+        std::fs::write(dir.path().join("npm.exe"), b"x").expect("write");
+
+        let (left, tool) = siblings_left_behind(dir.path(), &[removed("node")]);
+        assert_eq!(left, vec!["npm"], "盘上只有 npm");
+        assert_eq!(tool.as_deref(), Some("node"));
+
+        // 一条都不剩的时候**不给提示**（`None`），否则删干净了还要挨一句注意。
+        std::fs::remove_file(dir.path().join("npm.exe")).expect("remove");
+        let (left, tool) = siblings_left_behind(dir.path(), &[removed("node")]);
+        assert!(left.is_empty());
+        assert!(tool.is_none());
+    }
+
+    #[test]
+    fn a_name_we_did_not_remove_never_produces_a_hint() {
+        // **只对真的删成功的那几个名字说话。** 没删成的（不存在、名字不合法……）
+        // 一条兄弟都不该报 —— 否则"什么都没删掉"也会跟一句"还剩 N 条"。
+        let dir = tuoen_platform::test_support::TempDir::new("shim-siblings-failed");
+        std::fs::write(dir.path().join("npm.exe"), b"x").expect("write");
+
+        let (left, tool) = siblings_left_behind(dir.path(), &[not_found("node")]);
+        assert!(left.is_empty(), "没删成的名字不该触发兄弟提示");
+        assert!(tool.is_none());
+    }
+
+    #[test]
+    fn a_command_name_that_belongs_to_no_tool_produces_no_hint() {
+        // 我们自己的工具之外的命令名（将来别的工具也会往这个目录放东西）
+        // 反查不到工具，于是无从知道"兄弟"是什么 —— 那就什么都不说。
+        let dir = tuoen_platform::test_support::TempDir::new("shim-siblings-unknown");
+        std::fs::write(dir.path().join("node.exe"), b"x").expect("write");
+
+        let (left, tool) = siblings_left_behind(dir.path(), &[removed("somethingelse")]);
+        assert!(left.is_empty());
+        assert!(tool.is_none());
     }
 }

@@ -109,6 +109,35 @@ const NODE_COMMANDS: &[CommandSpec] = &[
     },
 ];
 
+/// 某个命令名属于哪个工具。不认识返回 `None`。
+///
+/// 存在的理由是 `tuoen shim add` 与 `tuoen shim remove` 的**粒度不一样**：
+/// `add` 收的是工具（`add node` 一次生成 4 条），`remove` 收的是命令名
+/// （`remove node` 只删 `node.exe`）。这个不对称本身是合理的（`remove npm`
+/// 必须能只删 npm），但它会让人以为 `remove node` 是 `add node` 的逆操作。
+/// 有了这张反查表，`remove` 就能在删完之后**指名道姓地说出还剩哪几条**。
+#[must_use]
+pub fn tool_for_command(command: &str) -> Option<&'static str> {
+    SHIM_COMMANDS
+        .iter()
+        .find(|tool| {
+            tool.commands
+                .iter()
+                .any(|spec| spec.command.eq_ignore_ascii_case(command))
+        })
+        .map(|tool| tool.id)
+}
+
+/// 某个工具要在 `PATH` 上暴露哪些命令名（顺序即表的顺序）。不认识返回空表。
+#[must_use]
+pub fn command_names(tool: &str) -> Vec<&'static str> {
+    SHIM_COMMANDS
+        .iter()
+        .find(|spec| spec.id.eq_ignore_ascii_case(tool))
+        .map(|spec| spec.commands.iter().map(|c| c.command).collect())
+        .unwrap_or_default()
+}
+
 /// 已知的「工具 → 要暴露的命令」表。**顺序即输出顺序**（`--json` 必须逐字节稳定，决策 35）。
 ///
 /// 现在只有 `node` 一家。加一条之前先**在本机实测**：造一个真的安装目录，
@@ -293,6 +322,41 @@ mod tests {
         for tool in ["definitely-not-a-tool", "", "nodejs", " node"] {
             assert!(shim_commands(tool).is_empty(), "`{tool}` 不该有命令");
         }
+    }
+
+    #[test]
+    fn a_command_name_maps_back_to_its_tool() {
+        // 这张反查表存在的唯一理由是 `shim remove` 收的是**命令名**而 `add` 收的是
+        // **工具**，于是 `remove node` 只删一条 —— 反查让 remove 能说清还剩哪几条。
+        for (command, tool) in [
+            ("node", "node"),
+            ("npm", "node"),
+            ("npx", "node"),
+            ("corepack", "node"),
+        ] {
+            assert_eq!(tool_for_command(command), Some(tool), "`{command}` 的归属");
+        }
+        // 大小写不敏感，与 `shim_commands` 一致。
+        assert_eq!(tool_for_command("NPM"), Some("node"));
+        // **不认识就说不认识**，不许猜一个工具出来 —— 猜错会让 `remove`
+        // 报出几条根本不属于它的"漏下的兄弟"。
+        for unknown in ["python", "pip", "", "nodejs", "node.exe"] {
+            assert_eq!(tool_for_command(unknown), None, "`{unknown}` 不该有归属");
+        }
+    }
+
+    #[test]
+    fn command_names_agree_with_shim_commands() {
+        // 两条 API 说的是同一件事，只是形状不同（一个是名字、一个是完整规格）。
+        // 漂移的症状是 `remove` 提示的名字与 `add` 生成的文件对不上。
+        let names = command_names("node");
+        let commands = shim_commands("node");
+        let from_commands: Vec<&str> = commands.iter().map(|c| c.command.as_str()).collect();
+        assert_eq!(names, from_commands);
+        assert_eq!(names, vec!["node", "npm", "npx", "corepack"]);
+        // 大小写不敏感，不认识返回空表（**不是**报错）。
+        assert_eq!(command_names("NoDe").len(), 4);
+        assert!(command_names("python").is_empty());
     }
 
     #[test]

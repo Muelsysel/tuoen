@@ -205,6 +205,37 @@ pub trait Registry {
     fn key_exists(&self, hive: RegHive, subkey: &str) -> bool {
         self.subkeys(hive, subkey).is_ok() || self.values(hive, subkey).is_ok()
     }
+
+    /// 写一个值。键不存在时创建它。
+    ///
+    /// # 为什么 `Registry` 上会有一个写方法
+    ///
+    /// 这个 trait 在票据 #8 之前是**纯只读**的，而且那个性质是刻意的。唯一的例外
+    /// 是「把用户级 `PATH` 整条写回 `HKCU\Environment`」—— 因为 `setx` 会在
+    /// 1024 字符处静默裁剪、并永久展开值里所有 `%VAR%`（见 `src/path.rs` 的模块文档）。
+    /// 除了那一处，没有第二个调用方，也不该有。
+    ///
+    /// **只接受字符串类型**：`REG_DWORD` / `REG_MULTI_SZ` 在这里写没有意义，
+    /// 与其猜一个语义，不如返回 [`PlatformError::Unsupported`]。
+    ///
+    /// # Errors
+    ///
+    /// 权限不足（机器级键需要提权）、磁盘错误，或不支持的值类型。
+    fn set_value(
+        &self,
+        hive: RegHive,
+        subkey: &str,
+        name: &str,
+        value: &RegValue,
+    ) -> Result<(), PlatformError>;
+
+    /// 删掉一个值。**值不存在时返回 `Ok(())`** —— 删除是幂等的，
+    /// 而"它本来就不在"与"我删掉了"对调用方是同一件事。
+    ///
+    /// # Errors
+    ///
+    /// 同 [`Registry::set_value`]。
+    fn delete_value(&self, hive: RegHive, subkey: &str, name: &str) -> Result<(), PlatformError>;
 }
 
 /// 真实实现：`RegOpenKeyExW` + `RegEnumKeyExW` + `RegEnumValueW`。
@@ -271,6 +302,32 @@ impl Registry for RealRegistry {
                     .collect()
             })
             .map_err(|code| registry_error(hive, subkey, code))
+    }
+
+    fn set_value(
+        &self,
+        hive: RegHive,
+        subkey: &str,
+        name: &str,
+        value: &RegValue,
+    ) -> Result<(), PlatformError> {
+        let (root, full) = hive.resolve(subkey);
+        let (kind, text) = match value {
+            RegValue::Sz(text) => (REG_SZ, text.as_str()),
+            RegValue::ExpandSz(text) => (REG_EXPAND_SZ, text.as_str()),
+            other => {
+                return Err(PlatformError::Unsupported {
+                    what: format!("写 `{}` 类型的注册表值", other.kind_name()),
+                });
+            }
+        };
+        sys::reg_set_string(root, &full, name, kind, text)
+            .map_err(|code| registry_error(hive, subkey, code))
+    }
+
+    fn delete_value(&self, hive: RegHive, subkey: &str, name: &str) -> Result<(), PlatformError> {
+        let (root, full) = hive.resolve(subkey);
+        sys::reg_delete_value(root, &full, name).map_err(|code| registry_error(hive, subkey, code))
     }
 }
 

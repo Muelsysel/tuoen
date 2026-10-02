@@ -235,6 +235,39 @@ pub struct ShimRemoveView {
     pub shim_dir: String,
     /// 用户给的每一个名字一条，**顺序与命令行一致**。
     pub results: Vec<ShimRemoveEntryView>,
+    /// 删完之后，**同一个工具**还留在盘上的命令（命令名，已排序）。
+    ///
+    /// 存在的理由是 `add` 与 `remove` 的粒度不一样：`add node` 一次生成 4 条，
+    /// 而 `remove node` 只删 `node.exe`。这个不对称本身合理（`remove npm`
+    /// 必须能只删 npm），但**静默地只删一条**会让人以为删干净了 ——
+    /// 所以这里把漏下的那几条报出来（决策 73 的同一条原则：报告，不替用户做决定）。
+    #[serde(rename = "siblingsLeft")]
+    pub siblings_left: Vec<String>,
+    /// 这些"漏下的兄弟"属于哪个工具（`siblingsLeft` 为空时是 `null`）。
+    #[serde(rename = "siblingsTool")]
+    pub tool_id: Option<String>,
+}
+
+impl ShimRemoveView {
+    /// 漏下的同工具命令的中文提示（**只进人类输出**）。
+    ///
+    /// 给出了**可以直接抄的完整命令**：只说"还剩 npm、npx、corepack"是在让用户
+    /// 自己拼一条命令，那正是这一类不对称最容易出错的地方。
+    #[must_use]
+    pub fn siblings_hint(&self) -> Option<String> {
+        if self.siblings_left.is_empty() {
+            return None;
+        }
+        Some(format!(
+            "注意：`{}` 这个工具还有 {} 条 shim 在盘上（{}）。\n\
+             `remove` 收的是**命令名**，所以刚才只删了同名的那些；\
+             要一起删：`tuoen shim remove {}`。",
+            self.tool_id.as_deref().unwrap_or("?"),
+            self.siblings_left.len(),
+            self.siblings_left.join("、"),
+            self.siblings_left.join(" ")
+        ))
+    }
 }
 
 impl ShimRemoveView {
@@ -535,6 +568,10 @@ pub fn print_remove_human(view: &ShimRemoveView) {
         }
         println!("用 `tuoen shim list` 看现在还剩什么。");
     }
+    if let Some(hint) = view.siblings_hint() {
+        println!();
+        println!("{hint}");
+    }
 }
 
 /// `tuoen shim path` 的人类输出：**恰好一行，就是那个路径**。
@@ -679,6 +716,8 @@ mod tests {
         // 而不是只说"N 个没删成"。
         let view = ShimRemoveView {
             shim_dir: r"C:\s\shims".to_owned(),
+            siblings_left: Vec::new(),
+            tool_id: None,
             results: vec![
                 ShimRemoveEntryView {
                     name: "node".to_owned(),
@@ -708,6 +747,38 @@ mod tests {
         assert!(summary.contains("`ghost` 没删成"), "{summary}");
         assert!(summary.contains("不存在"), "要带上具体原因：{summary}");
         assert!(summary.contains("不会恢复"), "要说明没有回滚：{summary}");
+    }
+
+    /// 删完之后"还剩哪几条兄弟"的那句提示。
+    ///
+    /// **这是实测抓出来的不对称**：`tuoen shim add node` 一次生成 4 条，
+    /// 而 `tuoen shim remove node` 只删 `node.exe`（remove 收的是**命令名**）。
+    /// 不对称本身合理，但**静默**会让用户以为删干净了 —— 所以提示必须给出
+    /// **可以直接抄的完整命令**，而不是只列出几个名字让他自己拼。
+    #[test]
+    fn the_sibling_hint_gives_a_command_that_can_be_copied_verbatim() {
+        let view = ShimRemoveView {
+            shim_dir: r"C:\s\shims".to_owned(),
+            results: Vec::new(),
+            siblings_left: vec!["corepack".to_owned(), "npm".to_owned(), "npx".to_owned()],
+            tool_id: Some("node".to_owned()),
+        };
+        let hint = view.siblings_hint().expect("有兄弟就必须有提示");
+        assert!(hint.contains("3 条"), "要报条数：{hint}");
+        assert!(hint.contains("corepack、npm、npx"), "要点名：{hint}");
+        assert!(
+            hint.contains("tuoen shim remove corepack npm npx"),
+            "要给出能直接抄的命令：{hint}"
+        );
+        assert!(hint.contains("命令名"), "要说清为什么只删了一条：{hint}");
+
+        // 一条不剩时不说话 —— 删干净了还跟一句"注意"是噪声。
+        let clean = ShimRemoveView {
+            siblings_left: Vec::new(),
+            tool_id: None,
+            ..view
+        };
+        assert_eq!(clean.siblings_hint(), None);
     }
 
     #[test]
