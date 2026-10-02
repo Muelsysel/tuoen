@@ -619,7 +619,9 @@ pub enum PathChange {
     /// 追加一条。
     Add {
         value: String,
-        /// 追加到第几段（0 起）。
+        /// 追加到第几段。**这是「新列表下标」**（空条目已经被丢掉），
+        /// 与 [`Self::Remove::was_at`] 的"含空条目的原文下标"**不可比** ——
+        /// 同一个约定见 [`Self::Move`] 的两个字段。
         at: usize,
     },
     /// 删掉一条。
@@ -634,6 +636,33 @@ pub enum PathChange {
     Retype { from: RegType, to: RegType },
     /// 顺带清掉了空条目。
     DropEmptySegments { count: usize },
+    /// 一条条目换了位置（值没变）。
+    Move {
+        /// 新列表里这一格的值。
+        value: String,
+        /// 原来在第几段。**这是「含空条目的原文下标」**（与 `Remove.was_at`
+        /// 同款，即 [`ScopedPath::entries`] 的下标），而 `at` 是**新列表的下标**
+        /// （空条目已经被丢掉）。**两个字段不可比**：`A;;A;B` → `A;B` 时 B 是
+        /// `was_at: 3, at: 1`。
+        was_at: usize,
+        /// 现在在第几段。**新列表下标，不含空条目** —— 见 `was_at` 的说明。
+        at: usize,
+    },
+    /// 一条条目的值被改写（位置没变）。
+    ///
+    /// **我们不判断这次改写是不是"同一个目录"** —— 那是一个没有判据的判断
+    /// （`C:\Dev\jdk-17` 与 `C:\Dev\doxygen` 像不像？谁都答不了）。这里只报告
+    /// "这一段的值变了"：同下标 + 值不同就是改写，别的都交给 [`PathChange::Add`] /
+    /// [`PathChange::Remove`]（它们只留给"只在一侧出现"的条目）。
+    Replace {
+        /// 改写后的值。
+        value: String,
+        /// 改写前的值。**`trim()` 之后的原文形态**（与 `Remove.value` 同款），
+        /// 不是 [`PathEntry::raw`] 那种带首尾空白与引号的逐字节原文。
+        was: String,
+        /// 在第几段。**新列表下标**（空条目已经被丢掉），两边同一个下标。
+        at: usize,
+    },
 }
 
 /// [`PathChange::Noop`] 的原因。**稳定 slug**，不本地化。
@@ -857,6 +886,299 @@ pub fn plan_remove(
     ))
 }
 
+/// 拒绝会把**整条 `PATH`** 的某一条劈成两条的输入。见 [`plan_rewrite`] 的 `# Errors`。
+///
+/// 与 [`reject_separator_in_argument`] 的立场完全一样（`;` 是分隔符，引号保护不了它），
+/// 只是这里逐条检查整个列表 —— 重建的产物是完整列表，坏一条就等于坏一整条 `PATH`。
+fn reject_separator_in_entries(entries: &[String]) -> Result<(), PlatformError> {
+    for entry in entries {
+        if entry.contains(';') {
+            return Err(PlatformError::Unsupported {
+                what: format!("含 `;` 的目录名（`{entry}`）—— 它会被写成两条 PATH 条目"),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// 整值重写计划：把**用户级** `PATH` 换成一份完整的新条目列表。
+///
+/// 与 [`plan_add`] / [`plan_remove`] 的区别：那两个是"加一条/删一条"，
+/// 这个是"这整条值以后长这样" —— 重建（diff + rebuild）的产物是完整列表，
+/// 所以写回也必须是整值替换（逐段改会有中间状态，而中间状态就是
+/// 「`PATH` 暂时少了几个目录」）。
+///
+/// **只接受 [`EnvScope::User`]**：机器级要提权，而 tuoen 不做静默提权
+/// （决策 12/136）。机器级传进来返回 [`PlatformError::Unsupported`]。
+///
+/// # 预算口径
+///
+/// [`PathPlan::budget_after`] 按**注册表口径**算：机器级 `Path` 原文（从同一个
+/// `block` 读，取不到当 0）**加上**重建后的用户级原文。两个字段传同一个数。
+///
+/// **它是下界**：不含**进程注入项**（本机 78 字符，PowerShell 的 MSIX 别名），
+/// 所以真实的生效长度只会比它更长、只会比它更早撞 8191 悬崖。
+///
+/// 与 `finish_plan`（[`plan_add`] / [`plan_remove`] 走它）**同一个口径** ——
+/// 同一个字段名必须只有一种语义，否则 CLI 把两条路径的数字并排印给用户看时，
+/// 那两个"长度"根本不可比。
+///
+/// # Errors
+///
+/// `scope != User`，或 `after_entries` 里有一条含 `;`（它是分隔符，引号保护不了它）。
+pub fn plan_rewrite(
+    block: &impl EnvBlock,
+    scope: EnvScope,
+    after_entries: &[String],
+) -> Result<PathPlan, PlatformError> {
+    if scope != EnvScope::User {
+        return Err(PlatformError::Unsupported {
+            what: format!(
+                "`{}` 作用域的整值重写 —— 机器级要提权，tuoen 不做静默提权（决策 12/136）",
+                scope.as_str()
+            ),
+        });
+    }
+    reject_separator_in_entries(after_entries)?;
+
+    // 与 `user_scope` 同一套读法：没有这个变量就是空串 + `REG_SZ`。
+    let (before_raw, before_type) = user_scope(block);
+
+    // 空条目不是目录（决策 130）：`trim()` 之后为空的一律丢掉，
+    // 它既不该成为新列表里的一条，也不该参与比对。
+    let after: Vec<String> = after_entries
+        .iter()
+        .map(|entry| entry.trim().to_owned())
+        .filter(|entry| !entry.is_empty())
+        .collect();
+    let after_raw = after.join(";");
+    let after_type = write_type_for(&after_raw, Some(before_type));
+    let changes_value = before_raw != after_raw;
+
+    // ── 逐条比对 ────────────────────────────────────────────────────
+    //
+    // 一条条目"没动"的定义就是它还在同一格上；同下标 + 字符串不同 = `Replace`。
+    //
+    // **`before_raw` 为空串时没有任何条目**：`parse_entries("")` 会给出**一个**
+    // 空条目（`"".split(';')` 的机械结果），但"用户级 `Path` 根本不存在"与
+    // "用户级 `Path` 是空串"这两种形状里都没有段可谈，那个空条目只是切分产物。
+    // 保留它就会让"把一条本来就空的 `PATH` 清空"报出 `DropEmptySegments { count: 1 }`
+    // —— 那是噪声，不是发现。
+    let before = if before_raw.is_empty() {
+        Vec::new()
+    } else {
+        parse_entries(&before_raw)
+    };
+    let empty_before: Vec<usize> = before
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| entry.is_empty())
+        .map(|(index, _)| index)
+        .collect();
+
+    // 目标列表里"这个值出现在哪"。
+    let after_slots: Vec<(String, usize)> = after
+        .iter()
+        .enumerate()
+        .map(|(at, value)| (normalize_entry(value).to_lowercase(), at))
+        .collect();
+    let slot_of = |key: &str| {
+        after_slots
+            .iter()
+            .find(|(slot, _)| slot == key)
+            .map(|(_, at)| *at)
+    };
+
+    // `changes` 的骨架按 after 的下标摆好，逐格填一个变更 —— 这样"顺序 =
+    // 新列表的形状"是**结构性的**，不是靠拼装顺序碰巧对。
+    let mut changes: Vec<Option<PathChange>> = vec![None; after.len()];
+    let mut removed: Vec<(usize, PathChange)> = Vec::new();
+    // **两套坐标分开记，绝不混用**（这个模块里最容易写错的地方）：
+    // - `paired_after`：新列表的第几格已经有结论了（`after` 的下标）。第一、
+    //   二遍往里放，第三遍只处理**不在**里面的格子。
+    // - `paired_before`：原文的第几段处理过了（`before` 的下标，**含空条目**）。
+    // - `moved_before`：第二遍按值认走的那些**原文**下标 —— 第三遍不许再翻案。
+    // 拿其中一套去问另一套的下标，在原文有空条目时必然错位（这个 bug 写过两次）。
+    let mut paired_after: Vec<usize> = Vec::new();
+    let mut paired_before: Vec<usize> = Vec::new();
+    let mut moved_before: Vec<usize> = Vec::new();
+
+    // ── 第一遍：**同下标**配对 ───────────────────────────────────────
+    //
+    // 一条条目"没动"的定义就是它还在同一格上。大小写折叠后相同 → 值没变
+    // （`Noop`）或被改写（`Replace`，**不判断这次改写是不是"同一个目录"**：
+    // 同下标 + 字符串不同就是改写 —— 这是"没有判据的判断"里唯一站得住的那条）。
+    for (index, entry) in before.iter().enumerate() {
+        let Some(other) = after.get(index) else {
+            break;
+        };
+        if entry.is_empty() {
+            // 空条目不是目录（决策 130）：它不与任何一格配对，也不产生 `Remove`；
+            // 它只贡献下面那个 `DropEmptySegments`。
+            continue;
+        }
+        if entry.key() != after_slots[index].0 {
+            continue;
+        }
+        paired_before.push(index);
+        paired_after.push(index);
+        let was = entry.raw.trim().to_owned();
+        changes[index] = Some(if *other == was {
+            PathChange::Noop {
+                value: other.clone(),
+                reason: NoopReason::AlreadyPresent,
+            }
+        } else {
+            PathChange::Replace {
+                value: other.clone(),
+                was,
+                at: index,
+            }
+        });
+    }
+
+    // ── 第二遍：按**值**配对（大小写折叠后相同）→ `Move` / `Remove` ──────
+    //
+    // 走到这里的条目，同下标上要么没有格子、要么值不一样。三种去向：
+    // 值在目标里出现而那一格还空着 → `Move`；目标里根本没有这个值 → `Remove`；
+    // 值在目标里有但那一格被**更早的相同值**占了 → 这一次出现是重复，也归
+    // `Remove`（首次出现赢，决策 129）。
+    for (index, entry) in before.iter().enumerate() {
+        if entry.is_empty() || paired_before.contains(&index) {
+            continue;
+        }
+        let was = entry.raw.trim().to_owned();
+        match slot_of(&entry.key()) {
+            Some(at) if !paired_after.contains(&at) => {
+                paired_after.push(at);
+                paired_before.push(index);
+                moved_before.push(index);
+                changes[at] = Some(PathChange::Move {
+                    value: after[at].clone(),
+                    was_at: index,
+                    at,
+                });
+            }
+            // 这个值在目标里**根本没有** → 删掉。第三遍若判定"同下标上是被
+            // 换成了别的值"，会撤掉这一条（见第三遍的 `retain`）。
+            None => {
+                removed.push((
+                    index,
+                    PathChange::Remove {
+                        value: was,
+                        was_at: index,
+                    },
+                ));
+            }
+            // 这个值在目标里有、但那一格被**更早的相同值**占了 → 本次这次出现
+            // 是重复（首次出现赢，决策 129）→ 删掉。
+            //
+            // **必须报 `Remove`**：`Remove` 是"这个值不见了"的唯一说法，而
+            // "值不见了却没报"是这份变更清单最坏的一种错 —— 用户读到的是一份
+            // 漏了删除的计划。例外只有一个：重复的那一次恰好落在**它同下标的
+            // 那一格**上、而那一格还没有结论 —— 那时第三遍把它报成 `Replace`
+            // 并撤掉这一条（`Replace.was` 同样交代了那个旧值的去向）。
+            Some(_) => {
+                removed.push((
+                    index,
+                    PathChange::Remove {
+                        value: was,
+                        was_at: index,
+                    },
+                ));
+            }
+        }
+    }
+
+    // ── 第三遍：剩下的同下标配对 → `Replace` ─────────────────────────
+    //
+    // 前两遍都放下的，是"这一格上原来有东西、现在有**另外一个**东西"。那条旧的
+    // 必须与目标里任何值都不相同，否则第二遍就会把它当 `Move` 认走 —— 这正是
+    // "换位"与"改写"的分界：换位时双方的值都在目标里，各归各的 `Move`。
+    for at in 0..before.len() {
+        // 这一格在新列表里**不存在** → 它没有被改写，只是在原文里没了
+        // （第二遍已经报过 `Remove`）。注意这里**必须**遍历原文的下标：
+        // 新列表只覆盖到它自己的长度，重复的条目可能落在它之外。
+        if at >= after.len() {
+            continue;
+        }
+        // 判据是"**这一格有没有结论**"，不是"下标有没有被记进某张表" ——
+        // 第二遍的拒绝分支也在表格里，用它当判据会把这三种情况混成一种。
+        if changes[at].is_some() {
+            continue;
+        }
+        let Some(entry) = before.get(at) else {
+            continue;
+        };
+        if entry.is_empty() {
+            continue;
+        }
+        let was = entry.raw.trim().to_owned();
+        paired_after.push(at);
+        paired_before.push(at);
+        // 第二遍为这一格产生过 `Remove`（那个值在目标里根本不存在）——
+        // 现在它被判定为"同下标上换成了别的值"，那条 `Remove` 必须撤掉，
+        // 否则同一个下标会同时出现"删掉"与"改写"两条结论。
+        removed.retain(|(was_at, _)| *was_at != at);
+        changes[at] = Some(PathChange::Replace {
+            value: after[at].clone(),
+            was,
+            at,
+        });
+    }
+
+    // 顺序是契约：空段在前，然后按 after 的下标顺序逐条，最后按 before 的
+    // 下标顺序追加删除。
+    let mut ordered = Vec::new();
+    if !empty_before.is_empty() {
+        ordered.push(PathChange::DropEmptySegments {
+            count: empty_before.len(),
+        });
+    }
+    ordered.extend(changes.into_iter().flatten());
+    removed.sort_by_key(|(was_at, _)| *was_at);
+    ordered.extend(removed.into_iter().map(|(_, change)| change));
+
+    // 预算的两个数都传"机器级 + 用户级重建后"的注册表口径 —— 见上面
+    // `# 预算口径`：它不含进程注入项，是**下界**。与 `finish_plan` 同一口径。
+    let registry_after = machine_chars(block) + after_raw.chars().count();
+    Ok(PathPlan {
+        scope: EnvScope::User,
+        before_raw,
+        after_raw,
+        before_type,
+        after_type,
+        changes: ordered,
+        changes_value,
+        budget_after: PathBudget::of(registry_after, registry_after),
+    })
+}
+
+/// 把整值重写计划写进 `HKCU\Environment`，然后广播 `WM_SETTINGCHANGE`。
+///
+/// 与 [`apply`] 的关系：写路径**完全复用** [`apply`]（它本来就是整值写 + 广播，
+/// 决策 137），这里多出来的唯一一件事是**拒绝非用户级** —— 让"机器级只能提权改"
+/// 这件事在类型层面无法绕过，而不是靠调用方自觉。
+///
+/// # Errors
+///
+/// 同 [`apply`]，外加 `plan.scope != EnvScope::User` 时的 [`PlatformError::Unsupported`]。
+pub fn apply_rewrite<R: Registry>(
+    registry: &R,
+    plan: &PathPlan,
+    broadcast: impl FnOnce() -> usize,
+) -> Result<PathApplied, PlatformError> {
+    if plan.scope != EnvScope::User {
+        return Err(PlatformError::Unsupported {
+            what: format!(
+                "`{}` 作用域的整值重写 —— 机器级要提权，tuoen 不做静默提权（决策 12/136）",
+                plan.scope.as_str()
+            ),
+        });
+    }
+    apply(registry, plan, broadcast)
+}
+
 fn finish_plan(
     before_raw: String,
     before_type: RegType,
@@ -1001,6 +1323,687 @@ pub fn missing_from_path<'a>(analysis: &PathAnalysis, wanted: &'a [PathBuf]) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
+
+    use crate::env_block::{InMemoryEnv, RealEnvBlock};
+    use crate::fixture::{FakeFileSystem, FakeRegistry, FixtureKey, MachineFixture};
+
+    // ── 整值重写（`plan_rewrite` / `apply_rewrite`）─────────────────────────
+    //
+    // 这些用例在**零真实状态**上跑：假注册表 + 假文件系统 + 内存环境块。
+    // 它们要证明的不是"重建算得对"（那是 `crates/core/src/pathdiff.rs` 的事），
+    // 而是"**这份完整列表被整值写回了**，且写回路径与 `apply` 是同一条"。
+
+    /// 一份带用户级 `Path` 的假注册表，以及读它的 `EnvBlock`。
+    ///
+    /// 为什么用 `RealEnvBlock` 而不是 `InMemoryEnv`：`InMemoryEnv` 实现的是
+    /// `ProcessEnv`（进程环境块），**不是** `EnvBlock` —— 它答不了"注册表里这条是什么"。
+    /// 测试要的恰好是"改之前从注册表读到什么"，所以这里必须走注册表那条路。
+    ///
+    /// 注册表 `clone()` 出来的是**同一个**注册表（`FakeRegistry` 内部是 `Rc<RefCell>`），
+    /// 所以"从重读的那一份里看到刚写的值"这件事成立。
+    type TestBlock = RealEnvBlock<FakeRegistry, FakeFileSystem>;
+
+    fn user_path(env_value: &str, kind: RegType) -> (TestBlock, InMemoryEnv, FakeRegistry) {
+        let value = match kind {
+            RegType::Sz => RegValue::Sz(env_value.to_owned()),
+            RegType::ExpandSz => RegValue::ExpandSz(env_value.to_owned()),
+        };
+        let fixture = MachineFixture {
+            env: BTreeMap::from([(PATH_NAME.to_owned(), env_value.to_owned())]),
+            registry: vec![FixtureKey::new(
+                RegHive::Hkcu,
+                USER_ENV_SUBKEY,
+                BTreeMap::from([(PATH_NAME.to_owned(), value)]),
+            )],
+            ..MachineFixture::default()
+        };
+        let built = fixture.build();
+        let block = RealEnvBlock::new(built.registry.clone(), built.fs.clone());
+        (block, built.env, built.registry)
+    }
+
+    /// 同上，外加一条**机器级** `Path`（预算口径要看得见它）。
+    fn user_path_with_machine(
+        env_value: &str,
+        machine_value: &str,
+        kind: RegType,
+    ) -> (TestBlock, InMemoryEnv, FakeRegistry) {
+        let value = match kind {
+            RegType::Sz => RegValue::Sz(env_value.to_owned()),
+            RegType::ExpandSz => RegValue::ExpandSz(env_value.to_owned()),
+        };
+        let fixture = MachineFixture {
+            env: BTreeMap::from([(PATH_NAME.to_owned(), env_value.to_owned())]),
+            registry: vec![
+                FixtureKey::new(
+                    RegHive::Hkcu,
+                    USER_ENV_SUBKEY,
+                    BTreeMap::from([(PATH_NAME.to_owned(), value)]),
+                ),
+                FixtureKey::new(
+                    RegHive::Hklm,
+                    crate::env_block::MACHINE_ENV_SUBKEY,
+                    BTreeMap::from([(
+                        PATH_NAME.to_owned(),
+                        RegValue::ExpandSz(machine_value.to_owned()),
+                    )]),
+                ),
+            ],
+            ..MachineFixture::default()
+        };
+        let built = fixture.build();
+        let block = RealEnvBlock::new(built.registry.clone(), built.fs.clone());
+        (block, built.env, built.registry)
+    }
+
+    fn entries(list: &[&str]) -> Vec<String> {
+        list.iter().map(|entry| (*entry).to_owned()).collect()
+    }
+
+    /// 写完之后的注册表里那条值。
+    fn reread(registry: &FakeRegistry) -> RegValue {
+        registry
+            .value(RegHive::Hkcu, USER_ENV_SUBKEY, PATH_NAME)
+            .expect("注册表里应当有一条用户级 Path")
+    }
+
+    #[test]
+    fn rewrite_reports_a_move_when_an_entry_changed_place() {
+        // `A;B;C` → `A;C;B`：C 从第 2 段挪到第 1 段。
+        let (block, _process, _registry) = user_path(r"A;B;C", RegType::Sz);
+        let plan =
+            plan_rewrite(&block, EnvScope::User, &entries(&["A", "C", "B"])).expect("用户级");
+        assert_eq!(plan.after_raw, r"A;C;B");
+        assert!(plan.changes_value);
+        assert_eq!(plan.scope, EnvScope::User);
+        assert!(
+            plan.changes.contains(&PathChange::Move {
+                value: "C".to_owned(),
+                was_at: 2,
+                at: 1,
+            }),
+            "C 换了位置就报 Move：{:?}",
+            plan.changes
+        );
+        // 顺带钉住"B 也挪了" —— 这一条票面没有要求，但它是同一套判据的另一半，
+        // 不写下来的话"只报了 C"与"判据漏了一半"在输出里长得一样。
+        assert!(
+            plan.changes.contains(&PathChange::Move {
+                value: "B".to_owned(),
+                was_at: 1,
+                at: 2,
+            }),
+            "B 同样换了位置：{:?}",
+            plan.changes
+        );
+        assert!(
+            plan.changes.iter().all(|change| !matches!(
+                change,
+                PathChange::Add { .. } | PathChange::Remove { .. }
+            )),
+            "A;C;B 是同一批值的重排，不该出现增删：{:?}",
+            plan.changes
+        );
+        // A 在**同一个下标**上原样不动 —— 它是 `Noop`，不是 `Move`。
+        // 这两类的分界是"值出现在哪一格"，而不是"中间有没有人被动过"。
+        assert!(
+            plan.changes.contains(&PathChange::Noop {
+                value: "A".to_owned(),
+                reason: NoopReason::AlreadyPresent,
+            }),
+            "A 原位不动就是 Noop：{:?}",
+            plan.changes
+        );
+    }
+
+    #[test]
+    fn rewrite_reports_a_replace_when_only_the_value_changed_in_place() {
+        // 位置没动，字符串变了 —— 大小写重写与用户名重写都长这样。
+        let (block, _process, _registry) = user_path(r"C:\Users\old\bin;C:\x", RegType::Sz);
+        let plan = plan_rewrite(
+            &block,
+            EnvScope::User,
+            &entries(&[r"C:\Users\new\bin", r"C:\x"]),
+        )
+        .expect("用户级");
+        assert_eq!(plan.after_raw, r"C:\Users\new\bin;C:\x");
+        assert!(
+            plan.changes.contains(&PathChange::Replace {
+                value: r"C:\Users\new\bin".to_owned(),
+                was: r"C:\Users\old\bin".to_owned(),
+                at: 0,
+            }),
+            "换的是值、不是位置：{:?}",
+            plan.changes
+        );
+        // `Replace` 必须是一个**独立**的类，不能退化成 add + remove。
+        assert!(
+            plan.changes.iter().all(|change| !matches!(
+                change,
+                PathChange::Move { .. } | PathChange::Add { .. } | PathChange::Remove { .. }
+            )),
+            "第二条原样、第一条只是被改写，不该出现 Move/Add/Remove：{:?}",
+            plan.changes
+        );
+    }
+
+    #[test]
+    fn rewrite_drops_empty_segments_dedupes_and_keeps_order() {
+        // `A;;A;B` → `A;B`：清掉 1 个空段、B 从原文第 3 段挪到新列表第 1 段、
+        // 第一次出现的 A 原地不动、**第二次出现的 A（原文第 2 段）归 `Remove`**
+        // —— "首次出现赢"（决策 129）：新列表第 0 格已经被第一次的 A 占了，
+        // 那一次出现就没有位置。
+        let (block, _process, _registry) = user_path(r"A;;A;B", RegType::Sz);
+        let plan = plan_rewrite(&block, EnvScope::User, &entries(&["A", "B"])).expect("用户级");
+        assert_eq!(plan.after_raw, r"A;B");
+        // 空段在前，这是 `changes` 的读法契约。
+        assert_eq!(
+            plan.changes.first(),
+            Some(&PathChange::DropEmptySegments { count: 1 }),
+            "空段变更排在最前：{:?}",
+            plan.changes
+        );
+        assert!(
+            plan.changes.iter().any(
+                |change| matches!(change, PathChange::Noop { value, reason: NoopReason::AlreadyPresent } if value == "A")
+            ),
+            "第一次出现的 A 原地不动：{:?}",
+            plan.changes
+        );
+        // `at` 是**新列表**下标（空段已经不在了），`was_at` 是**原文**里的下标
+        // —— 两套坐标不一致是这里的固有形状，`Move` 的两个字段各属一套。
+        assert!(
+            plan.changes.contains(&PathChange::Move {
+                value: "B".to_owned(),
+                was_at: 3,
+                at: 1,
+            }),
+            "B 从原文第 3 段挪到新列表第 1 段：{:?}",
+            plan.changes
+        );
+        assert!(
+            plan.changes.contains(&PathChange::Remove {
+                value: "A".to_owned(),
+                was_at: 2,
+            }),
+            "第二次出现的 A 归 Remove：{:?}",
+            plan.changes
+        );
+        assert!(
+            plan.changes
+                .iter()
+                .all(|change| !matches!(change, PathChange::Add { .. })),
+            "这批值的重排不该出现 Add：{:?}",
+            plan.changes
+        );
+    }
+
+    #[test]
+    fn rewrite_reports_a_duplicate_as_remove_when_its_slot_is_untouched() {
+        // `A;B;A` → `A;B`：A 与 B 都原地不动，多出来的那一次 A 落在**别人的**
+        // 格子上（新列表第 0 格已经被第一次的 A 占了）→ 归 `Remove`，
+        // 报的是它在**原文**里的下标 2。
+        let (block, _process, _registry) = user_path(r"A;B;A", RegType::Sz);
+        let plan = plan_rewrite(&block, EnvScope::User, &entries(&["A", "B"])).expect("用户级");
+        assert_eq!(plan.after_raw, r"A;B");
+        assert!(
+            plan.changes.contains(&PathChange::Remove {
+                value: "A".to_owned(),
+                was_at: 2,
+            }),
+            "第二次出现的 A 归 Remove：{:?}",
+            plan.changes
+        );
+        assert_eq!(
+            plan.changes
+                .iter()
+                .filter(|change| matches!(change, PathChange::Noop { .. }))
+                .count(),
+            2,
+            "A 与 B 都原地不动：{:?}",
+            plan.changes
+        );
+    }
+
+    #[test]
+    fn rewrite_actually_writes_the_whole_value_into_hkcu() {
+        let (block, _process, registry) = user_path(r"A;B", RegType::Sz);
+        let plan = plan_rewrite(&block, EnvScope::User, &entries(&["A", "C"])).expect("用户级");
+        assert_eq!(plan.after_raw, r"A;C");
+        let applied = apply_rewrite(&registry, &plan, || 0).expect("写用户级不需要提权");
+        assert!(applied.wrote);
+        assert_eq!(applied.reg_type, RegType::Sz);
+        assert_eq!(applied.chars, plan.after_raw.chars().count());
+        // **从注册表重读**，而不是相信返回值 —— 声称写了 ≠ 真的写了。
+        assert_eq!(reread(&registry), RegValue::Sz(r"A;C".to_owned()));
+    }
+
+    #[test]
+    fn rewrite_that_matches_the_current_value_writes_nothing() {
+        let (block, _process, registry) = user_path(r"A;B", RegType::Sz);
+        let plan = plan_rewrite(&block, EnvScope::User, &entries(&["A", "B"])).expect("用户级");
+        assert!(!plan.changes_value);
+        assert!(!plan.will_write());
+        let applied = apply_rewrite(&registry, &plan, || 0).expect("用户级");
+        assert!(!applied.wrote);
+        // 一个字节都没被写：假后端里的值仍然是原来那条。
+        assert_eq!(reread(&registry), RegValue::Sz(r"A;B".to_owned()));
+    }
+
+    #[test]
+    fn rewrite_uses_expand_sz_when_the_value_contains_a_variable() {
+        let (block, _process, registry) = user_path(r"A", RegType::Sz);
+        let plan = plan_rewrite(&block, EnvScope::User, &entries(&[r"%USERPROFILE%\bin"]))
+            .expect("用户级");
+        assert_eq!(plan.after_type, RegType::ExpandSz);
+        assert_eq!(plan.after_raw, r"%USERPROFILE%\bin");
+        let applied = apply_rewrite(&registry, &plan, || 0).expect("用户级");
+        assert!(applied.wrote);
+        assert_eq!(applied.reg_type, RegType::ExpandSz);
+        // **原样**写 `%VAR%`，不许展开（`setx` 的罪状之一就是永久展开）。
+        assert_eq!(
+            reread(&registry),
+            RegValue::ExpandSz(r"%USERPROFILE%\bin".to_owned())
+        );
+    }
+
+    #[test]
+    fn rewrite_refuses_the_machine_scope_on_both_sides() {
+        let (block, _process, _registry) = user_path(r"A", RegType::Sz);
+        let plan_error = plan_rewrite(&block, EnvScope::Machine, &entries(&["A", "B"]))
+            .expect_err("机器级要提权，tuoen 不做静默提权");
+        assert!(
+            matches!(&plan_error, PlatformError::Unsupported { what } if what.contains("machine")),
+            "报的是 Unsupported 且带上作用域：{plan_error}"
+        );
+        // 计划侧拒绝不算数 —— **写侧**也必须拒绝，否则手写一份 `scope: Machine`
+        // 的计划就能绕过它（这正是 `apply_rewrite` 存在的理由）。
+        let mut forged =
+            plan_rewrite(&block, EnvScope::User, &entries(&["A", "B"])).expect("用户级");
+        forged.scope = EnvScope::Machine;
+        let apply_error =
+            apply_rewrite(&FakeRegistry::default(), &forged, || 0).expect_err("机器级必须被拒");
+        assert!(
+            matches!(&apply_error, PlatformError::Unsupported { what } if what.contains("machine")),
+            "报的是 Unsupported 且带上作用域：{apply_error}"
+        );
+    }
+
+    #[test]
+    fn rewrite_may_empty_the_whole_value_because_that_is_a_choice() {
+        // 清空是用户的选择，不是错误 —— 与"条目含 `;`"是两件不同的事。
+        let (block, _process, registry) = user_path(r"A;B", RegType::Sz);
+        let plan = plan_rewrite(&block, EnvScope::User, &[]).expect("清空是合法的");
+        assert_eq!(plan.after_raw, "");
+        assert!(plan.changes_value);
+        let applied = apply_rewrite(&registry, &plan, || 0).expect("用户级");
+        assert!(applied.wrote);
+        assert_eq!(applied.chars, 0);
+        assert_eq!(reread(&registry), RegValue::Sz(String::new()));
+    }
+
+    #[test]
+    fn rewrite_refuses_an_entry_that_contains_the_separator() {
+        let (block, _process, _registry) = user_path(r"A", RegType::Sz);
+        let error = plan_rewrite(&block, EnvScope::User, &entries(&[r"C:\a;b"]))
+            .expect_err("`;` 是分隔符，引号保护不了它");
+        assert!(
+            matches!(&error, PlatformError::Unsupported { what } if what.contains(r"C:\a;b")),
+            "报的是 Unsupported 且带上那条输入：{error}"
+        );
+        // 与 `plan_add` 同一立场（判据只有一处措辞，两处行为必须一样）。
+        assert!(plan_add(&block, r"C:\a;b").is_err());
+    }
+
+    #[test]
+    fn rewrite_passes_the_broadcast_receipt_through_unchanged() {
+        let (block, _process, registry) = user_path(r"A", RegType::Sz);
+        let plan = plan_rewrite(&block, EnvScope::User, &entries(&["A", "B"])).expect("用户级");
+        let called = Cell::new(0_u32);
+        let applied = apply_rewrite(&registry, &plan, || {
+            called.set(called.get() + 1);
+            7
+        })
+        .expect("用户级");
+        assert!(applied.wrote);
+        assert_eq!(called.get(), 1, "广播只发一次");
+        assert_eq!(applied.broadcast_replies, 7, "回执原样透传，不加工");
+    }
+
+    #[test]
+    fn rewrite_never_reports_a_replace_for_a_pure_reorder() {
+        // 第一阶段（同下标配对）只认"值在本下标上"的条目，于是**换位**必须由
+        // 后续阶段认走：反序时第 0 格的新值 `C:\Dev\jdk-21` 属于**挪过来的**
+        // 那一条，而它与同下标上的旧值 `C:\Dev\jdk-17` 一个字都不像 —— 若无
+        // 这个阶段，它们会被误报成两条 `Replace`（"这一格被改写了"）。
+        let (block, _process, _registry) = user_path(r"C:\Dev\jdk-17;C:\Dev\jdk-21", RegType::Sz);
+        let plan = plan_rewrite(
+            &block,
+            EnvScope::User,
+            &entries(&[r"C:\Dev\jdk-21", r"C:\Dev\jdk-17"]),
+        )
+        .expect("用户级");
+        assert_eq!(plan.after_raw, r"C:\Dev\jdk-21;C:\Dev\jdk-17");
+        assert!(
+            plan.changes
+                .iter()
+                .all(|change| matches!(change, PathChange::Move { .. } | PathChange::Noop { .. })),
+            "反序是两条 Move，一条 Replace 都不该有：{:?}",
+            plan.changes
+        );
+        assert_eq!(
+            plan.changes
+                .iter()
+                .filter(|change| matches!(change, PathChange::Move { .. }))
+                .count(),
+            2,
+            "两条都换了位置：{:?}",
+            plan.changes
+        );
+    }
+
+    #[test]
+    fn rewrite_calls_an_unrelated_same_index_change_a_replace() {
+        // **"这两个目录算不算同一个"是一个没有判据的判断，所以这里根本不判。**
+        // 同下标 + 字符串不同就是 `Replace`：`C:\Dev\jdk-17` → `C:\Dev\doxygen`
+        // 一个字都不像，照样报改写。
+        //
+        // 这条用例的前身是一条"≥50% 段相同才算改写"的启发式，它会把这个例子
+        // 判成"恰好过线"（`C:` + `Dev` = 1/2）—— 于是既没能排除不像的，又要为
+        // "多像才算像"再编一个阈值。现在没有阈值可编。
+        let (block, _process, _registry) = user_path(r"C:\Dev\jdk-17;C:\x", RegType::Sz);
+        let plan = plan_rewrite(
+            &block,
+            EnvScope::User,
+            &entries(&[r"C:\Dev\doxygen", r"C:\x"]),
+        )
+        .expect("用户级");
+        assert_eq!(
+            plan.changes.first(),
+            Some(&PathChange::Replace {
+                value: r"C:\Dev\doxygen".to_owned(),
+                was: r"C:\Dev\jdk-17".to_owned(),
+                at: 0,
+            }),
+            "同下标值不同就是改写，不看像不像：{:?}",
+            plan.changes
+        );
+        // `Add` / `Remove` 只留给"只在一侧出现"的条目。
+        assert!(
+            plan.changes.iter().all(|change| !matches!(
+                change,
+                PathChange::Add { .. } | PathChange::Remove { .. }
+            )),
+            "两条值都在两侧出现，一件增删都不该有：{:?}",
+            plan.changes
+        );
+    }
+
+    #[test]
+    fn rewrite_reports_a_replace_for_a_case_only_change() {
+        // 大小写改写：Windows 上同一个目录，报 `Replace` 而不是一删一加。
+        let (block, _process, _registry) = user_path(r"C:\tools;C:\x", RegType::Sz);
+        let plan = plan_rewrite(&block, EnvScope::User, &entries(&[r"C:\Tools", r"C:\x"]))
+            .expect("用户级");
+        assert_eq!(plan.after_raw, r"C:\Tools;C:\x");
+        assert!(
+            plan.changes.contains(&PathChange::Replace {
+                value: r"C:\Tools".to_owned(),
+                was: r"C:\tools".to_owned(),
+                at: 0,
+            }),
+            "只换了大小写也是改写：{:?}",
+            plan.changes
+        );
+    }
+
+    #[test]
+    fn rewrite_only_accepts_the_user_scope() {
+        // `ProcessOnly` 从来不是"可以写"的作用域：它**不在任何注册表里**，
+        // 拿它来计划写回在任何情形下都是错的。
+        let (block, _process, _registry) = user_path(r"A", RegType::Sz);
+        let plan_error = plan_rewrite(&block, EnvScope::ProcessOnly, &entries(&["A"]))
+            .expect_err("进程注入项不在注册表里，写不了");
+        assert!(
+            matches!(&plan_error, PlatformError::Unsupported { .. }),
+            "报的是 Unsupported：{plan_error}"
+        );
+        let mut forged = plan_rewrite(&block, EnvScope::User, &entries(&["A"])).expect("用户级");
+        forged.scope = EnvScope::ProcessOnly;
+        assert!(
+            apply_rewrite(&FakeRegistry::default(), &forged, || 0).is_err(),
+            "写侧也拒绝"
+        );
+    }
+
+    #[test]
+    fn rewrite_does_not_expand_the_before_value_either() {
+        // 改之前的值从注册表原样读进来（`REG_SZ` 里字面的 `%USERPROFILE%`
+        // **不许**被展开成 `C:\Users\<名字>`）—— 展开是不可逆的信息损失，
+        // 而它会让 `changes_value` 与 `Replace.was` 同时变成假的。
+        let (block, _process, _registry) = user_path(r"%USERPROFILE%\bin;A", RegType::Sz);
+        let plan = plan_rewrite(&block, EnvScope::User, &entries(&[r"%USERPROFILE%\bin"]))
+            .expect("用户级");
+        assert_eq!(
+            plan.before_raw, r"%USERPROFILE%\bin;A",
+            "改之前的原文必须逐字节原样"
+        );
+        assert!(
+            plan.changes.contains(&PathChange::Remove {
+                value: "A".to_owned(),
+                was_at: 1,
+            }),
+            "只删掉 A：{:?}",
+            plan.changes
+        );
+    }
+
+    #[test]
+    fn rewrite_budget_counts_the_machine_scope_too() {
+        // 与 `finish_plan`（`plan_add` / `plan_remove` 走它）**同一个口径**：
+        // 机器级原文 + 重建后的用户级原文。不含进程注入项，所以仍是下界。
+        // 机器级取不到时当 0（那是另一个用例的形状）。
+        let machine = r"C:\Windows;C:\Windows\System32";
+        let (block, _process, _registry) = user_path_with_machine(r"A;B", machine, RegType::Sz);
+        let plan = plan_rewrite(&block, EnvScope::User, &entries(&["A", "C"])).expect("用户级");
+        let expected = machine.chars().count() + plan.after_raw.chars().count();
+        assert_eq!(
+            plan.budget_after.effective_chars,
+            expected,
+            "机器级 {} 字符必须算进去（重建后用户级 {} 字符）",
+            machine.chars().count(),
+            plan.after_raw.chars().count()
+        );
+        assert_eq!(plan.budget_after.registry_chars, expected);
+        assert_eq!(plan.budget_after.cliff, PATH_CLIFF_CMD);
+        assert_eq!(plan.budget_after.level, BudgetLevel::Ok);
+    }
+
+    #[test]
+    fn rewrite_budget_is_a_lower_bound_when_there_is_no_machine_path() {
+        // 机器级没有 `Path` 时当 0：两个数都只剩重建后的用户级。
+        let after = r"A;C";
+        let (block, _process, _registry) = user_path(r"A;B", RegType::Sz);
+        let plan = plan_rewrite(&block, EnvScope::User, &entries(&["A", "C"])).expect("用户级");
+        assert_eq!(plan.budget_after.effective_chars, after.chars().count());
+        assert_eq!(plan.budget_after.registry_chars, after.chars().count());
+        assert_eq!(plan.budget_after.level, BudgetLevel::Ok);
+    }
+
+    #[test]
+    fn rewrite_that_matches_the_current_value_does_not_even_broadcast() {
+        // 计划与现状一致时**不写、也不广播** —— 广播是全局副作用（打到每一个
+        // 顶层窗口）。判据是"计数闭包一次都没被调用"，而不只是"回执是 0"。
+        //
+        // **这条用例的强度限制，要如实说**：`FakeRegistry` 是"直接改内存表、
+        // 不做任何加工"的（`fixture.rs` 的 `set_value`），它**没有写入计数**，
+        // 所以"一个字节都没被写"只能靠"写完之后读回来还是旧值"间接证明
+        // （见 `rewrite_that_matches_the_current_value_writes_nothing`）。
+        // 真正的"没写"由真机探针证明，不在这里。
+        let (block, _process, registry) = user_path(r"A;B", RegType::Sz);
+        let plan = plan_rewrite(&block, EnvScope::User, &entries(&["A", "B"])).expect("用户级");
+        assert!(!plan.will_write());
+        let called = Cell::new(0_u32);
+        let applied = apply_rewrite(&registry, &plan, || {
+            called.set(called.get() + 1);
+            7
+        })
+        .expect("用户级");
+        assert!(!applied.wrote);
+        assert_eq!(applied.broadcast_replies, 0, "回执是 0");
+        assert_eq!(called.get(), 0, "广播闭包一次都不该被调用");
+    }
+
+    #[test]
+    fn rewrite_of_an_empty_before_into_an_empty_after_is_a_pure_noop() {
+        // 两侧都空的角落：`changes` 为空（连 `DropEmptySegments` 都没有 ——
+        // 没有空段可清）、`changes_value == false`、`will_write()` 为 `false`。
+        // 这时"清空一条本来就空的 `PATH`"不是错误，也不该写、不该广播。
+        let (block, _process, registry) = user_path("", RegType::Sz);
+        let plan = plan_rewrite(&block, EnvScope::User, &[]).expect("合法");
+        assert_eq!(plan.before_raw, "");
+        assert_eq!(plan.after_raw, "");
+        assert!(plan.changes.is_empty(), "没有任何变更：{:?}", plan.changes);
+        assert!(!plan.changes_value);
+        assert!(!plan.will_write());
+        let called = Cell::new(0_u32);
+        let applied = apply_rewrite(&registry, &plan, || {
+            called.set(called.get() + 1);
+            7
+        })
+        .expect("用户级");
+        assert!(!applied.wrote);
+        assert_eq!(called.get(), 0);
+    }
+
+    /// 把条目原文折成"值的**重数**"表（大小写折叠后按值计数）。
+    fn value_counts(raw: &str) -> BTreeMap<String, usize> {
+        let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+        for entry in parse_entries(raw) {
+            if entry.is_empty() {
+                continue;
+            }
+            *counts.entry(entry.key()).or_default() += 1;
+        }
+        counts
+    }
+
+    /// 这一份计划满足"**消失必须被报出来**"这条不变量吗。返回违规的描述。
+    ///
+    /// **按重数判，不按集合判** —— 集合判法在这三种形状上是空的（两侧的值集合
+    /// 完全相同），一个空断言等于没断言。判据是：某个值在 before 里出现的次数
+    /// 比在 after 里多，那多出来的每一次都必须有一个说法：
+    ///
+    /// - `Remove { value }`：这个值被删掉了一次；
+    /// - `Replace { was }`：这一格从它变成了别的 —— 那个旧值同样有了说法
+    ///   （`Replace` 不表示"消失"，但它确实交代了这一次出现的去向）。
+    ///
+    /// 两种说法的**总数**必须覆盖重数差。覆盖不了 = 计划漏了一次删除，
+    /// 而那是这份变更清单最坏的一种错（用户读到的是一份漏了删除的计划）。
+    fn uncovered_disappearances(plan: &PathPlan) -> Vec<String> {
+        let before = value_counts(&plan.before_raw);
+        let after = value_counts(&plan.after_raw);
+        let mut violations = Vec::new();
+        for (key, before_times) in &before {
+            let after_times = after.get(key).copied().unwrap_or(0);
+            if *before_times <= after_times {
+                continue;
+            }
+            let accounted = plan
+                .changes
+                .iter()
+                .filter(|change| match change {
+                    PathChange::Remove { value, .. } => {
+                        normalize_entry(value.trim_matches('"')).to_lowercase() == *key
+                    }
+                    PathChange::Replace { was, .. } => {
+                        normalize_entry(was.trim_matches('"')).to_lowercase() == *key
+                    }
+                    _ => false,
+                })
+                .count();
+            let missing = before_times - after_times;
+            if accounted < missing {
+                violations.push(format!(
+                    "`{key}`：before {before_times} 次、after {after_times} 次，缺 {missing} 次，\
+                     但 `Remove` + `Replace.was` 只覆盖了 {accounted} 次"
+                ));
+            }
+        }
+        violations
+    }
+
+    /// 把 `before` → `after` 这一对跑一遍计划，并把不变量断言掉。
+    fn assert_removal_invariant(before: &str, after_entries: &[&str]) {
+        let (block, _process, _registry) = user_path(before, RegType::Sz);
+        let plan = plan_rewrite(&block, EnvScope::User, &entries(after_entries)).expect("用户级");
+        let violations = uncovered_disappearances(&plan);
+        assert!(
+            violations.is_empty(),
+            "规划 `{before}` → `{}` 时，消失的条目没有被报出来：{violations:?}\n\
+             变更清单：{:?}",
+            plan.after_raw,
+            plan.changes
+        );
+    }
+
+    #[test]
+    fn a_value_that_disappears_is_always_reported_as_removed() {
+        // **不变量**（与算法无关，是这份清单必须成立的性质）：
+        // `before` 里有、`after` 里没有的**每一次出现**都必须有一个说法 ——
+        // `Remove`，或者一次把它写成别人的 `Replace`（`Replace.was` 承载了它）。
+        // 覆盖不了就是漏了一次删除，而用户读到的会是一份不完整的计划。
+        //
+        // 判据按**重数**而不是按集合：这三种形状两侧的**值集合完全相同**
+        // （都只是 A 与 B），集合判法在这里恒为真 —— 一个空断言等于没断言。
+        //
+        // 三种形状各有各的难处：
+        // ① `A;B;A`：重复的那次落在**别人的格子**上（新列表第 0 格被第一次的 A 占了）；
+        // ② `A;;A;B`：重复的那次落在**被 `Move` 定过结论的格子**上；
+        // ③ `A;A;B`：重复的那次落在**被 `Replace` 定过结论的格子**上 —— 这一种
+        //    最微妙：第三遍会撤掉第二遍的 `Remove`，于是那次 A 的去向由
+        //    `Replace.was` 承载；而真正只在 before 里存在的 `B`（第一次出现的
+        //    那一条被换成了 A）另有 `Remove`。
+        assert_removal_invariant(r"A;B;A", &["A", "B"]);
+        assert_removal_invariant(r"A;;A;B", &["A", "B"]);
+        assert_removal_invariant(r"A;A;B", &["B", "A"]);
+    }
+
+    #[test]
+    fn a_duplicate_that_lands_on_a_rewritten_slot_is_still_removed() {
+        // 形状 ③ 的细节版：`A;A;B` → `B;A`。B 从原文第 2 段挪到新列表第 0 段；
+        // 新列表第 1 格原地不动（A）；**多出来的那次 A 必须被删掉并指向它自己的
+        // 原文下标**（第 0 段）—— 它不可能指向别处，因为它就是要消失的那一次。
+        let (block, _process, _registry) = user_path(r"A;A;B", RegType::Sz);
+        let plan = plan_rewrite(&block, EnvScope::User, &entries(&["B", "A"])).expect("用户级");
+        assert_eq!(plan.after_raw, r"B;A");
+        assert!(
+            plan.changes.contains(&PathChange::Move {
+                value: "B".to_owned(),
+                was_at: 2,
+                at: 0,
+            }),
+            "B 从第 2 段挪到第 0 段：{:?}",
+            plan.changes
+        );
+        assert!(
+            plan.changes.contains(&PathChange::Remove {
+                value: "A".to_owned(),
+                was_at: 0,
+            }),
+            "多出来的那次 A 归 Remove，was_at 是它自己的原文下标 0：{:?}",
+            plan.changes
+        );
+        assert!(
+            plan.changes.contains(&PathChange::Noop {
+                value: "A".to_owned(),
+                reason: NoopReason::AlreadyPresent,
+            }),
+            "第 1 段那次 A 原地不动：{:?}",
+            plan.changes
+        );
+    }
 
     #[test]
     fn entries_keep_their_raw_form_and_lose_only_comparison_noise() {

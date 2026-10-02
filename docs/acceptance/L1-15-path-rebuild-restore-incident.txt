@@ -1,0 +1,146 @@
+# 事故工件：验收脚本的"还原"路径第一次真跑时失败了
+
+这一次运行**真的把 `HKCU\Environment\Path` 写成了 808 字符的改动值**（`--only add` 那条），
+然后在 `finally` 里的还原抛了异常：
+
+    acceptance-L1-15.ps1: 调用"SetValue"并传入"3"个参数时发生异常："Cannot write to the registry key."
+
+根因：`Set-PathValue` 用的是 `(Get-Item 'HKCU:\Environment').SetValue(...)`，而 PowerShell 的
+注册表 provider 返回的是**只读**句柄 —— `SetValue` 必然抛。于是"写进去了、还原不了"这个
+最坏的组合真的发生过一次：值被留在 808 字符上，直到我按跑之前备份的原文与类型
+（`%TEMP%\_l115_hkcu_backup.txt` / `.kind`，773 字符 / `REG_SZ` / sha16 `a12fc582e90513a3`）
+用**可写子键句柄**手工写回并逐字核对哈希。
+
+修法两处（见下一份 `L1-15-path-rebuild-run.txt` 的 §6）：
+1. `Set-PathValue` 改用 `[Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)`；
+2. §6 在**真实写入之前**先做一次"还原机制自检"——把当前值原样写回一次并断言哈希未变。
+   **一条不能失败的还原不是还原**：还原路径必须先自证能用，再允许写入路径跑。
+
+下面是那次失败运行的原样输出（到还原异常为止）。
+
+── 0 构建
+  [ok]   cargo build --release -p tuoen-cli 成功      Finished `release` profile [optimized] target(s) in 0.06s
+  [ok]   tuoen.exe 存在  C:\Work\EasyEnvForWin\target\release\tuoen.exe
+       当前用户名（脚本自己从进程环境取）：Muelsyse
+
+── 1 准备：真快照、目标快照、前后快照
+  [ok]   capture --only path 退出 0  exit=0
+  [ok]   path.toml 写出来了  C:\Users\Muelsyse\AppData\Local\Temp\tuoen-acceptance-L1-15\tuoen.d\path.toml
+       快照：machine 33 条 / user 16 条 / 其它 0 条；budget 773+1007=1781
+  [ok]   快照的 machine 条目数 = 脚本自己数出来的  快照 33 / 脚本 33
+  [ok]   快照的 user 条目数 = 脚本自己数出来的  快照 16 / 脚本 16
+  [ok]   演示用的目录真的存在（mvn.cmd）  C:\Dev\Tool\apache-maven-3.9.5\bin
+  [ok]   目标快照能被独立解析，且比真快照多一条  49 → 50
+
+── 2 逐条 diff：脚本自己算一遍，再与产品对照
+       脚本自己数：keep=25 add=1 remove=0 move=0 fix=24 case-only=0（共 50 条）
+       fix 明细：dangling=5  duplicate=18  empty-segment=1
+       本机独立计数：dup_index>0 18 条 / 失效 7 条 / 硬编码用户名 12 条 / 空条目 1 条
+       重复的组数 12 组 / 富余 18 条；失效：机器级 3 条 + 用户级 4 条；用户名依赖：机器级 2 条 + 用户级 10 条
+  [ok]   path diff 退出 0  exit=0
+  [ok]   path diff 的 --json 能解析
+  [ok]   diff 的行数与脚本自己算的一致  产品 50 / 脚本 50
+  [ok]   counts.keep 存在且 = 脚本自己算的  产品 25 / 脚本 25
+  [ok]   counts.add 存在且 = 脚本自己算的  产品 1 / 脚本 1
+  [ok]   counts.remove 存在且 = 脚本自己算的  产品 0 / 脚本 0
+  [ok]   counts.move 存在且 = 脚本自己算的  产品 0 / 脚本 0
+  [ok]   counts.fix 存在且 = 脚本自己算的  产品 24 / 脚本 24
+  [ok]   counts.caseOnly 存在且 = 脚本自己算的  产品 0 / 脚本 0
+  [ok]   每一行的类都与脚本自己算的相同
+  [ok]   class == reason.class()（全量行）
+  [ok]   每条都有 reason  0 条没有
+  [ok]   每条都带来源快照的 owner / reparse / hasUsername  0 条缺事实
+  [ok]   id 形状是 {scope}:{index} 或 {scope}:+{index}
+  [ok]   所有 id 互不相同（--pick 不会一次选中两条）
+  [ok]   case-only 行的 reason 是 case-differs  0 条
+  [ok]   失效条目的条数与脚本自己算的（归并后）一致  产品 5 / 脚本 5（原始失效 7 条，其中 2 条同时是重复）
+  [ok]   每条拼写建议都真的存在、父目录相同、且不是同一个名字
+  [ok]   抓到了本机真实的错写：C:\Software\tool → C:\Software\tools  5 条建议：C:\Program Files (x86)\Common Files\Oracle\Java\java8path, C:\Software\tools, C:\Software\tools, C:\Users\Muelsyse\AppData\Local\Programs\Python\Python312
+  [ok]   --json 成功载荷里没有 message 键
+  [ok]   --json 成功载荷是纯 ASCII（中文只进人类输出）
+  [ok]   --json 里没有时间戳（两次必须逐字节相同）
+  [ok]   两次 path diff --json 逐字节相同
+
+── 3 --dry-run：一个字节都不许写
+  [ok]   path apply --only add --dry-run 退出 0  exit=0
+  [ok]   --dry-run 的 --json 能解析
+  [ok]   --dry-run 的 dryRun = true  True
+  [ok]   --dry-run 的 wrote = false  False
+  [ok]   --dry-run 报告里有 user 作用域  1 条
+  [ok]   只应用了 1 条（那条 add）  1 条：add
+  [ok]   被应用的那条是 add 类  add
+  [ok]   被应用的值就是演示目录  C:\Dev\Tool\apache-maven-3.9.5\bin
+  [ok]   after 值 = 脚本自己算的（本机列表 + 追加末尾）  产品 808 字符 / 脚本 808 字符
+  [ok]   machine 作用域没有 applied 行（不静默提权）
+  [ok]   --only add 的重建结果里没有出现拼写建议值（只报告不纠错）
+  [ok]   --json 成功载荷是纯 ASCII
+  [ok]   --dry-run 后 HKCU Path 原文逐字未变
+  [ok]   --dry-run 后 HKCU Path 类型未变
+  [ok]   --dry-run 后 HKCU Path 字符数与哈希未变  773→773 a12fc582e90513a3→a12fc582e90513a3
+  [ok]   --dry-run 后 HKLM Path 逐字未变
+  [ok]   --dry-run 后 %LOCALAPPDATA%\tuoen 清单逐项未变
+
+── 4 选择性应用：只选一类，别的连位置都不动
+  [ok]   --only fix --dry-run 退出 0  exit=0
+  [ok]   只选 fix 时，没被碰过的条目按原顺序逐字留下（子序列，不是同下标）  after 7 条 / 期望 7 条
+  [ok]   只选 fix 时，remove 类条目的值一条都没丢（本机 0 条 → 空真，§4d 用合成快照补）  after 7 条 / 本机 16 条 / remove 类 0 条
+  [ok]   只选 fix 时，applied 里只有 fix 类  fix
+  [ok]   报告里有 machine 作用域（它也要被算出来）  1 条
+  [ok]   机器级确实有选中的改动（本机 3 条失效 + 重复 + 空条目）  15 条
+  [ok]   机器级标记了 requiresElevation  True
+  [ok]   机器级的 afterRaw 被算出来了（不是空串）  636 字符
+  [ok]   顶层 requiresElevation 逐条列出机器级的改动  顶层 15 条 / 机器级 applied 15 条
+  [ok]   --only fix --dry-run 后 HKCU Path 哈希未变
+
+── 4b 用户名重写（本机 12 条用户名全是当前用户，所以要造一份带旧名的目标）
+  [ok]   带旧用户名的目标快照：path diff 退出 0  exit=0
+  [ok]   旧用户名那一行被认出来了（类 add）  1 条
+  [ok]   rewriteTo = 当前用户名的那条路径  C:\Users\Muelsyse\bin
+  [ok]   rewrites 逐条报告了这次重写  1 条：C:\Users\tuoen-old-user\bin→C:\Users\Muelsyse\bin
+  [ok]   带旧用户名：path apply --only add --dry-run 退出 0  exit=0
+  [ok]   插入的值是**重写后**的路径（不是旧用户名那条）
+  [ok]   新列表里没有旧用户名那条
+  [ok]   带旧用户名的 --dry-run 之后 HKCU 哈希未变
+
+── 4c noOpClasses：选中的类没产生变换时必须说出来
+  [ok]   --only case-only --dry-run 退出 0  exit=0
+  [ok]   noOpClasses 里含 case-only（决策 128：改大小写零收益、纯风险）  case-only
+  [ok]   case-only 被选中时 applied 为空（什么都不做）  0 条
+
+── 4d 只选 add：remove 类条目必须原样留着（票据原话）
+  [ok]   造出一份"目标少了最后 3 条用户级条目"的快照  追加那条的 index=13
+  [ok]   §4d 快照的 path diff 退出 0  exit=0
+  [ok]   这份快照真的产生了 remove 类（本机真快照里是 0 条 → 空真）  3 条
+  [ok]   这份快照的 counts.remove = 3  3
+  [ok]   只选 add：退出 0  exit=0
+  [ok]   只选 add：报告里有 user 作用域  1 条
+  [ok]   只选 add：applied 里恰好一条（没有顺手删 remove）  1 条
+  [ok]   只选 add：那一条是 add 类  add
+  [ok]   只选 add：重建结果 = 本机全部条目 + 追加的那条（逐字）  产品 808 字符 / 脚本 808 字符
+  [ok]   只选 add：3 条 remove 类的值一条都没丢
+
+── 4e 人类输出：会写 / 不会写，标签不许说反
+  [ok]   no-op 计划的人类输出**不许**说"会写"    [机器级] 1007 → 1007 字符；条目 33 → 33 条；未改动 33 条；**不会写** |   [用户级] 773 → 773 字符；条目 16 → 16 条；未改动 16 条；**不会写（计划与现状一致）**
+  [ok]   no-op 计划的人类输出说了"计划与现状一致"
+  [ok]   真的会写的那一档仍然印"会写"（别把标签改坏）    [机器级] 1007 → 636 字符；条目 33 → 18 条；未改动 18 条；**不会写：机器级要提权** |   [用户级] 773 → 351 字符；条目 16 → 7 条；未改动 7 条；**会写**
+  [ok]   机器级那一行印的是"不会写：机器级要提权"
+
+── 5 空选择与错误路径
+  [ok]   不给选择 → 退出 1  exit=1
+  [ok]   不给选择 → 错误码是 nothing-selected  nothing-selected
+  [ok]   不给选择 → 报告里没有 scopes（不是"什么都没做"而是"没执行"）
+  [ok]   快照文件不存在 → 退出 1 且错误码是 path-snapshot-io  path-snapshot-io
+  [ok]   坏 TOML → 退出 1 且错误码是 path-snapshot-toml  path-snapshot-toml
+  [ok]   --only 给了不认识的类 → 退出码 2（clap 拒绝）  exit=2
+  [ok]   path apply --help 里有 --only / --pick / --dry-run
+
+── 6 选择性应用的真实演示（写完立刻还原）
+  [ok]   path apply --only add 退出 0  exit=0
+  [ok]   真写：wrote = true  True
+  [ok]   写进去的值 = 脚本自己算的期望值（逐字）  808 字符 / 期望 808 字符
+  [ok]   写进去的类型仍是 sz（值里没有 %）  String
+  [ok]   新值比旧值正好长 1 + 目录长度  773 → 808
+  [ok]   新终端里 where mvn 找到了 mvn.cmd  --- stdout --- | C:\Dev\Tool\apache-maven-3.9.5\bin\mvn | C:\Dev\Tool\apache-maven-3.9.5\bin\mvn.cmd
+  [ok]   写完之后再 diff：add 类归零  0 条
+  [ok]   写完之后再 diff：keep 类增加了（多了一条）  25 → 26
+acceptance-L1-15.ps1: 调用“SetValue”并传入“3”个参数时发生异常：“Cannot write to the registry key.”

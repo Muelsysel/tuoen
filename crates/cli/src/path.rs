@@ -137,6 +137,18 @@ pub enum PathCommand {
 
 `--dry-run` 走的是**同一套**计划代码，只是不落盘。"#)]
     Remove(PathRemoveArgs),
+
+    /// 把本机 `PATH` 与一份目标快照**逐条**比一遍（只读，永远退出 0）。
+    ///
+    /// 参数形状在 [`crate::path_diff`]，编排在 [`crate::path_diff_cmd`]，
+    /// `--json` 形状与人类输出在 [`crate::path_diff_view`]。
+    Diff(crate::path_diff::PathDiffArgs),
+
+    /// 把选中的 diff 类/条目**重建**成一份新的 `PATH` 并写回（先出计划，再落盘）。
+    ///
+    /// **不给 `--only` 也不给 `--pick` 就拒绝执行**（`nothing-selected`，退出码 1）：
+    /// 默认值一旦存在，"顺手删掉几条"就会成为默认行为，而这一票动的是用户整条 `PATH`。
+    Apply(crate::path_diff::PathApplyArgs),
 }
 
 #[derive(Debug, Args)]
@@ -215,6 +227,9 @@ mod tests {
             PathCommand::Show(args) => args.json,
             PathCommand::Add(args) => args.json,
             PathCommand::Remove(args) => args.json,
+            // 票据 #15 的两个叶子同样各自带 `--json`（理由与上面三个一致）。
+            PathCommand::Diff(args) => args.json,
+            PathCommand::Apply(args) => args.json,
         }
     }
 

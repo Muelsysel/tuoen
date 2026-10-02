@@ -897,6 +897,12 @@ pub fn print_plan_human(view: &PathPlanView) {
             PathChange::Remove { value, was_at } => {
                 println!("  − 删掉 `{value}`（原来在第 {was_at} 段）");
             }
+            PathChange::Move { value, was_at, at } => {
+                println!("  ↕ 挪动 `{value}`（第 {was_at} 段 → 第 {at} 段）");
+            }
+            PathChange::Replace { value, was, at } => {
+                println!("  ~ 改写第 {at} 段：`{was}` → `{value}`");
+            }
             PathChange::Retype { from, to } => println!(
                 "  ~ 注册表类型 {} → {}（值含 `%` 才用 `expand-sz`，否则保留原类型）",
                 reg_type_slug(from),

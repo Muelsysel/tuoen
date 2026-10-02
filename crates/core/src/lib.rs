@@ -10,6 +10,7 @@ pub mod capture;
 pub mod detect;
 pub mod doctor;
 pub mod list;
+pub mod pathdiff;
 pub mod pin;
 pub mod shim;
 
@@ -22,6 +23,11 @@ pub use doctor::{
     Counts, DoctorOptions, DoctorReport, FactsSummary, Finding, MachineFacts, Severity, diagnose,
 };
 pub use list::{ListResult, ToolRecord, ToolSource};
+pub use pathdiff::{
+    AppliedRow, DiffClass, DiffCounts, DiffReason, PathDiff, PathDiffError, PathDiffOptions,
+    PathDiffRow, Rebuild, RebuiltScope, Rewrite, Selection, SideRow, TypoSuspect,
+    current_username_from_env, current_username_from_process, diff, load_snapshot, rebuild,
+};
 pub use pin::{
     LOCK_FILE_NAME, LockFile, MAX_SHELL_DEPTH, PIN_FILE_NAME, PinError, PinFile, Resolution,
     ResolveContext, ResolvedTool, SHELL_DEPTH_VAR, ShellKind, ShellPlan, TRUST_FILE_NAME,

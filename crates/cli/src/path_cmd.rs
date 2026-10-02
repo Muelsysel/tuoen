@@ -345,6 +345,10 @@ pub fn run_command(command: &crate::path::PathCommand) -> i32 {
         PathCommand::Show(args) => run_show(args),
         PathCommand::Add(args) => run_add(args),
         PathCommand::Remove(args) => run_remove(args),
+        // `diff` / `apply` 的编排在 `path_diff_cmd`（票据 #15）：这一族的前三个命令
+        // 只动一条条目，而那两个命令动的是**整条 `PATH`**，所以它们有自己的模块。
+        PathCommand::Diff(args) => crate::path_diff_cmd::run_diff(args),
+        PathCommand::Apply(args) => crate::path_diff_cmd::run_apply(args),
     }
 }
 

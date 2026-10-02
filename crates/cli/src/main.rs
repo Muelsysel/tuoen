@@ -16,6 +16,7 @@ mod capture_cmd;
 mod catalog;
 mod cli;
 mod detect;
+mod detect_ctx;
 mod doctor;
 mod doctor_cmd;
 mod doctor_view;
@@ -28,6 +29,9 @@ mod manage_view;
 mod managed;
 mod path;
 mod path_cmd;
+mod path_diff;
+mod path_diff_cmd;
+mod path_diff_view;
 mod path_view;
 mod pin_view;
 mod shell;
@@ -89,8 +93,10 @@ fn run() -> i32 {
             ShimCommand::List(args) => shim_cmd::run_list(&args),
             ShimCommand::Path(args) => shim_cmd::run_path(&args),
         },
-        // `path` 那一族**只动用户级 `PATH`**，而且 `show` 只读。
+        // `path` 那一族**只动用户级 `PATH`**，而且 `show` / `diff` 只读。
         // `--json` 在每一个叶子命令上（与 `shim` 那一族一致）。
+        // 五个叶子的编排分在两个模块里：`add` / `remove` 动一条条目，
+        // `diff` / `apply`（票据 #15）动的是**整条 `PATH`**。
         Command::Path(command) => path_cmd::run_command(&command),
         // 项目级 pin 那一族（`docs/DESIGN.md` §1.16）。四个命令共用同一个计划
         // 构造器与同一套视图：`shell` 与 `auto` 的差别只有一道信任门（决策 121），

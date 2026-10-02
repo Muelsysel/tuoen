@@ -26,11 +26,10 @@ use tuoen_core::capture::{
     ToolsFile, WslFile, capture, write_bundle,
 };
 use tuoen_platform::EnvScope;
-use tuoen_store::Store;
 
 use crate::capture::CaptureArgs;
 use crate::envelope::Envelope;
-use crate::{exit, managed};
+use crate::exit;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 编排
@@ -38,40 +37,23 @@ use crate::{exit, managed};
 
 /// 跑 `tuoen capture`。返回退出码。
 pub fn run(args: &CaptureArgs) -> i32 {
-    // 六个真实依赖，与 `run_detect` 一模一样 —— 捕获**不是**另一套检测逻辑，
-    // 它是"把检测结果与其余三样东西写成文件"。两套装配迟早会读出两份不同的机器。
-    let fs = tuoen_platform::RealFileSystem;
-    let registry = tuoen_platform::RealRegistry;
-    let env = tuoen_platform::RealEnvBlock::new(registry, fs);
-    let process_env = tuoen_platform::RealProcessEnv::new();
-    let runner = tuoen_platform::SystemProcessRunner;
-    let managed = managed::StoreManagedStore::at_default_location();
-    let scan_roots = tuoen_core::detect::engine::default_scan_roots(&process_env);
+    // 六个真实依赖来自**唯一**一处装配（`detect_ctx::Backends`）—— 捕获**不是**另一套
+    // 检测逻辑，它是"把检测结果与其余三样东西写成文件"。两套装配迟早会读出两台机器。
+    let backends = crate::detect_ctx::Backends::assemble();
+    // `--no-version` 只影响**探测**：条目照旧被发现，只是没有版本号。
+    let ctx = backends.context(!args.no_version);
 
-    let ctx = tuoen_core::detect::DetectContext {
-        fs: &fs,
-        registry: &registry,
-        env: &env,
-        process_env: &process_env,
-        runner: &runner,
-        managed: &managed,
-        probe_timeout: tuoen_platform::DEFAULT_PROBE_TIMEOUT,
-        // `--no-version` 只影响**探测**：条目照旧被发现，只是没有版本号。
-        probe_versions: !args.no_version,
-        scan_roots,
-    };
-
-    let store = Store::at_default_location();
     let mut opts = CaptureOptions::all(args.out.clone(), &tuoen_store::now_rfc3339());
     // **空向量就是"全部"**（`CaptureOptions` 的既定语义），所以这里直接转发：
     // 一个忘了传参的调用不该安静地什么都不做。
     opts.sections = args.only.iter().map(|section| section.section()).collect();
     // 我们自己的两个根 —— 它是 `owner = "tuoen"` 的**唯一**判据（决定还原时哪些
-    // `PATH` 条目可以动）。shim 目录用 `shim_cmd::shim_dir`（全仓唯一一份定义），
-    // 不自己拼路径：第二份定义会漂移，而它漂移的后果是快照里一整类条目的归属出错。
+    // `PATH` 条目可以动）。两个根来自**同一个** `Store` 实例（`Backends` 保证这件事），
+    // 而且 shim 目录用 `shim_cmd::shim_dir`（全仓唯一一份定义），不自己拼路径：
+    // 第二份定义会漂移，而它漂移的后果是快照里一整类条目的归属出错。
     opts.tuoen_roots = vec![
-        store.root().to_path_buf(),
-        crate::shim_cmd::shim_dir(&store),
+        backends.store_root().to_path_buf(),
+        backends.shim_dir().to_path_buf(),
     ];
 
     let bundle = match capture(&ctx, &opts) {
