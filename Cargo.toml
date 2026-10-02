@@ -1,0 +1,51 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/core",
+    "crates/platform",
+    "crates/manifest",
+    "crates/cli",
+    "crates/shim",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Muelsysel/tuoen"
+homepage = "https://github.com/Muelsysel/tuoen"
+authors = ["Muelsyse"]
+description = "拓境 — 让你的 Windows 开发环境可搬运、可复现。"
+keywords = ["windows", "dev-environment", "package-manager", "path"]
+categories = ["command-line-utilities", "development-tools"]
+
+[workspace.dependencies]
+tuoen-core = { path = "crates/core" }
+tuoen-platform = { path = "crates/platform" }
+tuoen-manifest = { path = "crates/manifest" }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.9"
+clap = { version = "4", features = ["derive"] }
+thiserror = "2"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+todo = "warn"
+unimplemented = "warn"
+
+# 开发期用 opt-level=1 换取更快的测试迭代；release 用 LTO 压 shim 启动开销。
+[profile.dev]
+opt-level = 1
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

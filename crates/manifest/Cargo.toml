@@ -1,0 +1,20 @@
+[package]
+name = "tuoen-manifest"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "tuoen 的两层 manifest：catalog（工具元数据）+ recipe（版本安装步骤）。"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+serde.workspace = true
+toml.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

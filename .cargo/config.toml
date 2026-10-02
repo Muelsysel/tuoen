@@ -1,0 +1,25 @@
+# 本机（作者机器）构建配置。
+#
+# 背景：这台机器**没有 MSVC Build Tools**，所以只能走 `x86_64-pc-windows-gnu`。
+# GNU target 需要 `dlltool` 为 `windows-sys` 生成 import library，而 rustup 的
+# `rust-mingw` 组件只带了一个**需要外部 MinGW 才能工作**的 `dlltool` 垫片
+# （它旁边的 `GCC-WARNING.txt` 明确说那个 gcc 只能当链接器用）。
+# 因此这里指向一份用户级安装的 MinGW-w64（不需要管理员）。
+#
+# **实测结论（别改回去）**：rustc 在 GNU target 下**不认 `DLLTOOL_<target>` 变量**，
+# 它就是在 PATH 上找 `dlltool.exe`。所以必须改 PATH。
+# 而 cargo 的 `[env]` 对**已存在的变量**默认不生效（`force` 默认 false），
+# 因此这里必须写 `force = true` —— 它会把这一条**拼到已有 PATH 前面**，不是替换。
+#
+# **这些路径是本机专用的**，不应当被当成跨机器可用的配置；换机器时删掉本文件即可
+# —— GNU target 在装了完整 MinGW 的机器上能自己找到工具。
+#
+# 见 `docs/DESIGN.md` 平台硬约束一节。
+
+[target.x86_64-pc-windows-gnu]
+linker = "C:\\Users\\Muelsyse\\.local\\toolchains\\mingw64\\bin\\x86_64-w64-mingw32-gcc.exe"
+
+[env]
+PATH = { value = "C:\\Users\\Muelsyse\\.local\\toolchains\\mingw64\\bin", force = true }
+CC_x86_64_pc_windows_gnu = "C:\\Users\\Muelsyse\\.local\\toolchains\\mingw64\\bin\\x86_64-w64-mingw32-gcc.exe"
+AR_x86_64_pc_windows_gnu = "C:\\Users\\Muelsyse\\.local\\toolchains\\mingw64\\bin\\ar.exe"

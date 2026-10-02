@@ -1,0 +1,11 @@
+# 本机（作者机器）**没有 MSVC Build Tools** —— 没有 `link.exe`，因此 MSVC target 编不出来。
+# 而 GNU 工具链自带 self-contained linker（`x86_64-w64-mingw32-gcc.exe` + `rust-lld`），
+# 无需外部 MinGW 安装即可链接。
+#
+# **必须写完整的 host 三元组**：只写 `channel = "stable"` 时 rustup 会按 `rustup show` 的
+# Default host（= msvc）解析，于是 host 侧构建脚本与 proc-macro 会走 msvc 链接器并失败
+# （`linker link.exe not found`）。
+[toolchain]
+channel = "stable-x86_64-pc-windows-gnu"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

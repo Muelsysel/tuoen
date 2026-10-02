@@ -1,0 +1,19 @@
+[package]
+name = "tuoen-platform"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "tuoen 的平台层：所有 Win32 调用都收在这里，业务逻辑不得出现 #[cfg(windows)]。"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

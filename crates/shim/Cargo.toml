@@ -1,0 +1,23 @@
+[package]
+name = "tuoen-shim"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "tuoen 的 shim：一个真 .exe 转发器。启动开销是关键路径约束。"
+publish = false
+
+[[bin]]
+name = "tuoen-shim"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
