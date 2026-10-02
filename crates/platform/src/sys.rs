@@ -43,10 +43,45 @@ pub const ERROR_ACCESS_DENIED: Win32Code = 5;
 pub const ERROR_NOT_SUPPORTED: Win32Code = 50;
 /// `ERROR_INVALID_NAME` —— `FindFirstFileW` 拒绝的模式字符。
 pub const ERROR_INVALID_NAME: Win32Code = 123;
+/// `ERROR_ALREADY_EXISTS` —— 也被 [`crate::junction`] 用来表示
+/// "那个位置已经有东西了，而我不覆盖它"。
+pub const ERROR_ALREADY_EXISTS: Win32Code = 183;
 /// `ERROR_MORE_DATA`
 pub const ERROR_MORE_DATA: Win32Code = 234;
 /// `ERROR_NO_MORE_ITEMS`
 pub const ERROR_NO_MORE_ITEMS: Win32Code = 259;
+/// `ERROR_REPARSE_TAG_MISMATCH` —— 想就地替换重解析点数据，但标签对不上。
+///
+/// **这一条是"能不能原子翻转 junction"的判据**：同标签时
+/// `FSCTL_SET_REPARSE_POINT` 是"替换数据"，不同标签才报这个错。
+pub const ERROR_REPARSE_TAG_MISMATCH: Win32Code = 4390;
+/// `IO_REPARSE_TAG_MOUNT_POINT` —— junction 的标签。
+pub const IO_REPARSE_TAG_MOUNT_POINT: u32 = 0xA000_0003;
+
+/// 一个路径在"链接"这件事上的形状。
+///
+/// **把"是 junction"与"是 symlink"分开，是因为它们在 Windows 上
+/// 不可互换**（`GLOSSARY.md` 专门写了一条）：symlink 需要
+/// `SeCreateSymbolicLinkPrivilege`，junction 不需要；而两者的重解析
+/// **标签不同**，所以"就地替换"只对同标签成立。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JunctionState {
+    /// 路径不存在。
+    Missing,
+    /// 是一个普通文件。
+    File,
+    /// 是一个**真实的**目录（不是任何链接）。
+    RealDirectory,
+    /// 是 junction。
+    Junction,
+    /// 是 symlink（文件或目录）。
+    Symlink,
+    /// 是别的重解析点（App Execution Alias 等）。
+    OtherReparse {
+        /// 原始 tag。
+        tag: u32,
+    },
+}
 
 /// 一个路径的文件系统事实，来自 `FindFirstFileW`。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -89,6 +124,7 @@ pub struct RawRegValue {
 )]
 mod imp {
     use std::iter;
+    use std::os::windows::ffi::OsStrExt;
     use std::path::Path;
     use std::ptr;
 
@@ -109,6 +145,18 @@ mod imp {
     /// UTF-16 + NUL，供 `*W` 系列调用。
     fn wide(s: &str) -> Vec<u16> {
         s.encode_utf16().chain(iter::once(0)).collect()
+    }
+
+    /// 一个**路径**的以 NUL 结尾的 UTF-16 缓冲区。
+    ///
+    /// 用 `OsStrExt::encode_wide` 而不是 `to_string_lossy`：路径可能含
+    /// 无法用 UTF-8 表示的字符（Windows 上少见但合法），lossy 会让它变成
+    /// 一个**不同的**路径 —— 那种 bug 只在别人的机器上出现。
+    pub fn path_wide(path: &Path) -> Vec<u16> {
+        path.as_os_str()
+            .encode_wide()
+            .chain(iter::once(0))
+            .collect()
     }
 
     /// `FindFirstFileW` 的路径准备。
@@ -273,13 +321,294 @@ mod imp {
         }
         Ok(out)
     }
+
+    // ─────────────── junction（重解析点） ───────────────
+
+    /// `IO_REPARSE_TAG_SYMLINK`。
+    const IO_REPARSE_TAG_SYMLINK: u32 = 0xA000_000C;
+
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        CreateFileW, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE,
+        FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+    };
+    use windows_sys::Win32::System::IO::DeviceIoControl;
+
+    /// `FSCTL_SET_REPARSE_POINT`
+    const FSCTL_SET_REPARSE_POINT: u32 = 0x0009_00A4;
+    /// `FSCTL_DELETE_REPARSE_POINT`
+    const FSCTL_DELETE_REPARSE_POINT: u32 = 0x0009_00AC;
+    /// `GENERIC_READ | GENERIC_WRITE` —— 设置重解析点要写权限。
+    const GENERIC_READ_WRITE: u32 = 0x8000_0000 | 0x4000_0000;
+
+    /// 一个打开的、**指向重解析点本身**（不跟随）的句柄。
+    ///
+    /// 三个 flag 都不能少：
+    ///
+    /// * `FILE_FLAG_OPEN_REPARSE_POINT`：打开链接**本身**而不是它的目标。
+    ///   少了它就变成了对目标操作 —— 那会把目标改掉；
+    /// * `FILE_FLAG_BACKUP_SEMANTICS`：打开**目录**句柄必需
+    ///   （没有它 `CreateFileW` 对目录报 `ERROR_ACCESS_DENIED`）；
+    /// * `FILE_SHARE_DELETE`：不共享删除的话，别的进程（资源管理器、
+    ///   索引器）打开着它就打不开。这是"偶发失败"的常见来源。
+    struct ReparseHandle(windows_sys::Win32::Foundation::HANDLE);
+
+    impl ReparseHandle {
+        fn open(path: &Path, access: u32) -> Result<Self, super::Win32Code> {
+            let wide = path_wide(path);
+            // SAFETY: `wide` 是一个以 NUL 结尾的 UTF-16 缓冲区，在本函数内一直存活。
+            // 返回的句柄由本结构体持有，`Drop` 里关掉。
+            let handle = unsafe {
+                CreateFileW(
+                    wide.as_ptr(),
+                    access,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                    ptr::null(),
+                    OPEN_EXISTING,
+                    FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+                    ptr::null_mut(),
+                )
+            };
+            if std::ptr::eq(handle, INVALID_HANDLE_VALUE) {
+                // SAFETY: 无参数，只读线程局部的 last-error。
+                return Err(unsafe { GetLastError() });
+            }
+            Ok(Self(handle))
+        }
+    }
+
+    impl Drop for ReparseHandle {
+        fn drop(&mut self) {
+            // SAFETY: 句柄来自 `CreateFileW`，且没有被别处关闭。
+            unsafe { CloseHandle(self.0) };
+        }
+    }
+
+    /// 一个路径在"链接"这件事上的形状。
+    pub fn junction_state(path: &Path) -> super::JunctionState {
+        match super::find_first(path) {
+            Err(_) => super::JunctionState::Missing,
+            Ok(facts) => match (facts.reparse_tag, facts.is_dir) {
+                (Some(super::IO_REPARSE_TAG_MOUNT_POINT), _) => super::JunctionState::Junction,
+                (Some(IO_REPARSE_TAG_SYMLINK), _) => super::JunctionState::Symlink,
+                (Some(tag), _) => super::JunctionState::OtherReparse { tag },
+                (None, true) => super::JunctionState::RealDirectory,
+                (None, false) => super::JunctionState::File,
+            },
+        }
+    }
+
+    /// 把一个目标路径规范化成重解析点里能用的形式。
+    ///
+    /// **`PathBuf` 在 Windows 上不规范化分隔符。** `Path::new(r"C:\a").join("b/c")`
+    /// 得到的是 `C:\a\b/c` —— 一个混着两种分隔符的路径，而 Rust 的文件 API
+    /// 全都接受它，所以**没有任何东西会告诉你它有问题**。
+    ///
+    /// 但重解析点里不行：把 `C:\a\b/c` 写进替代名之后，内核按字面量处理它，
+    /// 而 `\??\C:\a\b/c` 会走到 `STATUS_OBJECT_NAME_INVALID` ——
+    /// 用户看到的是 `ERROR_INVALID_NAME`(123)，"文件名、目录名或卷标语法不正确"。
+    ///
+    /// **症状特别难查**：`junction_state` 说它是 junction、`read_link` 也能
+    /// 读出目标、`fsutil` 的字段全都自洽，只是**任何一次访问都失败**。
+    /// 我在这上面绕了两轮，最后是靠把 `mklink /J` 造的真品与自己的产物
+    /// 逐字节对比才定位到 —— 区别只在目标路径里那一个 `/`。
+    fn normalize_for_reparse(target: &Path) -> String {
+        target.to_string_lossy().replace('/', r"\")
+    }
+
+    /// 拼一个 junction 的重解析数据块。
+    ///
+    /// 布局（`REPARSE_DATA_BUFFER` + `MountPointReparseBuffer`）：
+    ///
+    /// ```text
+    /// 偏移  大小  字段
+    ///   0    4   ReparseTag           = IO_REPARSE_TAG_MOUNT_POINT
+    ///   4    2   ReparseDataLength    = 8 + PathBuffer 的字节数
+    ///   6    2   Reserved             = 0
+    ///   8    2   SubstituteNameOffset = 0
+    ///  10    2   SubstituteNameLength = 替代名的字节数 **含结尾的 NUL**
+    ///  12    2   PrintNameOffset      = SubstituteNameLength + 2
+    ///  14    2   PrintNameLength      = 打印名的字节数 **含结尾的 NUL**
+    ///  16   ..   PathBuffer           = 替代名 NUL ・ 2 字节间隙 ・ 打印名 NUL ・ 2 字节尾部
+    /// ```
+    ///
+    /// # 这张表是**实测**来的，不是从文档抄的
+    ///
+    /// 我先按"长度不含 NUL"写了一遍，结果是 `junction_state` 认为它是
+    /// junction、`read_link` 也能读出目标，但**任何一次访问都报
+    /// `ERROR_INVALID_NAME`(123)** —— 一个"看起来对但打不开"的链接。
+    ///
+    /// 拿 `fsutil reparsepoint query` 读 `mklink /J` 造出来的真品，
+    /// 才看清三件文档没写清楚的事：
+    ///
+    /// ```text
+    /// Substitue Name length: 136     ← 67 个字符 + NUL = 68 个 UTF-16 单元
+    /// Print Name offset:     138     ← 136 + 2，**中间有 2 字节**
+    /// Print Name Length:     128     ← 63 个字符 + NUL = 64 个 UTF-16 单元
+    /// Reparse Data Length:   0x114   ← 276 = 8 + 268
+    /// ```
+    ///
+    /// ① **两个长度都含结尾的 NUL**；② 替代名与打印名之间**有 2 字节间隙**
+    /// （`PrintNameOffset` 不是 `SubstituteNameLength`）；③ `PathBuffer`
+    /// 的长度比"名字 + NUL"多 2 字节。
+    ///
+    /// 三条都照做之后才通。**这一条值得记下来**：一个"元数据对但打不开"
+    /// 的 junction 是最难查的一类 bug —— 每个单独的检查都说它是对的。
+    ///
+    /// # 两个名字的区别
+    ///
+    /// **替代名必须带 `\??\` 前缀**：它走的是进程的 DOS 设备命名空间，
+    /// 少了这个前缀，内核会把目标当成一个字面量相对路径。
+    /// **打印名不能带**：它是给人与资源管理器看的。
+    fn mount_point_data(target: &Path) -> Vec<u8> {
+        let plain = normalize_for_reparse(target);
+        let substitute = format!(r"\??\{plain}");
+
+        let substitute: Vec<u16> = substitute.encode_utf16().collect();
+        let print: Vec<u16> = plain.encode_utf16().collect();
+
+        // 长度**不含**各自结尾的 NUL —— 这是 `fsutil` 给出的真值
+        // （69 个字符的路径，替代名 73 个字符 → 146 字节）。
+        let substitute_bytes = substitute.len() * 2;
+        let print_bytes = print.len() * 2;
+        let print_offset = substitute_bytes + 2;
+
+        let mut path_buffer: Vec<u16> = Vec::with_capacity(substitute.len() + print.len() + 2);
+        path_buffer.extend_from_slice(&substitute);
+        path_buffer.push(0); // 替代名的 NUL
+        path_buffer.extend_from_slice(&print);
+        path_buffer.push(0); // 打印名的 NUL
+
+        let data_length = 8 + path_buffer.len() * 2;
+
+        let mut out = Vec::with_capacity(8 + data_length);
+        out.extend_from_slice(&super::IO_REPARSE_TAG_MOUNT_POINT.to_le_bytes());
+        out.extend_from_slice(&(data_length as u16).to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes()); // Reserved
+        out.extend_from_slice(&0u16.to_le_bytes()); // SubstituteNameOffset
+        out.extend_from_slice(&(substitute_bytes as u16).to_le_bytes());
+        out.extend_from_slice(&(print_offset as u16).to_le_bytes());
+        out.extend_from_slice(&(print_bytes as u16).to_le_bytes());
+        for unit in path_buffer {
+            out.extend_from_slice(&unit.to_le_bytes());
+        }
+        out
+    }
+
+    /// 创建一个 junction。
+    ///
+    /// **先建一个空目录，再把重解析点装在它上面** —— 这是
+    /// `FSCTL_SET_REPARSE_POINT` 的用法要求：它作用于一个已存在的文件或目录。
+    pub fn create_junction(link: &Path, target: &Path) -> Result<(), super::Win32Code> {
+        std::fs::create_dir(link).map_err(|source| {
+            u32::try_from(source.raw_os_error().unwrap_or(0)).unwrap_or(super::ERROR_ACCESS_DENIED)
+        })?;
+        match set_junction_data(link, target) {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                // **失败时把空目录收回去**，不留下一个"看起来存在但打不开"的东西。
+                let _ = std::fs::remove_dir(link);
+                Err(error)
+            }
+        }
+    }
+
+    /// 把一个 junction 的数据**就地**替换成指向 `target`。
+    ///
+    /// 这是原子翻转的全部秘密：同标签时 `FSCTL_SET_REPARSE_POINT` 是
+    /// **替换数据**，不是"先删再建"。所以 `current` 这个路径在任何
+    /// 时刻都是可解析的，只是"某一瞬间之后指向的是新版本"。
+    ///
+    /// 标签不同（比如试图把 symlink 就地改成 junction）会报
+    /// [`super::ERROR_REPARSE_TAG_MISMATCH`] —— 那是**好事**：
+    /// 它说明内核不会让我们悄悄换掉另一种重解析点。
+    pub fn set_junction_data(link: &Path, target: &Path) -> Result<(), super::Win32Code> {
+        let handle = ReparseHandle::open(link, GENERIC_READ_WRITE)?;
+        let data = mount_point_data(target);
+        let mut returned: u32 = 0;
+        // SAFETY: `handle` 是刚打开的有效句柄；`data` 的布局按上面的
+        // `REPARSE_DATA_BUFFER` 手工拼好，长度由 `data.len()` 给出；
+        // `returned` 是一个栈上的 u32。
+        let ok = unsafe {
+            DeviceIoControl(
+                handle.0,
+                FSCTL_SET_REPARSE_POINT,
+                data.as_ptr().cast(),
+                data.len() as u32,
+                ptr::null_mut(),
+                0,
+                &mut returned,
+                ptr::null_mut(),
+            )
+        };
+        if ok == 0 {
+            // SAFETY: 无参数。
+            return Err(unsafe { GetLastError() });
+        }
+        Ok(())
+    }
+
+    /// 删掉重解析点，并把那个目录本身删掉。
+    ///
+    /// **只删链接，永远不删目标。** 这是整个工具里最容易写错、
+    /// 后果最严重的一处：junction 的目录句柄上执行递归删除会**跟着
+    /// 跳进目标**（`std::fs::remove_dir_all` 在某些路径下会这样做）。
+    /// 所以这里两步都是"针对链接本身"的：先摘掉重解析点
+    /// （`FILE_FLAG_OPEN_REPARSE_POINT` 保证不跟过去），
+    /// 再删空的目录项。
+    pub fn remove_reparse_point(link: &Path) -> Result<(), super::Win32Code> {
+        // **`FSCTL_DELETE_REPARSE_POINT` 不接受空输入缓冲区。**
+        // 传 NULL 会得到 `ERROR_INVALID_USER_BUFFER`(1784) —— 实测。
+        //
+        // 文档要求的输入是一个 `REPARSE_DATA_BUFFER`，其中
+        // `ReparseTag` 指明要删**哪一种**重解析点，而
+        // `ReparseDataLength` 为 0 表示"只删点，不改数据"。
+        // 所以最小合法输入是 8 个字节：tag(4) + 0(2) + 0(2)。
+        let facts = super::find_first(link)?;
+        let Some(tag) = facts.reparse_tag else {
+            // `ERROR_NOT_A_REPARSE_POINT` 与 `ERROR_REPARSE_TAG_MISMATCH`
+            // 在 Win32 里是**同一个值**（4390），所以用后者这个名字。
+            return Err(super::ERROR_REPARSE_TAG_MISMATCH);
+        };
+        let mut input = Vec::with_capacity(8);
+        input.extend_from_slice(&tag.to_le_bytes());
+        input.extend_from_slice(&0u16.to_le_bytes()); // ReparseDataLength
+        input.extend_from_slice(&0u16.to_le_bytes()); // Reserved
+
+        {
+            let handle = ReparseHandle::open(link, GENERIC_READ_WRITE)?;
+            let mut returned: u32 = 0;
+            // SAFETY: `handle` 是刚打开的有效句柄；`input` 是上面拼好的
+            // 8 字节缓冲区，长度由 `input.len()` 给出；`returned` 在栈上。
+            let ok = unsafe {
+                DeviceIoControl(
+                    handle.0,
+                    FSCTL_DELETE_REPARSE_POINT,
+                    input.as_ptr().cast(),
+                    input.len() as u32,
+                    ptr::null_mut(),
+                    0,
+                    &mut returned,
+                    ptr::null_mut(),
+                )
+            };
+            if ok == 0 {
+                // SAFETY: 无参数。
+                return Err(unsafe { GetLastError() });
+            }
+        } // 句柄在这里关掉 —— **必须在删目录之前**，否则 `remove_dir` 会因
+        // 为句柄还开着而报"目录不是空的"。
+        std::fs::remove_dir(link).map_err(|source| {
+            u32::try_from(source.raw_os_error().unwrap_or(0)).unwrap_or(super::ERROR_ACCESS_DENIED)
+        })
+    }
 }
 
 #[cfg(not(windows))]
 mod imp {
     use std::path::Path;
 
-    use super::{ERROR_NOT_SUPPORTED, FindFacts, RawRegValue, RootKey, Win32Code};
+    use super::{ERROR_NOT_SUPPORTED, FindFacts, JunctionState, RawRegValue, RootKey, Win32Code};
 
     /// 非 Windows 上**故意不提供任何实现**：`tuoen` V1 只发 Windows 二进制
     /// （`docs/DESIGN.md` 决策 5）。这里返回"不支持"而不是假装路径不存在，
@@ -295,9 +624,32 @@ mod imp {
     pub fn reg_values(_root: RootKey, _subkey: &str) -> Result<Vec<RawRegValue>, Win32Code> {
         Err(ERROR_NOT_SUPPORTED)
     }
+
+    /// 非 Windows 上没有 junction：返回"缺能力"，而不是假装成功。
+    pub fn junction_state(_path: &Path) -> JunctionState {
+        super::JunctionState::Missing
+    }
+
+    /// 非 Windows 上没有 junction。
+    pub fn create_junction(_link: &Path, _target: &Path) -> Result<(), Win32Code> {
+        Err(ERROR_NOT_SUPPORTED)
+    }
+
+    /// 非 Windows 上没有 junction。
+    pub fn set_junction_data(_link: &Path, _target: &Path) -> Result<(), Win32Code> {
+        Err(ERROR_NOT_SUPPORTED)
+    }
+
+    /// 非 Windows 上没有 junction。
+    pub fn remove_reparse_point(_link: &Path) -> Result<(), Win32Code> {
+        Err(ERROR_NOT_SUPPORTED)
+    }
 }
 
-pub use imp::{find_first, reg_subkeys, reg_values};
+pub use imp::{
+    create_junction, find_first, junction_state, reg_subkeys, reg_values, remove_reparse_point,
+    set_junction_data,
+};
 
 #[cfg(test)]
 mod tests {

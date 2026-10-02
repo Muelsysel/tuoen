@@ -33,6 +33,12 @@ windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Storage_FileSystem",
     "Win32_System_Registry",
+    "Win32_System_IO",
+    # `CreateFileW` 被 `#[cfg(feature = "Win32_Security")]` gate 住了（它的
+    # 形参里有 `*const SECURITY_ATTRIBUTES`）。虽然我们永远传 NULL，
+    # 但**要拿到那个符号就必须开这个 feature** —— 这是实测出来的，
+    # 报错是 `unresolved import windows_sys::Win32::Storage::FileSystem::CreateFileW`。
+    "Win32_Security",
 ] }
 
 [dev-dependencies]
