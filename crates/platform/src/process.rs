@@ -27,7 +27,16 @@ pub struct ProcessOutcome {
     pub timed_out: bool,
     /// 退出码。被信号终止或超时时为 `None`。
     pub exit_code: Option<i32>,
-    /// 标准输出（已经是字符串；见 [`SystemProcessRunner`] 关于编码的说明）。
+    /// 标准输出的**原始字节**。
+    ///
+    /// **二进制的东西必须从这里拿。** 用 [`Self::stdout`] 拿的是
+    /// lossy 转换过的文本，任意非 UTF-8 序列会变成 `U+FFFD` —— 对
+    /// "把 HTTP 响应体从 curl 的 stdout 里捞出来"这条路径是致命的
+    /// （压缩包里一定有非 UTF-8 序列）。见 [`Capture::finish`]。
+    pub stdout_bytes: Vec<u8>,
+    /// 标准输出的文本形式（**有意的 lossy**：版本号是 ASCII，
+    /// 而本地化输出在本机可能是 GBK；我们只从里面抠数字，
+    /// 永远不匹配消息文本 —— 见 `AGENTS.md`）。
     pub stdout: String,
     /// 标准错误。**版本号经常在这里**。
     pub stderr: String,
@@ -43,6 +52,7 @@ impl ProcessOutcome {
             spawned: false,
             timed_out: false,
             exit_code: None,
+            stdout_bytes: Vec::new(),
             stdout: String::new(),
             stderr: String::new(),
             spawn_error: Some(reason.into()),
@@ -117,20 +127,22 @@ impl Capture {
         capture
     }
 
-    /// 取走已经读到的内容。
-    fn finish(self: &Arc<Self>) -> String {
+    /// 取走已经读到的内容（原始字节）。
+    ///
+    /// **必须有这个原始版本。** 早先这里只返回 `String`，于是下载层拿到的是
+    /// **经过 lossy UTF-8 转换**的字节：制品里任何一个非 UTF-8 序列都会被
+    /// 换成 `U+FFFD`（`EF BF BD`）。一个压缩包 100% 含有这种序列，所以
+    /// "把响应体从 stdout 里捞出来"这条路径在不修这里的前提下**永远算不出
+    /// 正确的哈希** —— 而症状是"哈希不符"，看起来像上游被污染。
+    fn finish(self: &Arc<Self>) -> Vec<u8> {
         let deadline = Instant::now() + SystemProcessRunner::DRAIN_GRACE;
         while !self.done.load(Ordering::SeqCst) && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(5));
         }
-        let bytes = self
-            .bytes
+        self.bytes
             .lock()
             .map(|buffer| buffer.clone())
-            .unwrap_or_default();
-        // **有意的 lossy**：版本号是 ASCII，而本地化输出在本机是 GBK。
-        // 我们只从里面抠数字，永远不匹配消息文本（`AGENTS.md`）。
-        String::from_utf8_lossy(&bytes).into_owned()
+            .unwrap_or_default()
     }
 }
 
@@ -177,12 +189,18 @@ impl ProcessRunner for SystemProcessRunner {
             }
         }
 
+        let stdout_bytes = stdout.map_or_else(Vec::new, |capture| capture.finish());
+        let stderr_bytes = stderr.map_or_else(Vec::new, |capture| capture.finish());
+
         ProcessOutcome {
             spawned: true,
             timed_out,
             exit_code,
-            stdout: stdout.map_or_else(String::new, |capture| capture.finish()),
-            stderr: stderr.map_or_else(String::new, |capture| capture.finish()),
+            // **stdout 保留原始字节**：下载层要的是字节，而 lossy 转换
+            // 会破坏制品（见 `stdout_bytes` 的文档）。
+            stdout: String::from_utf8_lossy(&stdout_bytes).into_owned(),
+            stdout_bytes,
+            stderr: String::from_utf8_lossy(&stderr_bytes).into_owned(),
             spawn_error: None,
         }
     }
@@ -229,6 +247,56 @@ mod tests {
         assert!(outcome.stderr.contains("err"), "{outcome:?}");
         assert!(outcome.combined().contains("out") && outcome.combined().contains("err"));
         assert_eq!(outcome.exit_code, Some(0));
+    }
+
+    /// **二进制 stdout 必须原样保留。**
+    ///
+    /// 这条测试的存在理由是一次真实的失败：下载层把 curl 的 stdout 当作
+    /// 文本取字节，于是 `0xFF` 变成 `U+FFFD`（`EF BF BD`）—— 三个字节
+    /// 变成一个替换字符。压缩包里 100% 含有这种序列，所以症状是
+    /// **每一个制品都"哈希不符"**，而排查方向会指向网络与镜像。
+    ///
+    /// 用 `cmd /c` 写出一个非 UTF-8 字节序列来复现：`0xFF 0xFE 0x00 0x80`。
+    #[test]
+    fn binary_stdout_bytes_survive_intact() {
+        let runner = SystemProcessRunner;
+        // PowerShell 会把字节写坏，所以用 cmd + `type` 一个临时文件。
+        let temp = std::env::temp_dir().join(format!(
+            "tuoen-binary-stdout-{}-{}.bin",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let payload: Vec<u8> = vec![0x00, 0x01, 0x7f, 0x80, 0xfe, 0xff, 0x00, 0xff];
+        std::fs::write(&temp, &payload).expect("写二进制样本");
+
+        let outcome = runner.run(
+            Path::new(r"C:\Windows\System32\cmd.exe"),
+            &["/d", "/c", "type", temp.to_str().expect("临时路径是 UTF-8")],
+            Duration::from_secs(10),
+        );
+        let _ = std::fs::remove_file(&temp);
+
+        assert!(outcome.spawned, "{outcome:?}");
+        assert_eq!(
+            outcome.stdout_bytes, payload,
+            "原始字节必须一个不差地留下（`stdout` 的 lossy 文本不算）"
+        );
+
+        // 反面对照：文本形式**确实**被破坏了 —— 这就是为什么必须有
+        // `stdout_bytes`，而不是"顺手用 stdout 也行"。
+        assert_ne!(
+            outcome.stdout.as_bytes(),
+            payload.as_slice(),
+            "文本形式必然做不到无损（否则这个字段是多余的）"
+        );
+        assert!(
+            outcome.stdout.contains('\u{fffd}'),
+            "非 UTF-8 字节应当变成替换字符：{:?}",
+            outcome.stdout
+        );
     }
 
     #[test]

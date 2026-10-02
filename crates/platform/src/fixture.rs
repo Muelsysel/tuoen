@@ -536,6 +536,10 @@ impl ProcessRunner for FakeProcessRunner {
                 spawned: true,
                 timed_out: entry.timed_out,
                 exit_code: entry.exit_code,
+                // 固定装置里的输出是文本，所以两种形式相同。
+                // 真实进程的 `stdout_bytes` 可能不是合法 UTF-8，但固定装置
+                // 表达的是"版本探测的输出"，那种输出本来就是文本。
+                stdout_bytes: entry.stdout.clone().into_bytes(),
                 stdout: entry.stdout.clone(),
                 stderr: entry.stderr.clone(),
                 spawn_error: None,

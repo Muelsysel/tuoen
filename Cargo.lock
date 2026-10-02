@@ -465,6 +465,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "tuoen-download"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror",
+ "toml",
+ "tuoen-manifest",
+ "tuoen-platform",
+]
+
+[[package]]
 name = "tuoen-manifest"
 version = "0.1.0"
 dependencies = [
