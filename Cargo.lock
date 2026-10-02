@@ -475,6 +475,8 @@ dependencies = [
  "serde_json",
  "thiserror",
  "toml",
+ "tuoen-download",
+ "tuoen-manifest",
  "tuoen-platform",
  "tuoen-shim",
  "tuoen-store",

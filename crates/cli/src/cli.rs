@@ -9,9 +9,12 @@ use crate::capture::CaptureArgs;
 use crate::catalog::CatalogCommand;
 use crate::detect::DetectArgs;
 use crate::doctor::DoctorArgs;
+use crate::lock_cmd::LockArgs;
 use crate::manage::{InstallArgs, UninstallArgs, UseArgs};
 use crate::path::PathCommand;
+use crate::shell::{AutoArgs, ShellArgs};
 use crate::shim::ShimCommand;
+use crate::trust_cmd::TrustArgs;
 
 /// 拓境 — 让你的 Windows 开发环境可搬运、可复现。
 #[derive(Debug, Parser)]
@@ -264,6 +267,153 @@ shim 目录与存储**并列**（`<家目录>/shims`），不在 `store/` 里面
 `add` / `remove` 都有 `--dry-run`，它走的是与真写**同一套**计划代码，只是不落盘。"#
     )]
     Path(PathCommand),
+
+    /// 起一个子 shell，把项目 pin 的版本目录**前置**进它的 `PATH`。
+    #[command(
+        long_about = r#"起一个子 shell，把项目 pin 的版本目录前置进它的 `PATH`。
+
+读当前目录的 `tuoen.toml`，解析出每个工具该用哪个版本，把那些版本目录
+**前置**进子 shell 的 `PATH`，然后起一个**真实的交互式 shell**。
+
+## 它不改任何全局状态
+
+这是本项目里最容易做错的一件事。`tuoen shell`：
+
+* **不翻转任何 junction** —— 翻转是全局副作用：多终端场景下会让**别的**终端
+  突然换版本。L0 的 `tuoen use` 是显式命令，那是另一回事。
+* **不改父进程的环境** —— 环境块是 `CreateProcess` 时复制的，改不进去；
+  退出这个子 shell 之后，外面的一切回到原样。
+* **不动 store 里的任何东西** —— 它只读。
+
+## 锁：不一致就停下来
+
+`tuoen.lock` 存在且与 `tuoen.toml` 的声明不一致时，这条命令**拒绝启动**，
+并告诉你跑 `tuoen lock`。理由（决策 116）：按锁执行是"你没拿到声明的那套"，
+按声明执行是"锁形同虚设" —— 两条都在骗人，所以第三条：停下来。
+**没有** `--ignore-lock`：先有需求再加，加容易、去难。
+
+没有锁文件时它现场解析一次，并把结果**写成** `tuoen.lock`（进 git 的那个）。
+
+## 遮蔽：前置了却没生效
+
+前置之后还可能有命令**没从我们的目录里解析到**（版本目录里没有那个命令、
+布局猜错了、或者 `PATH` 上另有一个更早的安装）。命中就在 **stderr** 打印明确
+警告（含命令名与赢了的那条目录），**不静默继续** —— 用户以为切了版本、
+其实没切，是这个功能唯一会"看起来在工作"的失效形态。
+
+## 退出码
+
+子 shell 的退出码**原样**透传。这一族自己的失败是 1（`missing-pin` /
+`lock-mismatch` / `version-not-installed` / `shell-depth` …）。
+
+## `--json` 必须与 `--dry-run` 一起用
+
+不带 `--dry-run` 的 `--json` 是**用法错误**（退出码 2）：交互式子 shell 与 JSON
+共用 stdout 是必然打架的，子进程会往同一个 fd 上写东西（提示符、`dir` 的输出、
+PowerShell 的启动横幅）。把"计划"与"执行"分开之后，JSON 契约就永远是完整的。
+
+## 两个开关
+
+  --shell <cmd|powershell>  起哪一种（默认 `cmd`：它最不需要额外前提）
+  --exec <COMMAND>          不进入交互式 shell，只跑这一条命令（测试与脚本用）"#
+    )]
+    Shell(ShellArgs),
+
+    /// 与 `shell` 同一件事，但**只在已信任的目录里**自动应用 pin。
+    #[command(long_about = r#"与 `tuoen shell` 同一件事，但多一道信任门。
+
+`tuoen auto` 与 `tuoen shell` **共用同一个计划构造器**，差别只有那道门
+（决策 121：两条路径各写一份构造逻辑必然漂移，而漂移的表现是
+"`auto` 切了、`shell` 没切"）。四种情况：
+
+  trusted        指纹与信任时一致 → 放行，与 `shell` 完全一样
+  not-trusted    这个目录不在清单里 → **不启动** + stderr 提示跑 `tuoen trust`
+  stale          `tuoen.toml` 改过了（指纹对不上）→ 拒绝 + 提示重新 `tuoen trust`
+  missing-file   这个目录根本没有 `tuoen.toml` → 拒绝（`missing-pin`）
+
+## 为什么默认关闭
+
+进入陌生仓库就自动改工具链版本是**安全漏洞**：一个 clone 下来的 `tuoen.toml`
+可以 pin 一个带后门的"Node 版本"。所以自动切换要用户显式信任一次，
+而信任记录的是**绝对路径 + 首次信任时的指纹**（指纹是为了防"删掉目录再 clone
+一个同名目录"——光记路径的话新目录会继承旧目录的信任）。
+
+清单在 `%APPDATA%\tuoen\trust.toml`，**不在被信任的目录里**：放在里面的话，
+任何 clone 下来就自带信任标记，等于没有机制。
+
+## 它也不注入任何 shell profile
+
+"进目录就自动切"需要改用户配置（PowerShell profile / `cd` 钩子），那是独立议题 ——
+改用户配置要有自己的 plan/diff/apply 与警告。L1 的自动切换是用户**显式**敲
+`tuoen auto` 触发的。
+
+参数与 `tuoen shell` 完全一致（含 `--json` 必须配 `--dry-run`）。"#)]
+    Auto(AutoArgs),
+
+    /// 管理信任清单：哪些目录被允许自动应用 pin。
+    #[command(long_about = r#"管理信任清单：哪些目录被允许自动应用 pin。
+
+```text
+tuoen trust                  信任当前目录（算 `tuoen.toml` 的指纹、写清单）
+tuoen trust --list           列出每一条 + 它**现在**还有不有效
+tuoen trust --revoke <PATH>  摘掉一条
+```
+
+## 清单在哪
+
+`%APPDATA%\tuoen\trust.toml` —— **用户级中央清单**，记绝对路径 + 首次信任时的指纹。
+
+* 信任标记**绝不放在被信任的目录内**：那样任何 clone 下来就自带信任标记，
+  等于没有机制。
+* 指纹是因为**路径可能被替换**（删掉目录再 clone 一个同名目录）：
+  光记路径的话，新 clone 来的那个目录会继承旧目录的信任。
+
+写盘是**临时文件 + rename** 的原子替换：这份文件被两个终端同时改的代价是
+整份信任清单消失（或半截 TOML）。
+
+## `--list` 会重算每一条的状态
+
+`trusted` / `stale` / `missing-file` 是**现场重算**的，不是写盘时记下来的 ——
+一个把过期条目显示成"已信任"的清单是在说谎，而它恰好是用户唯一的查看入口。
+
+## `--revoke` 摘不到时会说 `absent`
+
+不是假装成功，也不是失败：撤销的目标状态（"这个目录不在清单里"）已经成立，
+但"我摘的那条到底在不在"正是用户要问的，所以它有一个自己的取值。
+摘不到时**不写盘** —— 一次无谓的原子替换会让这份文件多一次没有意义的变更。
+
+## `%APPDATA%` 读不到就失败
+
+错误码 `unwired-root`。宁可失败，也不要往一个相对路径里写信任清单：
+相对路径的含义随当前目录变，而信任清单必须**不随 cwd 变**。"#)]
+    Trust(TrustArgs),
+
+    /// 把 `tuoen.toml` 的声明解析成一份可提交的 `tuoen.lock`。
+    #[command(
+        long_about = r#"把 `tuoen.toml` 的声明解析成一份可提交的 `tuoen.lock`。
+
+`tuoen.toml` 是**声明**（"我要 Node 24"），`tuoen.lock` 是**解析结果**
+（"这台机器上 24 指的是 24.19.0，它在哪、从哪来、哈希是多少"）。两者都进 git。
+
+锁的全部价值在"不一致"那一侧：改了 `tuoen.toml` 却忘了重新 lock 时，
+`tuoen shell` / `tuoen auto` 会**当场拒绝启动**并让你跑这一条命令 ——
+而不是让某个人在别的机器上悄悄拿到另一套工具链。
+
+## 锁里没有时间戳
+
+解析两次**逐字节相同**。时间戳会让每次 `tuoen lock` 都产生一行 diff，
+而那一行不携带任何信息 —— 一个每天都要在 code review 里被忽略的 diff，
+等于训练人忽略这份文件。
+
+## `--dry-run`
+
+走**同一套**解析与组装代码，只是不落盘。`--json` 里的 `written` 会如实说
+`false` —— 那不是"写失败了"，是"这一次的任务里没有写"。
+
+`--json` 在这里**不需要**配 `--dry-run`：这条命令不启动任何子进程，
+stdout 上没有第二个写者。"#
+    )]
+    Lock(LockArgs),
 }
 
 /// `tuoen path` 的参数。

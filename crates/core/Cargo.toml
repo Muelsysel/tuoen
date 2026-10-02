@@ -21,6 +21,12 @@ tuoen-platform = { path = "../platform" }
 # `tuoen list` 列的是**我们自己的存储**，所以 core 要知道 store 的存在。
 # 方向是 core → store → platform，没有反向边：store 不知道"检测"是什么。
 tuoen-store = { workspace = true }
+# `pin` 要读解压布局（`Layout`）才能算出"该把哪个目录前置进子进程 PATH"。
+# 抄一份字段名会在某次改名之后静默算错那个目录 —— 而错的那个目录仍然能被启动。
+tuoen-manifest = { workspace = true }
+# 信任指纹用的就是**同一个** sha256 实现（`sha256_hex`）。
+# 指纹的算法只该有一处：两份实现里只要有一份动了，"信任过的东西"就会集体失配。
+tuoen-download = { workspace = true }
 # `doctor` 要认得 shim 目录里的**模板**（它跟真正的 shim 躺在同一个目录里，
 # 不是一条命令）。模板文件名只有一处定义，所以直接引用它 —— 抄一份字符串
 # 会在某次改名后静默变成"把模板当成一条 shim 报出去"。

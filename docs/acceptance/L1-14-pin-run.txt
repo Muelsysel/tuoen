@@ -1,0 +1,91 @@
+
+── 0 二进制（release + 四个新命令都在）
+  [ok]   构建 release 二进制      Finished `release` profile [optimized] target(s) in 0.11s
+  [ok]   release 二进制在  C:\Work\EasyEnvForWin\target\release\tuoen.exe
+  [ok]   顶层帮助里有 shell
+  [ok]   顶层帮助里有 trust
+  [ok]   顶层帮助里有 auto
+  [ok]   顶层帮助里有 lock
+  [ok]   shell --help 退出码 0
+  [ok]   shell 帮助里有 --dry-run / --exec / --json
+  [ok]   帮助里没有 --fix
+
+── 1 预检：快照与脚本自己算出来的前置目录
+  [ok]   真实的 %APPDATA%\tuoen 存在或不存在都记下来了  \cache, \cache\sha256, \cache\sha256\15, \cache\sha256\57, \cache\sha256\64, \cache\sha256\6c
+  [ok]   nvm4w 的符号链接现在指向  C:\Users\Muelsyse\AppData\Local\nvm\v24.19.0
+  [ok]   store 里 node 的 current 现在指向  C:\Users\Muelsyse\AppData\Local\tuoen\store\node\versions\24.19.0
+  [ok]   store 里有 node 的版本目录（本票的端到端演示要靠它）  24.19.0
+  [ok]   脚本自己算出来 `24` 命中的版本  24.19.0（候选：24.19.0）
+
+── 2 计划：shell --dry-run --json
+  [ok]   shell --dry-run --json 退出码 0  exit=0 stderr=
+  [ok]   载荷结构：schemaVersion/command/ok/data
+  [ok]   成功载荷无 CJK 且无 message 键
+  [ok]   shell 是 cmd  cmd
+  [ok]   depth = 0  0
+  [ok]   prepend 的第一条 == 脚本自己算出来的版本目录  C:\Users\Muelsyse\AppData\Local\tuoen\store\node\versions\24.19.0 vs C:\Users\Muelsyse\AppData\Local\tuoen\store\node\versions\24.19.0
+  [ok]   pathAfter 以 prepend 开头  C:\Users\Muelsyse\AppData\Local\tuoen\store\node\versions\24.19.0;C:\Program Fil
+  [ok]   pathBefore == 脚本自己的新终端口径 PATH  1781 vs 1781 字符
+  [ok]   tools[0] 是 node / spec 24 / 脚本算出的版本 / 来源 tuoen  node 24 24.19.0 tuoen
+  [ok]   tools[0].path == 脚本算出的版本目录  C:\Users\Muelsyse\AppData\Local\tuoen\store\node\versions\24.19.0
+  [ok]   --dry-run 不写锁（lockWritten=false 且目录里没有 tuoen.lock）
+  [ok]   --dry-run 不改项目目录  tuoen.toml
+  [ok]   两次 --dry-run --json 逐字节相同  4543 / 4543
+  [ok]   不带 --dry-run 的 --json 被拒（退出码 2）  exit=2
+
+── 3 端到端：shell --exec 里跑的是我们 store 里的 node
+  [ok]   shell --exec 退出码 0  exit=0 stderr=
+  [ok]   子进程打印的 process.execPath 在脚本算出的版本目录里  C:\Users\Muelsyse\AppData\Local\tuoen\store\node\versions\24.19.0\node.exe（期望前缀 C:\Users\Muelsyse\AppData\Local\tuoen\store\node\versions\24.19.0）
+  [ok]   shell --exec "node -v" 退出码 0 且版本对得上  v24.19.0 vs v24.19.0
+  [ok]   where node 的第一条就是我们 store 里的那个  C:\Users\Muelsyse\AppData\Local\tuoen\store\node\versions\24.19.0\node.exe
+  [ok]   子进程里 TUOEN_SHELL_DEPTH = 1  1
+  [ok]   退出码透传（exit 7 → 7）  exit=7
+
+── 4 信任门：auto 与 trust 的完整生命周期
+  [ok]   未信任目录上 auto 退出 1  exit=1
+  [ok]   错误码是 untrusted  untrusted
+  [ok]   错误消息里点名了 tuoen trust
+  [ok]   未信任时项目目录里没有多出文件
+  [ok]   tuoen trust 退出 0  exit=0 stderr=
+  [ok]   信任写入的清单在注入的 %APPDATA% 里（不在真实的那个）  C:\Users\Muelsyse\AppData\Local\Temp\tuoen-acceptance-L1-14\appdata\tuoen\trust.toml
+  [ok]   trust 的载荷有 path/fingerprint/action  sha256:4c417d31c95f0cd5d138212a358ec6da6ec81d03031a19898bd29cdfd675ebb2 trusted
+  [ok]   信任之后 auto 退出 0  exit=0 stderr=
+  [ok]   auto 的载荷里有 trust=trusted  trusted
+  [ok]   auto 的前置目录与 shell 一致  C:\Users\Muelsyse\AppData\Local\tuoen\store\node\versions\24.19.0
+  [ok]   trust --list 退出 0 且列出这条（state=trusted）  C:\Users\Muelsyse\AppData\Local\Temp\tuoen-acceptance-L1-14\proj=trusted
+  [ok]   CRLF 版的 tuoen.toml 指纹与 LF 版相同  sha256:4c417d31c95f0cd5d138212a358ec6da6ec81d03031a19898bd29cdfd675ebb2 vs sha256:4c417d31c95f0cd5d138212a358ec6da6ec81d03031a19898bd29cdfd675ebb2
+  [ok]   CRLF 版在信任后能自动切换  exit=0
+  [ok]   改一个字符后 auto 退出 1 且错误码是 fingerprint-mismatch  fingerprint-mismatch
+  [ok]   拒绝时消息里点名重新 trust
+  [ok]   trust --revoke 退出 0 且 action=revoked  revoked
+  [ok]   摘掉信任后 auto 回到 untrusted  untrusted
+  [ok]   摘掉之后清单里没有这条
+
+── 5 锁文件：tuoen lock 与不一致时的拒绝
+  [ok]   tuoen lock 退出 0 且 written=true  exit=0
+  [ok]   tuoen.lock 真的写在项目目录里  C:\Users\Muelsyse\AppData\Local\Temp\tuoen-acceptance-L1-14\proj\tuoen.lock
+  [ok]   锁里记了 version / source / path（L3 离线 bundle 的接口）
+  [ok]   锁里没有时间戳（进 git，不能每次 lock 都产生一行 diff）
+  [ok]   两次 lock 产出的锁文件逐字节相同
+  [ok]   第二次 lock 退出 0
+  [ok]   声明与锁不一致时 shell 退出 1 且错误码是 lock-mismatch  lock-mismatch
+  [ok]   不一致时消息里点名下一条命令 tuoen lock
+  [ok]   把声明改回去之后 shell 又能跑  exit=0
+
+── 6 未安装的版本 / 没有 tuoen.toml / 深度护栏
+  [ok]   pin 一个没装的版本 → 退出 1 且错误码是 version-not-installed  version-not-installed
+  [ok]   提示里给出下一条命令（tuoen install node@99）  `node` 没有满足 `99` 的版本（已经装了的：24.19.0）。跑 `tuoen install node@99` 装上，或者把 `tuoen.toml` 里的规格改成已装的版本。
+  [ok]   没有 tuoen.toml → 退出 1 且错误码是 missing-pin  missing-pin
+  [ok]   TUOEN_SHELL_DEPTH=9 → 退出 1 且错误码是 shell-depth  shell-depth
+
+── 7 收尾核对：不翻转 junction、不碰真实的 %APPDATA%
+  [ok]   nvm4w 的符号链接目标未变  C:\Users\Muelsyse\AppData\Local\nvm\v24.19.0 → C:\Users\Muelsyse\AppData\Local\nvm\v24.19.0
+  [ok]   store 里 node 的 current 目标未变  C:\Users\Muelsyse\AppData\Local\tuoen\store\node\versions\24.19.0 → C:\Users\Muelsyse\AppData\Local\tuoen\store\node\versions\24.19.0
+  [ok]   真实的 %APPDATA%\tuoen 逐项未变
+  [ok]   真实的 %LOCALAPPDATA%\tuoen 逐项未变（含 store 两层）
+  [ok]   真实的信任清单文件本身未被创建/修改
+
+SUMMARY checks_passed=70 checks_failed=0 checks_skipped=0 verdict=PASS version=0.1.0 
+        store_node_versions=1 resolved_node=24.19.0 prepend=C:\Users\Muelsyse\AppData\Local\tuoen\store\node\versions\24.19.0
+        exec_path=C:\Users\Muelsyse\AppData\Local\tuoen\store\node\versions\24.19.0\node.exe
+        nvm_link_untouched=True store_current_untouched=True real_appdata_untouched=True real_store_untouched=True out_root=C:\Users\Muelsyse\AppData\Local\Temp\tuoen-acceptance-L1-14

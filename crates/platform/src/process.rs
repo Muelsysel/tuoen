@@ -18,6 +18,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use crate::error::PlatformError;
+
 /// 一次进程调用的结果。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProcessOutcome {
@@ -203,6 +205,151 @@ impl ProcessRunner for SystemProcessRunner {
             stderr: String::from_utf8_lossy(&stderr_bytes).into_owned(),
             spawn_error: None,
         }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 继承 stdio 的那一种进程调用
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// 继承 stdio 跑一个子进程，等它结束，返回退出码。
+///
+/// # 它和 [`ProcessRunner::run`] 的区别（也是它存在的理由）
+///
+/// | | [`ProcessRunner::run`] | `spawn_inherit` |
+/// |---|---|---|
+/// | 子进程的 stdout / stderr | **捕获**成字符串与字节 | 原样继承我们的控制台 |
+/// | 子进程的 stdin | 接 NUL 设备（问问题的工具不能挂住 `detect`） | 原样继承 |
+/// | 超时 | **有**（到点就杀） | **没有** |
+///
+/// 交互式 shell 必须拿到**真正的控制台**：颜色、Ctrl-C、全屏 TUI（`vim`、`top`）
+/// 全靠它。一旦把它的 stdout 接进一根管道，它就不再是一个交互式 shell 了 ——
+/// `cmd.exe` 会关掉行编辑与回显，Ctrl-C 也送不到它手上。
+///
+/// 而"超时杀掉"对用户正在用的 shell 是**错的**：一个开了四小时的构建会话不是故障。
+/// 把超时留在这一层之外，代价是调用方**不能**拿它跑自己控制不了的第三方程序 ——
+/// 那是 [`ProcessRunner`] 的活。
+///
+/// # 一次调用只起一个子进程
+///
+/// 本函数**不 fork 自己、不重试、不 daemonize**（`AGENTS.md` 铁律 1：绝不允许任何
+/// 程序启动它自己 —— 那条规矩是两次真实事故换来的）。
+///
+/// `cmd.exe` 自己去起的孙子进程由 `cmd.exe` 管；我们只等**直接子进程**退出，
+/// 然后把它的退出码**原样**返回（与 `crates/shim` 的转发器同一个口径：
+/// `DWORD` 按 `as i32` 保留全部 32 位，所以被 Ctrl-C 打断的 `0xC000013A`
+/// 也能一位不差地传出去）。
+///
+/// # 命令行怎么拼
+///
+/// `program` 与 `args` 原样交给 [`std::process::Command`]：引号与转义**只由标准库**
+/// 处理，调用方**拿不到**一个半成品命令行（`AGENTS.md` 铁律 2）。本函数因此
+/// **不接受**一个命令行字符串 —— `cmd.exe /C "a && b"` 那种写法里，整条
+/// `"a && b"` 是**一个** argv 元素，由 `cmd.exe` 自己去解析，我们不碰。
+///
+/// # 环境块
+///
+/// `env` 是覆盖/新增，`remove` 是删除，两者都作用在**继承来的环境块**上
+/// （本函数**不** `env_clear`）。调用方要给 `PATH` 设值时，`Path` 与 `PATH`
+/// **两个拼法都要设**：Windows 的环境变量查找不区分大小写，但 Rust 的
+/// [`std::process::Command`] 是按 `OsString` 存的，不设的那一个会留着父进程的原值
+/// （本仓库既有做法见 `scripts/acceptance-L1-12.ps1`）。
+///
+/// # 已知限制：Ctrl-C 会同时打到我们身上
+///
+/// 控制台里的 Ctrl-C 是发给**整个进程组**的，所以 `tuoen` 自己也会收到。本函数
+/// 没有装控制台处理器（那是 `crates/shim` 的转发器做的事，见决策 56），
+/// 于是最坏情况下 `tuoen` 先退出、子进程继续跑，退出码就传不回来了。
+/// 这条限制**写在这里而不是被忘掉**：它不影响 `--exec` 那条非交互路径，
+/// 也不影响"子进程正常退出"这条主路径。
+///
+/// # 非 Windows
+///
+/// 返回 [`PlatformError::Unsupported`]（`what = "spawn_inherit"`）。
+/// 本项目的产品目标是 Windows，交互式 shell 的构造没有跨平台语义。
+pub fn spawn_inherit(
+    program: &Path,
+    args: &[&str],
+    raw_args: &[&str],
+    env: &[(String, String)],
+    remove: &[String],
+    cwd: Option<&Path>,
+) -> Result<i32, PlatformError> {
+    #[cfg(not(windows))]
+    {
+        // 绑定一次，避免"未使用参数"的告警，同时让这段代码在任何平台上都编译得过。
+        let _ = (program, args, raw_args, env, remove, cwd);
+        Err(PlatformError::Unsupported {
+            what: "spawn_inherit".to_owned(),
+        })
+    }
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+
+        let mut command = Command::new(program);
+        command.args(args);
+        // `raw_args` 原样拼在最后，**不经过 `Command` 的转义**。
+        //
+        // 为什么必须有这一条：`cmd.exe /C` 的解析规则**不是** MSVCRT 的规则。
+        // `Command::arg` 会把含引号的参数转义成 `\"`，而 `cmd.exe` 不认这种转义 ——
+        // 它看到的是字面的反斜杠，于是 `--exec 'node -e "console.log(1)"'` 被拆坏
+        // （真机实测：输出为空、退出码 0，**一句看起来完全合理的成功**）。
+        // 交给 `cmd.exe` 自己的解析器，引号、`&`、`|`、`%VAR%` 展开才是它本来的语义。
+        for raw in raw_args {
+            command.raw_arg(raw);
+        }
+        if let Some(dir) = cwd {
+            command.current_dir(dir);
+        }
+        for (name, value) in env {
+            command.env(name, value);
+        }
+        for name in remove {
+            command.env_remove(name);
+        }
+        // stdin / stdout / stderr 全部**不配置**：`Command` 的默认就是继承。
+        // 这里刻意不写 `Stdio::inherit()` —— 写了会让人以为还有别的选项，
+        // 而本函数存在的全部理由就是"这一条路径上没有别的选项"。
+
+        let mut child = command
+            .spawn()
+            .map_err(|error| spawn_failure(program, &error))?;
+        let status = child
+            .wait()
+            .map_err(|error| spawn_failure(program, &error))?;
+
+        // **Windows 上 `ExitStatus::code()` 永远有值**：它就是 `GetExitCodeProcess`
+        // 拿回来的那个 `DWORD`。所以这里不写 `unwrap_or(0)` —— 那会在一条
+        // （在 Windows 上）不可达的分支上把"进程没有退出码"说成"成功"，
+        // 而"一句看起来完全合理的错话"正是本仓库最不能出现的东西。
+        status.code().ok_or_else(|| PlatformError::Unsupported {
+            what: format!(
+                "spawn_inherit：子进程 `{}` 结束时没有退出码",
+                program.display()
+            ),
+        })
+    }
+}
+
+/// 把 `Command` 的 `io::Error` 归一化成一个 [`PlatformError`]。
+///
+/// **分类只依据 Win32 码，不依据错误文本**（`error.rs` 的模块文档）：
+/// 本机是 zh-CN，`ERROR_FILE_NOT_FOUND` 的消息是中文的，按文本分支换台机器就静默失效。
+///
+/// `raw_os_error()` 拿不到码时落进 [`PlatformError::Unsupported`] ——
+/// `PlatformError` 只有四个变体，另外三个各需要一个**真实的** Win32 码
+/// （`Win32 { code: 0 }` 会印出"Win32 0"，那是 `ERROR_SUCCESS`，一句假话）。
+#[cfg(windows)]
+fn spawn_failure(program: &Path, error: &std::io::Error) -> PlatformError {
+    match error.raw_os_error() {
+        // `raw_os_error()` 给的是 `i32`，而 Win32 码是 `u32` —— `as u32` **保留全部
+        // 32 位**（`0xC000013A` 这类高位码在 `i32` 里是负数，转换必须无损）。
+        Some(code) => PlatformError::from_win32(code as u32, program.display().to_string()),
+        None => PlatformError::Unsupported {
+            what: format!("spawn_inherit：{}：{error}", program.display()),
+        },
     }
 }
 

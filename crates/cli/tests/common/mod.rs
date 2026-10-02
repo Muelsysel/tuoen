@@ -88,18 +88,67 @@ impl IsolatedHome {
         self.local_app_data().join("tuoen").join("store")
     }
 
+    /// `tuoen` 自己的家目录：`<LOCALAPPDATA>\tuoen`。
+    #[must_use]
+    pub fn tuoen_home(&self) -> PathBuf {
+        self.local_app_data().join("tuoen")
+    }
+
+    /// 信任清单的位置：`<APPDATA>\tuoen\trust.toml`（决策 16 / 118）。
+    ///
+    /// **测试自己拼出来**，不向 `TrustFile::at_default_location()` 问 ——
+    /// 问它等于让"清单该落在哪"这件事跟着实现走，而那条断言的全部价值
+    /// 恰好是"它落在我们指定的那个位置、并且只落在那里"。
+    #[must_use]
+    pub fn trust_file(&self) -> PathBuf {
+        self.roaming_app_data().join("tuoen").join("trust.toml")
+    }
+
+    /// 构造一个指向这个隔离家目录的 `tuoen` 命令，**不运行**。
+    ///
+    /// 需要设 `current_dir`、加额外的环境变量（`TUOEN_SHELL_DEPTH`）、
+    /// 或者要自己控制超时的调用方用它 —— [`Self::run`] 覆盖不到这三种。
+    #[must_use]
+    pub fn command(&self) -> Command {
+        let mut command = tuoen();
+        command
+            .env("LOCALAPPDATA", self.local_app_data())
+            .env("APPDATA", self.roaming_app_data())
+            // `TUOEN_SHELL_DEPTH` 是**进程级**的输入：开发机上恰好设了它的话，
+            // "深度是 0"这条断言会红在一个根本没坏的地方（`AGENTS.md` 规矩五：
+            // 断言不许依赖机器状态）。所以这里**清掉它**，需要它的用例自己设。
+            .env_remove("TUOEN_SHELL_DEPTH");
+        command
+    }
+
     /// 跑一次 `tuoen`，环境指向这个隔离的家目录。
     pub fn run<I, S>(&self, args: I) -> Output
     where
         I: IntoIterator<Item = S>,
         S: AsRef<OsStr>,
     {
-        tuoen()
+        self.command()
             .args(args)
-            .env("LOCALAPPDATA", self.local_app_data())
-            .env("APPDATA", self.roaming_app_data())
             // 不改 HOME/USERPROFILE：它们被 `catalog`/`detect` 用到，
             // 而那两个命令读机器事实是**对的**。只隔离我们自己会写的那两个根。
+            .output()
+            .expect("运行 tuoen 应当成功")
+    }
+
+    /// 在指定的工作目录里跑一次 `tuoen`。
+    ///
+    /// `tuoen shell` / `tuoen auto` / `tuoen trust` / `tuoen lock` 都读**当前目录**
+    /// 的 `tuoen.toml`，所以这一族必须有"在哪个目录里跑"这个维度 ——
+    /// 用 `std::env::set_current_dir` 是不行的：测试是并行跑的，
+    /// 而当前目录是**进程级**的全局状态。
+    pub fn run_in<I, S>(&self, dir: &Path, args: I) -> Output
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        self.command()
+            .current_dir(dir)
+            .args(args)
             .output()
             .expect("运行 tuoen 应当成功")
     }
@@ -228,6 +277,82 @@ fn collect(root: &Path, dir: &Path, out: &mut Vec<String>) {
             collect(root, &path, out);
         } else if let Ok(rel) = path.strip_prefix(root) {
             out.push(rel.to_string_lossy().replace('\\', "/"));
+        }
+    }
+}
+
+/// 递归列出一棵目录树（**含目录与重解析点**），返回排序后的描述行。
+///
+/// 与 [`list_files`] 的区别有两条，都是被本仓库的教训逼出来的：
+///
+/// 1. **目录也算。** "有没有多出一个目录"看不见的话，最严重的那类副作用
+///    （凭空多出一个 junction、在 store 里多出一个工具目录）恰好落在盲区里 ——
+///    这正是决策 50 的第二次教训：断言要**往被测代码会写的那个目录里看一层**。
+/// 2. **重解析点只记目标、不递归进去。** 顺着 junction 走会跑到它指向的任何地方，
+///    而那可能不是被测代码该碰的地方，也可能根本不是这棵树的子树。记下**目标本身**
+///    也是"junction 有没有被翻转"唯一的证据（决策 119 的硬要求）。
+///
+/// 每一行形如 `相对路径 [dir]` / `相对路径 [file 123]` / `相对路径 [junction->目标]`。
+/// 大小也进描述：一份被改过内容的清单通常连长度都变了。
+///
+/// **比较两个集合时两边都要先排序**（决策 94 的第三次）—— 所以这里返回的就是
+/// 排好序的，调用方不必也不能再排一次。
+#[must_use]
+pub fn list_tree(root: &Path) -> Vec<String> {
+    let mut out = Vec::new();
+    walk_tree(root, root, &mut out);
+    out.sort();
+    out
+}
+
+fn walk_tree(root: &Path, dir: &Path, out: &mut Vec<String>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut children: Vec<_> = entries.flatten().collect();
+    // 目录项的枚举顺序不是契约（NTFS 上通常是索引序，但没人保证），
+    // 所以先排一次再走 —— 递归的顺序会影响 `out` 的顺序，而 `out` 会被排序，
+    // 所以这一步只影响可读性；留着它是为了让"同一棵树"在任何机器上产出同一串。
+    children.sort_by_key(std::fs::DirEntry::file_name);
+
+    for entry in children {
+        let path = entry.path();
+        let rel = path
+            .strip_prefix(root)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .replace('\\', "/");
+
+        // 重解析点先判：junction 与 symlink 都不许递归进去。
+        match tuoen_platform::junction_target(&path) {
+            Ok(Some(target)) => {
+                out.push(format!("{rel} [junction->{}]", target.display()));
+                continue;
+            }
+            Ok(None) => {}
+            Err(error) => {
+                // 读不出目标的链接**照样要出现在清单里**：它是"这里有个东西"
+                // 这件事本身，而"看不见"比"看见一个坏掉的链接"危险得多。
+                out.push(format!("{rel} [reparse-unreadable {error}]"));
+                continue;
+            }
+        }
+
+        let Ok(meta) = std::fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if meta.file_type().is_symlink() {
+            let target = std::fs::read_link(&path)
+                .map(|target| target.display().to_string())
+                .unwrap_or_else(|_| "?".to_owned());
+            out.push(format!("{rel} [symlink->{target}]"));
+            continue;
+        }
+        if meta.is_dir() {
+            out.push(format!("{rel} [dir]"));
+            walk_tree(root, &path, out);
+        } else {
+            out.push(format!("{rel} [file {}]", meta.len()));
         }
     }
 }

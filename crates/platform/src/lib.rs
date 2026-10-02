@@ -53,7 +53,9 @@ pub use path::{
     missing_from_path, normalize_entry, parse_entries, plan_add, plan_remove, run, shim_commands,
     write_type_for,
 };
-pub use process::{DEFAULT_PROBE_TIMEOUT, ProcessOutcome, ProcessRunner, SystemProcessRunner};
+pub use process::{
+    DEFAULT_PROBE_TIMEOUT, ProcessOutcome, ProcessRunner, SystemProcessRunner, spawn_inherit,
+};
 pub use registry::{RealRegistry, RegHive, RegValue, Registry, expand_vars};
 pub use sys::{FindFacts, RawRegValue, RootKey, Win32Code};
 

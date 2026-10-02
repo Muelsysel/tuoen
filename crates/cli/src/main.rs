@@ -21,6 +21,7 @@ mod doctor_cmd;
 mod doctor_view;
 mod envelope;
 mod exit;
+mod lock_cmd;
 mod manage;
 mod manage_cmd;
 mod manage_view;
@@ -28,9 +29,13 @@ mod managed;
 mod path;
 mod path_cmd;
 mod path_view;
+mod pin_view;
+mod shell;
+mod shell_cmd;
 mod shim;
 mod shim_cmd;
 mod shim_view;
+mod trust_cmd;
 mod view;
 
 use clap::Parser;
@@ -87,6 +92,13 @@ fn run() -> i32 {
         // `path` 那一族**只动用户级 `PATH`**，而且 `show` 只读。
         // `--json` 在每一个叶子命令上（与 `shim` 那一族一致）。
         Command::Path(command) => path_cmd::run_command(&command),
+        // 项目级 pin 那一族（`docs/DESIGN.md` §1.16）。四个命令共用同一个计划
+        // 构造器与同一套视图：`shell` 与 `auto` 的差别只有一道信任门（决策 121），
+        // `lock` 与它们共用同一个解析器。
+        Command::Shell(args) => shell_cmd::run_shell(&args),
+        Command::Auto(args) => shell_cmd::run_auto(&args),
+        Command::Trust(args) => trust_cmd::run(&args),
+        Command::Lock(args) => lock_cmd::run(&args),
     }
 }
 
