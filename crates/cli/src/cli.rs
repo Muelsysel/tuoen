@@ -5,6 +5,7 @@
 
 use clap::{Args, Parser, Subcommand};
 
+use crate::capture::CaptureArgs;
 use crate::catalog::CatalogCommand;
 use crate::detect::DetectArgs;
 use crate::manage::{InstallArgs, UninstallArgs, UseArgs};
@@ -65,6 +66,41 @@ pub enum Command {
 本机的 Java 就是「PATH 上 java 来自 Oracle 1.8.0_491，而 javac 来自 Amazon 1.8.0_492」
 —— 这是真实的分裂，不是重复。`#` 列就是用来一眼看出这件事的。"#)]
     Detect(DetectArgs),
+
+    /// 只读地把整机开发状态写成一个可提交进仓库的 `tuoen.d/`。
+    #[command(long_about = r#"只读地把整机开发状态写成一个 `tuoen.d/` 目录。
+
+**这条命令只读。** 它不写 `PATH`、不写注册表、不动任何工具 ——
+它把读到的四样东西写成文件。真正改机器的那条路是 `restore`，而它还不存在。
+
+## 写出来的文件是给人提交进仓库的
+
+  schema.toml    这一份快照是谁写的、包含哪些 section
+  tools.toml     工具与版本（每条带来源与置信度）
+  path.toml      `PATH` 的结构（作用域、顺序、长度预算、reparse 形状）
+  env.toml       持久环境变量（用户级 + 机器级）
+  wsl.toml       WSL 发行版与它们**实际**的 vhdx 路径
+  skipped.toml   看见了但**故意没写**的东西，以及为什么
+
+正因为它要进仓库，`skipped.toml` 是这份快照的一部分而不是一条日志：
+形似凭据的环境变量**不会被写进 `env.toml`**，而是记进跳过清单（只有名字与原因，
+没有任何材料）。**静默跳过是 bug** —— 它会让「都备份好了」变成一句假话。
+这份目录是可 diff 的：换机器时，两份 `tuoen.d/` 的差异就是你要重建的东西。
+
+## `--only` 是「格式层面」的选择性捕获，不是事后过滤
+
+只捕获 `path` 时，`tools.toml` / `env.toml` / `wsl.toml` **根本不会被生成**，
+而 `schema.toml` 的 `sections` 里只有 `["path"]` —— 于是「这份快照没捕获 tools」
+与「这台机器上没有工具」是**两件分得开的事**。事后过滤做不到这一点：
+它读得出「没有」，读不出「没看」，而 `restore` 会把「没看」读成「没有」。
+`skipped.toml` 也是这个道理：没扫过环境变量就没有这个文件，
+因为它要说的是「扫过了，跳过了什么」。
+
+## 默认值
+
+写到**当前目录**下的 `tuoen.d/`。`--no-version` 跳过版本探测（快得多，
+`tools.toml` 里的版本会是空的）；`--json` 给脚本与未来的 GUI 读，键与取值不本地化。"#)]
+    Capture(CaptureArgs),
 
     /// 下载并安装一个工具的某个版本到 tuoen 的存储里。
     #[command(long_about = r#"下载并安装一个工具的某个版本到 tuoen 的存储里。

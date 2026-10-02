@@ -1,0 +1,221 @@
+票据 #12（L1 捕获）真机运行记录
+生成时间：2026-10-03 02:38:55 +08:00
+机器：MUELSYSE / Microsoft Windows 11 专业版 build 10.0.26200.0
+PowerShell：7.6.6
+二进制：C:\Work\EasyEnvForWin\target\release\tuoen.exe（2009600 字节，2026-10-02 18:38:53Z）
+生成方式：scripts 里没有保留生成器；下面每一段都是当时命令的原样输出。
+验收脚本（可重跑）：pwsh -File scripts/acceptance-L1-12.ps1
+
+── §A 两个作用域（原始注册表，未经任何工具）
+machine  长度=1007  类型=String  条目=33  SHA256=9c398a20981ee862114899a1b489a0c7611a11678cc31dbdd003c028c8f8f6ed
+user     长度=773  类型=String  条目=16  SHA256=51aeee76b367d42e3c668ab165d4612d9b8c0267c754caa1f4cadb570d600755
+新终端口径（机器级 + ; + 用户级，展开一次）= 1781 字符 / 49 段
+1007 + 1 + 773 = 1781（两段原文里都没有 %VAR%，展开是恒等操作）
+
+── §B tuoen capture --out run1 --json（exit=0）
+{"schemaVersion":1,"command":"capture","ok":true,"data":{"capturedAt":"2026-10-02T18:38:55Z","env":{"machine":19,"total":32,"user":13},"files":["schema.toml","tools.toml","path.toml","env.toml","wsl.toml","skipped.toml"],"outDir":"C:\\Users\\Muelsyse\\AppData\\Local\\Temp\\tuoen-acceptance-L1-12\\run1","path":{"byScope":[{"count":33,"scope":"machine"},{"count":16,"scope":"user"},{"count":0,"scope":"process-only"}],"cliff":8191,"duplicates":18,"effectiveChars":1781,"entries":49,"level":"ok","rawMachineChars":1007,"rawUserChars":773,"remaining":6410},"schemaVersion":1,"sections":["env","path","tools","wsl"],"skipped":[{"kind":"credential-named","name":"ARK_API_KEY","scope":"user","section":"env"}],"tools":{"byConfidence":[{"confidence":"alias-ghost","count":2},{"confidence":"directory-only","count":2},{"confidence":"executable","count":10},{"confidence":"managed","count":1},{"confidence":"manager-owned","count":2},{"confidence":"registered","count":4},{"confidence":"registered-missing","count":6}],"entries":27},"wsl":{"distributions":2,"nonStandardPath":1,"vhdxMissing":0}}}
+
+
+── §C1 path.toml 的 [budget] 段（票据要求贴的那一段）
+[budget]
+raw_user_chars = 773
+raw_machine_chars = 1007
+effective_chars = 1781
+cliff = 8191
+remaining = 6410
+level = "ok"
+
+── §C2 空条目那一条（真机 HKLM 第 21 段）
+[[entry]]
+scope = "machine"
+index = 21
+owner = "unknown"
+raw = ""
+expanded = ""
+quoted = false
+empty = true
+reg_type = "sz"
+exists = "unknown"
+reparse = "none"
+has_vars = false
+has_username = false
+dup_index = 0
+
+── §C3 全部 exists = "no" 的条目（判据是 !empty && exists == no）
+scope = "machine"  index = 1  raw = 'C:\Program Files (x86)\Common Files\Oracle\Java\javapath'  expanded = 'C:\Program Files (x86)\Common Files\Oracle\Java\javapath'  empty = false  exists = "no"
+scope = "machine"  index = 8  raw = 'C:\Software\tool'  expanded = 'C:\Software\tool'  empty = false  exists = "no"
+scope = "machine"  index = 28  raw = 'C:\Software\tool'  expanded = 'C:\Software\tool'  empty = false  exists = "no"
+scope = "user"  index = 6  raw = 'C:\Users\Muelsyse\AppData\Local\Programs\MVTec\HALCON-25.11-Progress\bin\x64-win64'  expanded = 'C:\Users\Muelsyse\AppData\Local\Programs\MVTec\HALCON-25.11-Progress\bin\x64-win64'  empty = false  exists = "no"
+scope = "user"  index = 7  raw = 'C:\Users\Muelsyse\AppData\Local\Programs\Python\Python311\Scripts\'  expanded = 'C:\Users\Muelsyse\AppData\Local\Programs\Python\Python311\Scripts\'  empty = false  exists = "no"
+scope = "user"  index = 8  raw = 'C:\Users\Muelsyse\AppData\Local\Programs\Python\Python311\'  expanded = 'C:\Users\Muelsyse\AppData\Local\Programs\Python\Python311\'  empty = false  exists = "no"
+scope = "user"  index = 11  raw = 'C:\Software\tool\'  expanded = 'C:\Software\tool\'  empty = false  exists = "no"
+
+── §C4 path.toml 的形状计数
+[[entry]]              49
+[[effective]]          30
+exists=no              7
+exists=unknown         1
+empty=true             1
+has_username=true      12
+reg_type=sz            49
+reg_type=expand-sz     0
+reparse=none           46
+reparse=junction       1
+reparse=symlink-dir    2
+reparse=app-exec-alias 0
+dup_index>0 的行数      18   （= 重复条目的条数；票据要求贴的计数）
+dup_index 最大值        2
+
+── §D 独立核对：这些数字是 PowerShell 直接从注册表与磁盘数出来的
+机器级 33 段 / 用户级 16 段 / 合计 49 段（非空 48，空 1）
+不同值 30 个 → 重复富余 18 条
+失效（非空 + 目录不存在）7 条
+硬编码用户名（含 \users\ 且不含 %）12 条
+
+失效条目逐条（Test-Path -PathType Container 的原始结果）：
+  1. <C:\Program Files (x86)\Common Files\Oracle\Java\javapath>  Test-Path=False
+  2. <C:\Software\tool>  Test-Path=False
+  3. <C:\Software\tool>  Test-Path=False
+  4. <C:\Users\Muelsyse\AppData\Local\Programs\MVTec\HALCON-25.11-Progress\bin\x64-win64>  Test-Path=False
+  5. <C:\Users\Muelsyse\AppData\Local\Programs\Python\Python311\Scripts\>  Test-Path=False
+  6. <C:\Users\Muelsyse\AppData\Local\Programs\Python\Python311\>  Test-Path=False
+  7. <C:\Software\tool\>  Test-Path=False
+
+── §E 幂等：两次捕获只差时间戳
+第二次捕获 exit=0
+schema.toml    去掉时间戳后逐字节相同=True  （run1 有 142 字节，run2 有 142 字节）
+tools.toml     去掉时间戳后逐字节相同=True  （run1 有 9106 字节，run2 有 9106 字节）
+path.toml      去掉时间戳后逐字节相同=True  （run1 有 15348 字节，run2 有 15348 字节）
+env.toml       去掉时间戳后逐字节相同=True  （run1 有 10116 字节，run2 有 10116 字节）
+wsl.toml       去掉时间戳后逐字节相同=True  （run1 有 666 字节，run2 有 666 字节）
+skipped.toml   去掉时间戳后逐字节相同=True  （run1 有 269 字节，run2 有 269 字节）
+run1 captured_at = 2026-10-02T18:38:55Z
+run2 captured_at = 2026-10-02T18:38:57Z
+
+── §F --only 是格式层面的选择（别的 section 根本没被生成）
+--only path   → 文件 [path.toml, schema.toml]  schema.sections = ["path"]
+--only env    → 文件 [env.toml, schema.toml, skipped.toml]  schema.sections = ["env"]
+--only tools  → 文件 [schema.toml, tools.toml]  schema.sections = ["tools"]
+--only wsl    → 文件 [schema.toml, wsl.toml]  schema.sections = ["wsl"]
+
+── §G 跳过清单：名字在，材料一个字节都不在
+schema_version = 1
+captured_at = "2026-10-02T18:38:55Z"
+
+[[skipped]]
+section = "env"
+scope = "user"
+name = "ARK_API_KEY"
+kind = "credential-named"
+reason = "变量名里有 `KEY`，且值够长、不像路径 —— 无法排除它是凭据，所以没有写进快照"
+
+user 级变量 ARK_API_KEY：值长 46 字符；把「整值 / 前 8 字符 / 后 4 字符」拿去搜 30 个产出文件，命中 0 个（期望 0）
+  env.toml 里有没有它：False（期望 False）
+  skipped.toml 里有没有它：True（期望 True）
+
+── §H scripts/acceptance-L1-12.ps1 -SkipBuild（exit=0）
+
+── 0 二进制（release + 它真的知道 capture）
+  [skip] 构建 release 二进制  (被 -SkipBuild 跳过)
+  [ok]   二进制存在  C:\Work\EasyEnvForWin\target\release\tuoen.exe
+  [ok]   help 里有 --only
+  [ok]   help 里有 --out
+  [ok]   help 里有 --no-version
+  [ok]   help 里有 --json
+  [ok]   help 说这条命令只读
+
+── 1 预检（结构断言 + 快照）
+  [ok]   仓库里没有带引号的 "setx 字面量  命中 0
+  [ok]   捕获路径里没有任何写机器的调用  命中 0
+  两个作用域：user 773 字符 / String / 51aeee76b367
+              machine 1007 字符 / String / 9c398a20981e
+  新终端口径（展开后）：1781 字符
+
+── 2 真机跑一次（六个文件）
+  [ok]   capture 退出 0  exit=0
+  [ok]   输出是 JSON（有 data 键）
+  [ok]   --json 里没有 CJK
+  [ok]   六个文件都在  env.toml, path.toml, schema.toml, skipped.toml, tools.toml, wsl.toml
+  [ok]   sections 是那四个
+  [ok]   effectiveChars 等于新终端口径的长度  1781 vs 1781
+
+── 3 独立核对：脚本自己数一遍，再与产出对
+  脚本数出来：机器 33 段 / 用户 16 段 / 合计 49（非空 48，空 1）
+             不同值 30 → 重复富余 18；失效 7；硬编码用户名 12
+  [ok]   rawMachineChars 对得上  1007 vs 1007
+  [ok]   rawUserChars 对得上  773 vs 773
+  [ok]   条目数对得上  49 vs 49
+  [ok]   重复条目数对得上  18 vs 18
+  [ok]   机器级行数对得上  33 vs 33
+  [ok]   用户级行数对得上  16 vs 16
+  [ok]   失效条目数对得上（判据 !empty && exists == no）  7 vs 7
+  [ok]   空条目被记成 empty = true  1 vs 1
+  [ok]   空条目的 exists 是 unknown  1 vs 1
+  [ok]   硬编码用户名条数对得上
+  [ok]   [[effective]] 没有悬空引用  30 条引用 / 悬空 0
+  [ok]   [[effective]] 去掉了重复与空条目  30 vs 不同值 30
+
+── 3.5 env.toml：target_exists 每一条都要经得起独立复核
+  [ok]   env.toml 里有变量行  32 条
+  [ok]   每一条 yes 的目标都真的在盘上
+  [ok]   每一条 no 的目标都真的不在盘上（不是假问题）
+  [ok]   含分号的值一律 not-a-path 且不记 target
+  target_exists 分布：no=1 yes=16 not-a-path=15
+
+── 4 幂等：两次捕获只差时间戳
+  [ok]   第二次也退出 0
+  [ok]   schema.toml 逐字节相同
+  [ok]   tools.toml 逐字节相同
+  [ok]   path.toml 逐字节相同
+  [ok]   env.toml 逐字节相同
+  [ok]   wsl.toml 逐字节相同
+  [ok]   skipped.toml 逐字节相同
+  [ok]   时间戳确实在动（否则「相同」可能是假话）
+
+── 5 --only 是格式层面的选择，不是事后过滤
+  [ok]   --only path：只有 path.toml+schema.toml  path.toml, schema.toml
+  [ok]   --only path：sections 只有它
+  [ok]   --only path：别的 section 根本没被生成
+  [ok]   --only env：只有 env.toml+schema.toml+skipped.toml  env.toml, schema.toml, skipped.toml
+  [ok]   --only env：sections 只有它
+  [ok]   --only env：别的 section 根本没被生成
+  [ok]   --only tools：只有 tools.toml+schema.toml  schema.toml, tools.toml
+  [ok]   --only tools：sections 只有它
+  [ok]   --only tools：别的 section 根本没被生成
+  [ok]   --only wsl：只有 wsl.toml+schema.toml  schema.toml, wsl.toml
+  [ok]   --only wsl：sections 只有它
+  [ok]   --only wsl：别的 section 根本没被生成
+
+── 6 跳过清单：名字在，材料一个字节都不在
+  [ok]   跳过项 ARK_API_KEY 有 kind
+  [ok]   跳过项 ARK_API_KEY 的值没有任何字节落进产出（长 46）
+  [ok]   跳过项 ARK_API_KEY 的名字在 skipped.toml 里
+  [ok]   跳过项 ARK_API_KEY 没有进 env.toml
+  [ok]   成功载荷里没有 reason 键
+  [ok]   持久变量总数 = 写进 env.toml 的 + 跳过的  32 + 1 vs 33
+
+── 7 --no-version 真的少探测
+  [ok]   --no-version 的版本行数更少  3 < 15
+  [ok]   --no-version 仍然列出全部工具
+  [ok]   结构性的版本仍然在（不是「全都缺席」）  3 条
+
+── 8 收尾核对：这条命令真的只读
+  [ok]   用户级 Path 逐字节相同  51aeee76b367
+  [ok]   机器级 Path 逐字节相同  9c398a20981e
+  [ok]   用户级 Path 的 SHA 相同
+  [ok]   机器级 Path 的 SHA 相同
+  [ok]   %LOCALAPPDATA%\tuoen 没被动过
+  [ok]   store 没被动过
+  [ok]   没有在 %TEMP% 根上留下 tuoen.d
+  [ok]   产出只在这一次的目录里
+
+SUMMARY checks_passed=67 checks_failed=0 checks_skipped=1 verdict=PASS version=0.1.0 
+        raw_user_chars=773 raw_machine_chars=1007 effective_chars=1781 entries=49 duplicates=18 dangling=7 empty=1 username_deps=12 skipped_secrets=1
+        user_path_untouched=True machine_path_untouched=True out_root=C:\Users\Muelsyse\AppData\Local\Temp\tuoen-acceptance-L1-12
+
+── §I 收尾：两个作用域的 SHA 与捕获之前相同
+machine  长度=1007  类型=String  SHA256=9c398a20981ee862114899a1b489a0c7611a11678cc31dbdd003c028c8f8f6ed
+user     长度=773  类型=String  SHA256=51aeee76b367d42e3c668ab165d4612d9b8c0267c754caa1f4cadb570d600755
+%LOCALAPPDATA%\tuoen 顶层：shims, store
+store 里已安装：.incoming, node
+本次产出目录：C:\Users\Muelsyse\AppData\Local\Temp\tuoen-acceptance-L1-12

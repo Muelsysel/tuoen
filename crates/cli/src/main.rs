@@ -11,6 +11,8 @@
 //! 磁盘模型（`tuoen_manifest::Catalog`）的字段名是 TOML 的形状，把它当接口会让
 //! TOML 字段名变成事实上的公开 API。
 
+mod capture;
+mod capture_cmd;
 mod catalog;
 mod cli;
 mod detect;
@@ -63,6 +65,10 @@ fn run() -> i32 {
             CatalogCommand::Check(args) => run_catalog_check(&args),
         },
         Command::Detect(args) => run_detect(&args),
+        // `capture` 与 `detect` 是同一类：读这台机器、**一个字节都不改**。
+        // 区别只在这条命令会把读到的东西写成 `tuoen.d/`（落到 `--out`），
+        // 而 `detect` 只把结果印出来。
+        Command::Capture(args) => capture_cmd::run(&args),
         Command::Install(args) => manage_cmd::run_install(&args),
         Command::Use(args) => manage_cmd::run_use(&args),
         Command::Uninstall(args) => manage_cmd::run_uninstall(&args),

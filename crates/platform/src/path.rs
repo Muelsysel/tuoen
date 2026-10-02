@@ -362,9 +362,9 @@ pub fn hardcoded_username(value: &str) -> Option<String> {
 #[must_use]
 pub fn analyze<E, P, F>(block: &E, process: &P, fs: &F, shim_dir: Option<&Path>) -> PathAnalysis
 where
-    E: EnvBlock,
-    P: ProcessEnv,
-    F: FileSystem,
+    E: EnvBlock + ?Sized,
+    P: ProcessEnv + ?Sized,
+    F: FileSystem + ?Sized,
 {
     let mut scopes = Vec::new();
     for scope in [EnvScope::Machine, EnvScope::User] {
@@ -530,7 +530,7 @@ where
 /// 走**真实的生效顺序**（`effective`），对每条命令取第一个命中它的目录；
 /// 命中目录不是我们的 shim 目录就是被遮蔽了。`by` 里带着那条条目的出处
 /// —— 可能是机器级、用户级，也可能是**进程注入**的（它排在机器级前面）。
-fn detect_shadowing<F: FileSystem>(
+fn detect_shadowing<F: FileSystem + ?Sized>(
     fs: &F,
     effective: &[EntryRef],
     shim_dir: &Path,
@@ -582,7 +582,7 @@ fn detect_shadowing<F: FileSystem>(
 /// 消费方要分得开这两件事（曾写出过"每条命令都是第一个被命中的"这种
 /// 在空目录上毫无意义的结论）。
 #[must_use]
-pub fn shim_commands<F: FileSystem>(fs: &F, shim_dir: &Path) -> Vec<String> {
+pub fn shim_commands<F: FileSystem + ?Sized>(fs: &F, shim_dir: &Path) -> Vec<String> {
     let mut names: Vec<String> = fs
         .list_dir(shim_dir)
         .into_iter()

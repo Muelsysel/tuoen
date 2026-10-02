@@ -6,10 +6,15 @@
 //!
 //! 见 `docs/specs/L0-install-engine.md`（模块划分）与 `docs/specs/L1-dev-state.md`（测试 seam）。
 
+pub mod capture;
 pub mod detect;
 pub mod list;
 pub mod shim;
 
+pub use capture::{
+    CaptureBundle, CaptureError, CaptureOptions, Existence, SCHEMA_VERSION, Section, SkipEntry,
+    SkippedFile, TargetExistence, capture, render, without_timestamp, write_bundle,
+};
 pub use detect::{Confidence, DetectedTool, DetectionSource, DetectionSummary};
 pub use list::{ListResult, ToolRecord, ToolSource};
 pub use shim::{ShimCommand, command_names, shim_commands, tool_for_command};
