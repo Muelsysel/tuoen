@@ -1,0 +1,53 @@
+=== tuoen 归档安装层 · 真机验收（票据 #5）===
+机器：MUELSYSE
+
+=== 0. 解压器 ===
+  程序：C:\WINDOWS\System32\tar.exe
+  版本：bsdtar 3.8.8 - libarchive 3.8.8 zlib/1.2.13.1-motley liblzma/5.8.1 bz2lib/1.0.8 libzstd/1.5.7 cng/2.0 libb2/bundled
+
+工作目录：C:\Users\Muelsyse\AppData\Local\Temp\tuoen-install-probe
+
+=== 1. 取上游公布的哈希 ===
+  取回 2967 字节：https://nodejs.org/dist/v24.19.0/SHASUMS256.txt
+=== 2. 真的装一个 .zip：node-v24.19.0-win-x64.zip ===
+  上游哈希：57f71ab3652e797d84acddc79c81cc9ff1c6ddb2a1974cdb83f00fee9bff4c73
+  取到：C:\Users\Muelsyse\AppData\Roaming\tuoen\cache\sha256\57\57f71ab3652e797d84acddc79c81cc9ff1c6ddb2a1974cdb83f00fee9bff4c73（37304352 字节，来自 cn-npmmirror，缓存命中：true，0.1s）
+  装上：C:\Users\Muelsyse\AppData\Local\Temp\tuoen-install-probe\versions\24.19.0-zip（2453 个条目，101.2 MB，审计 1.4s）
+  临时目录 C:\Users\Muelsyse\AppData\Local\Temp\tuoen-install-probe\versions\.staging-24.19.0-zip-10376-0 已清理：true
+  node.exe：92825416 字节
+  ✓ `node.exe --version` → v24.19.0（来自 node-v24.19.0-win-x64.zip）
+
+=== 3. 真的装一个 .7z：node-v24.19.0-win-x64.7z ===
+  这一条是**票据里那个假设的正面检验**：原设计写的是
+  "`.7z` 是唯一需要内置库的缺口"。
+  上游哈希：64ab848053d7d055b66c0ca9ee94eccaa497e1f867de3216eaef6150ca82e075
+  取到：C:\Users\Muelsyse\AppData\Roaming\tuoen\cache\sha256\64\64ab848053d7d055b66c0ca9ee94eccaa497e1f867de3216eaef6150ca82e075（23441591 字节，来自 cn-npmmirror，缓存命中：true，0.1s）
+  装上：C:\Users\Muelsyse\AppData\Local\Temp\tuoen-install-probe\versions\24.19.0-7z（2453 个条目，101.2 MB，审计 2.2s）
+  临时目录 C:\Users\Muelsyse\AppData\Local\Temp\tuoen-install-probe\versions\.staging-24.19.0-7z-10376-1 已清理：true
+  node.exe：92825416 字节
+  ✓ `node.exe --version` → v24.19.0（来自 node-v24.19.0-win-x64.7z）
+
+=== 4. 两个格式解出来的东西必须一致 ===
+  .zip  解开 1989 个文件
+  .7z   解开 1989 个文件
+  ✓ 两个格式给出同样的文件数（1989）
+
+=== 5. 恶意归档：每一种变体都必须被拒，且磁盘上不留任何东西 ===
+  ✓ `..` 被拒：unsafe-entry / parent-traversal（条目名里有 `..`），磁盘干净
+  ✓ `/escaped-abs.txt` 被拒：unsafe-entry / absolute-path（条目名是绝对路径（`-tf` **保留**前导 `/`，剥掉发生在解压时）），磁盘干净
+  ✓ `//server/share/unc.txt` 被拒：unsafe-entry / unc-path（UNC 网络路径），磁盘干净
+  ✓ `NUL.txt` 被拒：unsafe-entry / reserved-device-name（保留设备名），磁盘干净
+  ✓ `trailing.` 被拒：unsafe-entry / trailing-dot-or-space（结尾的点），磁盘干净
+  ✓ `stream.txt:evil` 被拒：unsafe-entry / alternate-data-stream（`:`（ADS 写原语）），磁盘干净
+
+=== 6. 长路径与难路径 ===
+  ✓ 含空格与版本号的路径装上了：C:\Users\Muelsyse\AppData\Local\Temp\tuoen-install-probe\hard-versions\spaces\IntelliJ IDEA 2026.1.1/bin/idea64.exe
+  ✓ 长路径装上了（399 字符 > 260）：能读回 4 字节
+
+=== 7. 原子性：审计不通过时最终名字从未出现过 ===
+  ✓ 被拒：unsafe-result-path / too-large
+    最终目录存在？false　临时目录残留？false
+  ✓ 磁盘上什么都没有 —— "要么完整成功，要么完全不留痕"成立
+
+=== 结论 ===
+  全部通过。

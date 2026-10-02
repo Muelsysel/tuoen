@@ -8,6 +8,11 @@ repository.workspace = true
 description = "tuoen 的平台层：所有 Win32 调用都收在这里，业务逻辑不得出现 #[cfg(windows)]。"
 publish = false
 
+[features]
+# 给**别的 crate 的测试**用：`tuoen-platform` 的临时目录等测试工具。
+# 只在 `dev-dependencies` 里开，不会进入任何发布产物。
+test-support = []
+
 [lints]
 workspace = true
 

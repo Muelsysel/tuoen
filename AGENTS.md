@@ -61,7 +61,8 @@ Single-context: one `GLOSSARY.md` and one `docs/adr/` at the repo root. See `doc
 - `cmd.exe` 在 `PATH` 超过 **8191 字符**后**完全忽略**它（整条 PATH 一次性全部失效）；`setx` 在 **1024** 处裁剪
 - 相对路径**永远**受 `MAX_PATH`(260) 限制——`\\?\` 无法加前缀
 - `PATH` 上 29% 的条目含空格，最糟的同时含空格和版本号
-- 归档：系统自带 `tar.exe` 是 bsdtar 3.8.8（zip/tar.gz/tar.xz/tar.zst/tar.bz2 都能走它），**`.7z` 是唯一缺口**
+- 归档：系统自带 `tar.exe` 是 bsdtar 3.8.8（zip/tar.gz/tar.xz/tar.zst/tar.bz2 **以及 7z** 都能走它——7z 那条是**实测**的，见 `research/BSDTAR_SAFETY_MEASURED.md`）
+- **bsdtar 对路径逃逸可靠（`..`/symlink/硬链接/设备全拒，且退出码变 1），但对名字的危险形态不可靠**：`CON` 真的会被创建且普通路径看不见、`trailing.` 删不掉、`:` 被静默改名、大小写碰撞静默覆盖。所以解压必须自己校验条目名
 
 ## 构建这台机器（三个实测发现，别重新踩）
 

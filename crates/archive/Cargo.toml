@@ -1,0 +1,22 @@
+[package]
+name = "tuoen-archive"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "tuoen 的安全解压与原子安装（Zip Slip 防护、\\?\\ 长路径、失败不留痕）"
+publish = false
+
+[dependencies]
+tuoen-platform = { workspace = true }
+tuoen-manifest = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+# `test-support` 给出临时目录等测试工具 —— 解压测试必须在真实文件系统上跑。
+tuoen-platform = { workspace = true, features = ["test-support"] }
+# 真机验收例子要**真的下载**一个制品 —— 走票据 #4 的成果，不自己再写一遍传输层。
+tuoen-download = { workspace = true }
+
+[lints]
+workspace = true

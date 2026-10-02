@@ -21,8 +21,14 @@ pub mod process;
 pub mod registry;
 pub mod sys;
 
-#[cfg(test)]
-pub(crate) mod test_support;
+/// 测试用的最小工具（临时目录等）。
+///
+/// **`pub` 而不是 `pub(crate)`**：`tuoen-archive` 的测试要在真实文件系统上
+/// 验证解压与清理，而它需要的是"一个绝对路径、`Drop` 时删掉"这种
+/// 与平台细节无关的东西。与其在三个 crate 里各写一份，不如开一个
+/// `test-support` feature —— 它只在 `dev-dependencies` 里被打开。
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
 
 pub use env_block::{
     EnvBlock, EnvScope, EnvVar, InMemoryEnv, MACHINE_ENV_SUBKEY, ProcessEnv, RealEnvBlock,
