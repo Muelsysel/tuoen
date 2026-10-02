@@ -1,0 +1,262 @@
+# L0-09 真机验收 —— 机器工件
+
+机器：Windows 10.0.26200 / PowerShell 7.6.6
+时间：2026-10-03 01:40:53 +08:00
+生成方式：scripts/acceptance-L0-09.ps1 的输出 + 手工真机实验的原始输出，**逐段原样粘贴，没有手写数字**。
+这一份是机器可读的原始证据；解释与结论在 docs/acceptance/L0-09-real-machine.md。
+
+════════════════════════════════════════════════════════════════════
+§ A. 手感第一跑：冷缓存下真下载（node@24.20.0）
+    install 的 result 段原样输出 —— 注意 attempts 里 150442ms 的那一条
+════════════════════════════════════════════════════════════════════
+{
+  "activated": false,
+  "attempts": [
+    {
+      "code": "source-unavailable",
+      "message": "取 https://cdn.npmmirror.com/binaries/node/v24.20.0/node-v24.20.0-win-x64.zip 失败（curl 退出码 56）：curl: (56) schannel: server closed abruptly (missing close_notify)",
+      "millis": 150442,
+      "ok": false,
+      "source": "cn-npmmirror",
+      "url": "https://cdn.npmmirror.com/binaries/node/v24.20.0/node-v24.20.0-win-x64.zip"
+    },
+    {
+      "code": null,
+      "message": null,
+      "millis": 4053,
+      "ok": true,
+      "source": "cn-tencent",
+      "url": "https://mirrors.cloud.tencent.com/nodejs-release/v24.20.0/node-v24.20.0-win-x64.zip"
+    }
+  ],
+  "audit": {
+    "bytes": 106774079,
+    "entries": 2458,
+    "maxDepth": 10
+  },
+  "bytes": 37539751,
+  "cachedPath": "C:\\Users\\Muelsyse\\AppData\\Roaming\\tuoen\\cache\\sha256\\6c\\6cac9ffbca8f6a47091e4b5c772e0606049c3871cb67d900c0cedde630e545ba",
+  "failuresBeforeSuccess": 1,
+  "files": 1994,
+  "fromCache": false,
+  "listedEntries": 2459,
+  "payloadBytes": 106774079,
+  "repoint": null,
+  "source": "cn-tencent",
+  "url": "https://mirrors.cloud.tencent.com/nodejs-release/v24.20.0/node-v24.20.0-win-x64.zip"
+}
+
+墙钟（外层 Measure 得到）：156.14 秒
+
+════════════════════════════════════════════════════════════════════
+§ B. 两个作用域 Path 的快照（不展开读）—— 本次验收开始前
+════════════════════════════════════════════════════════════════════
+{
+  "User": {
+    "chars": 773,
+    "kind": "String",
+    "sha256": "51AEEE76B367D42E3C668AB165D4612D9B8C0267C754CAA1F4CADB570D600755"
+  },
+  "Machine": {
+    "chars": 1007,
+    "kind": "String",
+    "sha256": "9C398A20981EE862114899A1B489A0C7611A11678CC31DBDD003C028C8F8F6ED"
+  }
+}
+
+
+════════════════════════════════════════════════════════════════════
+§ C. 真的写了一次用户级 PATH（手工那一次）
+    path add <shim 目录> 的输出原样
+════════════════════════════════════════════════════════════════════
+把 `C:\Users\Muelsyse\AppData\Local\tuoen\shims` 追加到**用户级** `PATH` 的末尾。
+作用域：用户级（`HKCU\Environment`）—— 机器级要提权，tuoen 不做顺手提权。
+
+长度：1780 → 1824 字符（**注册表口径的下界**，不含进程注入；档位 ok；还剩 6367 字符）
+
+  + 追加 `C:\Users\Muelsyse\AppData\Local\tuoen\shims`（第 16 段之后）
+
+✓ 已写入用户级 `PATH`：817 字符，类型 sz。
+  广播 `WM_SETTINGCHANGE`：0 个顶层窗口应答 —— 它只说明广播发出去了，**不是「所有进程都更新了」**。
+
+**已经跑着的终端 / IDE 拿不到新环境**（环境块是 `CreateProcess` 时复制的）。
+要让它生效：新开一个终端。这不是 tuoen 偷懒，是平台限制。
+
+遮蔽：我们发布的命令里有 **4 条**被别的目录抢在前面（一共 4 条）。
+
+  ! `corepack` → 先命中的是 `C:\nvm4w\nodejs\corepack.cmd`（机器级）
+  ! `node` → 先命中的是 `C:\nvm4w\nodejs\node.exe`（机器级）
+  ! `npm` → 先命中的是 `C:\nvm4w\nodejs\npm.cmd`（机器级）
+  ! `npx` → 先命中的是 `C:\nvm4w\nodejs\npx.cmd`（机器级）
+
+`path add` 只把我们的目录**追加到末尾**，所以它**修不好遮蔽**：名字冲突永远是先命中的赢，而「谁在前」由整条 `PATH` 的顺序决定。
+要修只有两条路：
+  · 抢在前面的是**机器级**条目 → 要管理员权限：系统属性 → 环境变量，把那条移到最后或删掉。**tuoen 不做顺手提权**，也不会替你改机器级。
+
+复核：`tuoen path show`（它的遮蔽那一段与这里同一份判据）。
+
+写后核对：
+  用户级 817 字符 / 类型 String（写前 773 / String）
+  尾部正好是 ";<shim 目录>"：True
+  前缀 773 字符 sha=51AEEE76B367D42E3C668AB165D4612D9B8C0267C754CAA1F4CADB570D600755
+  与写前逐字节相同：True
+  机器级 1007 字符 sha=9C398A20981EE862114899A1B489A0C7611A11678CC31DBDD003C028C8F8F6ED（与写前相同）
+
+════════════════════════════════════════════════════════════════════
+§ D. 一个全新终端会拿到什么（注册表口径的 PATH，只读模拟）
+    fresh-terminal.ps1 的原始输出
+════════════════════════════════════════════════════════════════════
+PATH_CHARS=1825
+PATH_ENTRIES=49
+EXIT=0
+--- stdout ---
+C:\nvm4w\nodejs\node.exe
+C:\Users\Muelsyse\AppData\Local\tuoen\shims\node.exe
+v24.19.0
+C:\nvm4w\nodejs\npm
+C:\nvm4w\nodejs\npm.cmd
+C:\Users\Muelsyse\AppData\Local\tuoen\shims\npm.exe
+
+    ↑ 我们的 shim 目录**排在机器级 C:\nvm4w\nodejs 后面** —— 这就是遮蔽
+      注意 `node -v` 报的 v24.19.0 是**别人的** node 报的（版本号恰好一样，所以版本号本身不是证据）
+
+════════════════════════════════════════════════════════════════════
+§ E. 把遮蔽者从模拟里去掉之后的两次切版本
+    -RemoveEntry C:\nvm4w\nodejs 的原始输出，三跑：24.19.0 → 24.21.0 → 24.19.0
+════════════════════════════════════════════════════════════════════
+PATH_CHARS=1793
+PATH_ENTRIES=47
+REMOVED=2  C:\nvm4w\nodejs | C:\nvm4w\nodejs
+EXIT=0
+--- stdout ---
+C:\Users\Muelsyse\AppData\Local\tuoen\shims\node.exe
+v24.19.0
+11.17.0
+PATH_CHARS=1793
+PATH_ENTRIES=47
+REMOVED=2  C:\nvm4w\nodejs | C:\nvm4w\nodejs
+EXIT=0
+--- stdout ---
+C:\Users\Muelsyse\AppData\Local\tuoen\shims\node.exe
+v24.21.0
+11.19.0
+PATH_CHARS=1793
+PATH_ENTRIES=47
+REMOVED=2  C:\nvm4w\nodejs | C:\nvm4w\nodejs
+EXIT=0
+--- stdout ---
+C:\Users\Muelsyse\AppData\Local\tuoen\shims\node.exe
+v24.19.0
+11.17.0
+
+
+════════════════════════════════════════════════════════════════════
+§ F. path remove <shim 目录> 被拒绝的原始输出
+════════════════════════════════════════════════════════════════════
+拒绝[protected-shim-dir]。
+
+（拒绝路径上一个字节都没有写。理由见 stderr 上的那一行。）
+
+退出码：1
+
+════════════════════════════════════════════════════════════════════
+§ G. 验收脚本的完整输出（scripts/acceptance-L0-09.ps1）
+════════════════════════════════════════════════════════════════════
+═══ 0. 二进制 ═══
+  [通过] release 的 tuoen.exe 在
+  [通过] release 的 tuoen-shim.exe 在（shim 模板与 tuoen.exe 同目录）
+  [通过] 这个二进制认识这一票要用的全部子命令
+
+═══ 1. 预检与快照 ═══
+  [通过] 源码里没有调用 setx（带引号的字面量命中 0 处）
+  · 机器级 Path 1007 字符；用户级 Path 773 字符
+  · nvm4w：C:\Users\Muelsyse\AppData\Local\nvm\v24.19.0|NVM_HOME=C:\Users\Muelsyse\AppData\Local\nvm|NVM_SYMLINK=C:\nvm4w\nodejs
+  · 存储里本来就有：24.19.0
+
+═══ 2. 真装一个版本 ═══
+  [通过] install --dry-run 退出 0
+  · 目标版本：24.21.0
+  · 上游地址：https://nodejs.org/dist/v24.21.0/node-v24.21.0-win-x64.zip
+  [通过] 真装 node@24.21.0 退出 0
+  · 安装耗时 1.46 秒（含下载 + 校验 + 解压 + 落盘）
+  [通过] 演练的计划与真跑的计划**逐字节相同**
+  · 命中下载缓存：这一次没有产生任何网络流量（所以取源尝试是 0 次）
+  [通过] list 里看得到 24.21.0
+
+═══ 3. 真 shim、真执行、真切版本 ═══
+  [通过] shim add --dry-run 退出 0
+  [通过] shim add 真生成退出 0
+  [通过] 盘上的 shim 条数等于计划里的命令数
+  · 当前生效版本：24.19.0
+  [通过] 同一批 shim 里直接跑 node.exe 报 v24.19.0
+  [通过] use node 24.21.0 退出 0
+  [通过] **同一批 shim**（一个字节没重新生成）现在报 v24.21.0
+  · 同一个 npm.exe 报的版本：11.19.0
+  [通过] shim 文件的长度与修改时间一个都没变
+  [通过] use 回 24.19.0 退出 0
+  [通过] 切回去之后 shim 又报 v24.19.0
+
+═══ 4. 一个全新终端会拿到什么（只读） ═══
+  [通过] 新终端模拟跑得动
+  [通过] 模拟出来的 PATH 恰好是「机器级 + ; + 用户级」
+  · 新终端里 where node 第一个命中的是：C:\nvm4w\nodejs\node.exe
+  [通过] path add <shim 目录> --dry-run 退出 0
+  [通过] 被遮蔽时 tuoen 报告了遮蔽
+  [通过] 被遮蔽时 tuoen 点名了是谁抢的
+  [通过] 被遮蔽时 tuoen 给了可执行的下一步
+  · 被遮蔽 —— 这正是票据原文预料到的那条路
+
+═══ 5. 把遮蔽者从模拟里去掉之后 ═══
+  · 这一步模拟了：① `tuoen path add <shim 目录>` 已执行；② 遮蔽者已被去掉。两者都只在子进程环境块里
+  [通过] 去掉遮蔽者之后，第一个命中的是我们的 shim
+  [通过] 它报的版本就是当前生效的那个（v24.19.0）
+  · 新终端模拟的 PATH：不去掉遮蔽者时 1781 字符，去掉 C:\nvm4w\nodejs 并追加 shim 目录之后 1793 字符
+
+═══ 6. 观察：path remove 拒绝摘掉 shim 目录 ═══
+  · path remove <shim 目录> 被拒绝（exit 1，protected-shim-dir）—— **这是现状，不是本脚本的失败**
+  · 含义：`path add <shim 目录>` 能做，但没有命令化的退路；复原只能手工改环境变量
+  · 已记录为 issue（见 docs/acceptance/L0-09-real-machine.md §5.2）
+
+═══ 7. 清理与复核 ═══
+  · node --version：直跑 21.48 ms，经 shim 33.26 ms，**增量 11.78 ms**
+  [通过] shim remove 退出 0
+  [通过] shim 目录回到了跑之前的样子
+  [通过] uninstall node 24.21.0 退出 0
+  [通过] 存储里不再有 24.21.0
+  [通过] 存储里没有 .staging- 残留
+  [通过] %TEMP% 里没有解压/测试残留目录
+  [通过] 两个作用域的 Path **逐字节没有变**
+  [通过] nvm4w 的链接目标与环境变量一个字节没动（ADR-0004）
+
+═══ 摘要 ═══
+checks_passed=33 checks_failed=0 checks_skipped=0
+SUMMARY checks_passed=33 checks_failed=0 checks_skipped=0 install_seconds=1.46 shim_dir=C:\Users\Muelsyse\AppData\Local\tuoen\shims path_untouched=True nvm_untouched=True
+
+
+════════════════════════════════════════════════════════════════════
+§ H. 收尾状态核对（脚本跑完之后，独立再量一次）
+════════════════════════════════════════════════════════════════════
+  用户级 Path：773 字符，逐字节相同 = True
+  机器级 Path：1007 字符，逐字节相同 = True
+  存储：24.19.0
+  current -> ...\store\node\versions\24.19.0
+  shim 目录存在 = False
+  下载缓存：4 份制品（多出来的是本次冷装拉下来的 24.20.0 那一份，按设计保留）
+  %TEMP% 里 tuoen-* 残留目录：0
+
+════════════════════════════════════════════════════════════════════
+§ I. nvm4w 的状态（ADR-0004：只采纳、不管理）
+════════════════════════════════════════════════════════════════════
+  跑前与跑后逐字符相同：True
+  C:\nvm4w\nodejs -> C:\Users\Muelsyse\AppData\Local\nvm\v24.19.0（Reparse Tag 0xa000000c = Symbolic Link）
+  NVM_HOME=C:\Users\Muelsyse\AppData\Local\nvm
+  NVM_SYMLINK=C:\nvm4w\nodejs
+  C:\nvm4w\nodejs\node.exe -v -> v24.19.0
+
+════════════════════════════════════════════════════════════════════
+§ J. 我们自己的 current 是什么类型的 reparse point
+════════════════════════════════════════════════════════════════════
+  Reparse Tag Value : 0xa0000003（Mount Point / junction）
+  AllowDevelopmentWithoutDevLicense = （空：没开 Developer Mode）
+  是否提权：False
+  → 未提权、未开 Developer Mode 的情况下成功创建了 junction（ADR-0001 在真机上成立）
