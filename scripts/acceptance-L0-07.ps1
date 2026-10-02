@@ -56,6 +56,18 @@ if ($dirty.Count -gt 0) {
     foreach ($n in $probeNames) { Get-Process -Name $n -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue }
 }
 
+# 探针每跑一次就在 %TEMP% 里留一个工作目录，正常退出时由 `TempDir` 的 Drop 删掉。
+# 被强杀或（历史上）递归的进程不会走到 Drop —— 那次事故在 %TEMP% 里留下了
+# **8589 个目录、2.36 GB**。所以这里顺手扫一次**旧**目录：一边让验收可重复，
+# 一边不让别人的机器攒垃圾。
+$stale = @(Get-ChildItem $env:TEMP -Directory -Filter 'tuoen-platform-shim-*' -ErrorAction SilentlyContinue |
+    Where-Object { $_.LastWriteTime -lt (Get-Date).AddMinutes(-30) })
+if ($stale.Count -gt 0) {
+    $staleMB = [math]::Round(((($stale | Get-ChildItem -Recurse -File -ErrorAction SilentlyContinue) | Measure-Object Length -Sum).Sum / 1MB), 1)
+    Write-Output ("  清掉 {0} 个超过 30 分钟的探针临时目录（{1} MB）" -f $stale.Count, $staleMB)
+    $stale | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+}
+
 # ── 1. 构建 ────────────────────────────────────────────────────────────────
 Section "1. 构建 release 产物"
 & cargo build --release --examples -p tuoen-shim 2>&1 | Out-String | Write-Output
