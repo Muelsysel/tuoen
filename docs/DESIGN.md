@@ -220,6 +220,50 @@ V1 全做，分四层：
 
 ---
 
+### 1.14 L1-13 体检：事实与判断分开、证据是数据、以及三条会变成噪声的判据（决策 95–107）
+
+`tuoen doctor` 的风险不在"算错"，而在**说错**：把正常的东西报成坏的（用户立刻不再信任这个工具），
+或者把"不知道"写成"没有"（用户据此做了一个错决定）。这一节记的是这两类风险各自的落点。
+
+| # | 决策 | 结论 | 关键理由 |
+|---|---|---|---|
+| 95 | **事实与判断分开**：`collect_facts(ctx, opts) -> MachineFacts` 是唯一碰机器的地方（只读），`diagnose(&MachineFacts) -> Vec<Finding>` 是**纯函数** | 前四个事实字段就是 `capture` 的四个文件形状（`path.toml` / `env.toml` / `tools.toml` / `wsl.toml`），同一批采集器产出 | 买到三件事：① 检查项的测试不用造机器（票据要求"每个正例都必须有对应的反例"，纯函数让那件事变便宜）；② "`capture` 写下的"与"`doctor` 诊断的"不可能漂移；③ 检查项可以单独读。**没有第二条通往机器的路** —— 检查项里出现一次 `ctx.fs` 就说明这条分界破了 |
+| 96 | **`FindingId` 是公开契约**：23 个 ID 写成 `ids` 模块里的常量 + 一张 `ids::ALL` 表，而不是让检查项自己拼字符串 | 有一条用例断言 `ALL` 无重复、恰好 23 个、四个前缀族齐全；`--json` 的消费者按 ID 忽略/聚焦 | 票据原话："每条发现的 ID 是公开契约，改动即为破坏性变更"。拼出来的字符串会在某次重构里悄悄改名，而列表里的常量改不动 |
+| 97 | **`evidence` 是数据，`message` 是散文**：每条 evidence 是"位置/名字 + 值"（`machine#21`、`tool=java command=javac dir=…`），**不许出现中文句子** | 中文解释只进 `message`，而 `message` 是 `#[serde(skip)]`（不进 `--json`） | 这条是**当场被抓出来的**：`tool.ghost` 的第一版把检测引擎给**人**看的那句话（`path=<无 InstallLocation，卸载键 {…}>`）直接抄进了 evidence，于是 `doctor --json` 的成功载荷里出现中文 —— 而 CLI 侧那条"成功载荷无 CJK"的契约测试立刻红了。它与决策 35（`--json` 不本地化）和 `path_contract.rs` 的同名断言是同一件事 |
+| 98 | **`confidence` 只在结论真的来自检测引擎的一行时才有值**（五个 `tool.*` 检查），其余检查不编一个 | 没有值时 `#[serde(skip_serializing_if)]` 不留键 | 票据把 `confidence` 列进了输出契约，但 `path.missing` 这类结论的确定性由**判据本身**表达（含 `%` 的条目**根本不判**失效，所以报出来的每一条都是确定的）。给它们编一个置信度只会让那个字段变成装饰 |
+| 99 | **`path.length-budget` 的四档**：`ok` **不报**、`warning` info、`critical` warn、`exceeded` **error** | 8191 与 8192 的差别要说准：`<= 8191` 还能用（`critical`），`> 8191` 是 `cmd.exe` **整条 `PATH` 一次性全部失效** | 票据只写了"error（超限）/ info"，中间两档是补齐的。`ok` 不报是刻意的：**一条永远响的检查等于噪声**，而这条检查的反例就是"健康的机器"（票据要求每个正例都有反例） |
+| 100 | **`system.*` 四条是状态报告，永远各有一条**（`info`），但 `Some(true)` / `Some(false)` / `None` **三态绝不许合并** | `None` 的措辞必须是"问不出来 / 键不存在"，不能写成 `false` | 票据把它们的严重度定成 `info` 就是这个意思：它们是**背景**（"为什么 junction 能建而 symlink 不能"），不是问题。三态不许合并是这个仓库已有的两次教训（`exists` 三态、`target_exists` 四态）：**把"不知道"写成"关着"就是编一个答案** |
+| 101 | **`tool.multiple-active` 的判据是"同一工具的不同命令解析到了不同目录"**，版本号不是证据 | 真机命中两条：`java`（`…\Oracle\Java\java8path` vs `C:\Dev\base\JDK\JDK8\bin`）与 `python`（`WindowsApps` 的 alias vs `Python312\Scripts`） | 票据的预期实例是 Java 的分裂。**python 那条也必须报**（它是真的：`python` 是 0 字节的 App Execution Alias，而 `pip` 在一个真实安装里）。"版本号对上了"是假象 —— L0-09 的真机验收里两个 Node 版本号恰好相同 |
+| 102 | **`tool.multi-manager` 只数真正的管理器**：`source == "manager"`（带 `manager` 名）或 `source == "tuoen"`；`path-resolution` / `registry-arp` / `app-paths` / `filesystem-scan` **不算管理器** | 真机上只有 node 命中（nvm4w + tuoen），与票面预期一致 | 第一版按"来源种类 ≥ 2"判，于是 git（`path-resolution` + `registry-arp`）、dotnet、wsl 全被报成 **error** —— 而"一个工具既在 `PATH` 上又在卸载键里"是**完全正常**的。6 条里 5 条是假的：这正是一条检查变成噪声源的方式 |
+| 103 | **`env.duplicated-scope` 要排除 Windows 自己在两个作用域都设的变量**（`Path` / `TEMP` / `TMP` / `PATHEXT` / `ComSpec` / `windir` / `PSModulePath` / …），名单只有一处 | 真机从 5 条降到 2 条（`NVM_HOME` / `NVM_SYMLINK`），正是票面预期的两条 | **`Path` 同时存在于两个作用域是平台设计**（进程 `PATH` = 机器级在前、用户级在后），把它报成"双重管理腐坏"是假话。票据给的实例是 `NVM_*` —— 那是**工具**在两个作用域里各写了一份，两边的值会打架。同一条判据在"永远报错"与"只在真的腐坏时报"之间的区别，就是用户信不信这个工具 |
+| 104 | **"提到"与"管"是两个量**：`DevRoot::mentioned_by`（谁提过，含 `filesystem-scan` / `path-resolution`）与 `DevRoot::managed_by`（谁在管，只有 `manager` / `tuoen`）分开记 | `tool.unmanaged-directory` 判"没人管"看 `managed_by` 是否为空 | 真机 `C:\Dev\base\JDK` 两个量都有值：`PATH` 上确实有它下面的 `JDK8\bin\java.exe`（所以被**提到**），但没有任何管理器或注册表知道这个目录（所以**没人管**）。第一版用一个布尔量把两者混在一起，于是印出 `mentioned-by=filesystem-scan,path-resolution` 与 `only-scan=true` 这种**自相矛盾的证据** —— 矛盾的数据比没有数据更坏 |
+| 105 | **`doctor` 的退出码是 0，哪怕发现了 `error`**；不加 `--fail-on` / `--strict` | 脚本化走 `--json` 的 `counts.error` | "发现了问题"不是"命令失败"。加一个退出码开关会让 `doctor` 在 CI 里因为一个 `warn` 就把流水线打断，而**按 ID 忽略**是票据给的方向（决策 96）。`--json` 才是机器接口 |
+| 106 | **"谁赢了名字冲突"的判据只有一处**：`tuoen_platform::path::detect_shadowing` 从私有改成 `pub`，`path add` 的提醒与 `doctor` 的 `path.shadowed` 同源 | `doctor` 不自己实现遮蔽检测 | 抄一份到 core 里迟早漂移（扩展名集合、每个目录只列一次、空目录的分母都是容易被抄错的地方），而漂移的后果是同一个仓库对同一台机器给出两个答案。`path.shadowed` 的分母来自"盘上真实的 shim 数"，所以没有 shim 时它**什么都不报**（决策 75） |
+| 107 | **票据里的"本机预期"是取证期的数字**：验收时两个都要贴，并说明差异 | 与 #12 同一条规矩 | 取证报告本身也会过期（#12 里 725→773、978→1007），而"预期不符"既可能是 bug 也可能是取证有误 —— **两者都值得记录** |
+
+**这一票的自我推翻清单**（写在验收文档里的那几条）：`tool.multi-manager` 的判据（102）、`env.duplicated-scope` 的名单（103）、`DevRoot` 的布尔量（104）、`tool.ghost` 的证据（97）。四条都不是崩溃，而是**一条看起来完全合理的错话**。
+
+---
+
+### 1.15 L1-13 真机验收：一条只在同一秒成立的断言、一条宁可失败的判据、以及证据的 ASCII 化（决策 108–112）
+
+`doctor` 的真机验收（`scripts/acceptance-L1-13.ps1`，90 条检查）没有发现产品算错 —— 它发现的是
+**我们自己写下的几句"看起来完全合理"的话**：一条断言、一条判据、一处证据、两条脚本。
+
+| # | 决策 | 结论 | 关键理由 |
+|---|---|---|---|
+| 108 | **"两次输出逐字节相同"这类断言不许隐含时钟** | `crates/cli/tests/capture_contract.rs` 的 `strip_timestamp` 从"按行删"改成"只替换值、保留键与引号"，并补一条**在旧实现下必须红**的用例 | 它是 #12 的交付，在 `cargo test --workspace` 里真的红了：`left …"capturedAt":"2026-10-02T19:18:03Z"` vs `right …04Z`。根因不在产品 —— TOML 里时间戳自己占一行，而 `--json` 的成功载荷是**一整行**，按行删等于**删掉整份载荷**，于是"两次相同"退化成"两份**空**串相同"（一个把两边都删光的断言永远通过）。它平时能过，只是因为两次调用恰好落在同一秒。**断言幂等 / 断言没变化，最容易变成"什么都没比"** |
+| 109 | **`doctor` 的"装配失败"落在"我们自己的两个根必须是绝对路径"上**：相对根 → 退出 **1** + `Envelope::partial("doctor", "unwired-roots", …)`，`data` 带 `storeRoot`/`shimDir`，而 `counts`/`summary`/`findings` **必须缺席** | `tuoen_core::doctor::run` 是**不可失败**的（直接返回 `DoctorReport`），所以这条判据是补出来的 | 相对根会让 `path.toml` 的 `owner` 归属与 `path.shadowed` **静默**变成"不是"与"没有"，而报告看起来完全正常 —— 正是 `AGENTS.md` 说的"一句看起来完全合理的错话"。**宁可失败**：`%LOCALAPPDATA%` 与 `%USERPROFILE%` 都读不到时，体检本来也算不出规模 |
+| 110 | **`--no-probe` 是唯一的开关**；`--fix` / `--strict` / `--fail-on` 一律退出码 2，且 `--fix` 这五个字符**连帮助里都不出现** | 契约（验收脚本钉住）：`--no-probe` 的 findings ⊆ 默认跑法，且**恰好**少掉探测才有的那条（本机是 `tool.global-prefix-inside-version-dir`，`error=7`→`error=6`），`summary` 六个分量不变 | 票据点名否掉 `--fix`。帮助里解释"为什么没有它"必然要提到它，而契约断言的是"帮助里没有它" —— 两者不能同时满足时选**严格断言 + 源文件文档承载理由**（同 `AGENTS.md` 里 `setx` 那条 grep 约定）。退出码永远是 0（决策 105），脚本要判据读 `counts.error` |
+| 111 | **`evidence` 必须纯 ASCII**，中文只进 `message`；检测引擎给**人**看的占位符必须翻译后才进证据 | `path=<placeholder>` + 独立的 `uninstall-key={GUID}`（真中文路径 → `path=<non-ascii>`） | 决策 97 的**可检验版本**：从"CLI 契约测试断言成功载荷无 CJK"升级成"真机验收逐行断言每条 evidence 都是 ASCII"。第一版把 `path=<无 InstallLocation，卸载键 {GUID}>` 原样抄进了 evidence —— 那是一次**真实的**泄漏，被子代理的契约用例当场抓住 |
+| 112 | **条数写在 `message` 里，而 `message` 不在载荷里** → 验收脚本的"条数"判据读**人类输出**，同一句话在两条输出里必须是同一个数 | 例：`` `PATH` 上有 12 条条目硬编码了 ``、`` 有 12 组重复条目（18 条富余）``、`` `PATH` 上有 7 条条目指向不存在的路径 `` | `message` 是 `#[serde(skip)]`（决策 97），所以"发现了几条"这件事只能从人类输出里读；把它当契约来断言，顺带钉住了"人类输出与 `--json` 说的是同一件事" |
+
+**这一票的自我推翻清单**：108（我自己在 #12 里写下的断言）、109（子代理定的判据，复核后接受）、
+111（引擎的占位符漏进证据）、112 附带的两个脚本陷阱（`(Findings-Of 'x').Count` 在空数组上拿不到
+`Count`；`$array -like 'p*'` 是逐元素匹配、把整组都算成命中）。四条都不是崩溃，而是**验收本身说错话**。
+
+---
+
 ## 2. 平台硬约束（来自本机实测，非推断）
 
 这些是**必须绕着走的地面事实**，实现时不得假设相反情况。

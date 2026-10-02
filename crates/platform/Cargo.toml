@@ -43,6 +43,11 @@ windows-sys = { version = "0.61", features = [
     # 这个 feature 的面很大，但它是**编译期**的：`platform` 不在任何热路径上
     # （shim 的依赖图里只有 `windows-sys` 的五个 feature，不含这一个）。
     "Win32_UI_WindowsAndMessaging",
+    # `system.elevated` 要问一次"这个进程现在有没有管理员权限"：
+    # `OpenProcessToken` / `GetCurrentProcess` 在 `Win32_System_Threading` 里 ——
+    # windows-sys 0.61.2 把它 gate 在那个 feature 后面，没有它就是
+    # `could not find Threading in System`（实测报错）。
+    "Win32_System_Threading",
 ] }
 
 [dev-dependencies]

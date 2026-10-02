@@ -8,6 +8,7 @@
 
 pub mod capture;
 pub mod detect;
+pub mod doctor;
 pub mod list;
 pub mod shim;
 
@@ -16,5 +17,8 @@ pub use capture::{
     SkippedFile, TargetExistence, capture, render, without_timestamp, write_bundle,
 };
 pub use detect::{Confidence, DetectedTool, DetectionSource, DetectionSummary};
+pub use doctor::{
+    Counts, DoctorOptions, DoctorReport, FactsSummary, Finding, MachineFacts, Severity, diagnose,
+};
 pub use list::{ListResult, ToolRecord, ToolSource};
 pub use shim::{ShimCommand, command_names, shim_commands, tool_for_command};

@@ -1,0 +1,112 @@
+
+── 0 二进制（release + 它真的知道 doctor）
+  [ok]   构建 release 二进制      Finished `release` profile [optimized] target(s) in 0.06s
+  [ok]   release 二进制在  C:\Work\EasyEnvForWin\target\release\tuoen.exe
+  [ok]   doctor --help 退出码 0
+  [ok]   帮助里没有 --fix（票据点名否掉的那个开关）
+  [ok]   帮助里有 --json 与 --no-probe
+  [ok]   顶层帮助里有 doctor
+  [ok]   不接受 doctor --fix（退出码 2）  exit=2
+  [ok]   不接受 doctor --strict（退出码 2）  exit=2
+  [ok]   不接受 doctor --fail-on error（退出码 2）  exit=2
+
+── 1 预检：快照与脚本自己的分母
+  [ok]   两个作用域的 Path 都读到了原文  user=773 字符 machine=1007 字符
+  [ok]   脚本自己算的预算档是 ok（本机远未到崖边）  raw_user=773 raw_machine=1007 effective=1781 剩余=6410
+  · 脚本自己的分母：条目 49（机器 33 + 用户 16）、非空 48、重复 surplus 18、硬编码用户名 12（机器 2）、空条目 1、含空格 14、非 ASCII 0、相对 0、失效 7、reparse 3
+
+── 2 真机跑一次：--json / 人类输出 / --no-probe
+  [ok]   doctor --json 退出码 0（有 error 也退 0 —— 票据的规矩）  exit=0
+  [ok]   stderr 为空
+  [ok]   ok=true 且没有 error 键
+  [ok]   schemaVersion=1 / command=doctor
+  [ok]   从源码提取到了 ID 白名单（不是空表）  23 个 ID
+  [ok]   每条 finding 的 ID 都在源码的白名单里
+  [ok]   severity 只有三个 slug
+  [ok]   source 都在源码的来源白名单里
+  [ok]   顺序是（严重度, ID）确定的  29 条
+  [ok]   每条 finding 都有非空 evidence
+  [ok]   evidence 全是 ASCII（结论是数据，人话只在 message 里）
+  [ok]   成功载荷里没有 message 键
+  [ok]   成功载荷里没有 CJK
+  [ok]   counts.error 与明细一致  7 vs 7
+  [ok]   counts.warn 与明细一致  13 vs 13
+  [ok]   counts.info 与明细一致  9 vs 9
+  [ok]   summary 的六个分量齐  envVars, pathEntries, resolvedCommands, shimsOnDisk, toolRows, wslDistributions
+  [ok]   两次 --json 逐字节相同  长度 8365 / 8365
+  [ok]   人类输出退出码 0
+  [ok]   人类输出是中文（错误/警告/提示 + 规模）
+  [ok]   人类输出说了这次只读
+  [ok]   最后一行是规模行  规模：PATH 条目 49 · 环境变量 32 · 工具 27 · WSL 发行版 2 · shim 0
+  [ok]   倒数第二行是汇总行  错误 7 · 警告 13 · 提示 9
+  [ok]   汇总行的三个数字与 --json 一致  错误 7 · 警告 13 · 提示 9
+  [ok]   人类输出逐条点名了每个 ID
+  [ok]   --no-probe 退出码 0
+  [ok]   --no-probe 不产生默认跑法没有的 finding
+  [ok]   --no-probe 去掉了探测才有的那条（tool.global-prefix-inside-version-dir）
+  [ok]   --no-probe 的 summary 与默认跑法相同
+
+── 3 独立核对 path.*（脚本自己数，不经 tuoen）
+  [ok]   summary.pathEntries == 脚本数的两个作用域条目数  49 vs 49（机器 33 + 用户 16）
+  [ok]   path.username-hardcoded 的证据逐行相同  12 行逐行相同
+  [ok]   path.username-hardcoded 的条数（人类输出）== 脚本数的条数  脚本 12 条 / finding 1 条
+  [ok]   path.username-hardcoded 提到的机器级条数 == 脚本数的机器级条数  机器级 2 条
+  [ok]   path.duplicate 的证据逐行相同  12 行逐行相同
+  [ok]   path.duplicate 的组数与富余条数 == 脚本数的  组 12 / 富余 18 / 证据算出来 18
+  [ok]   path.missing 的证据逐行相同  7 行逐行相同
+  [ok]   path.missing 的条数（人类输出）== 脚本数的失效条目  脚本 7 条
+  [ok]   path.empty-entry 的证据逐行相同  1 行逐行相同
+  [ok]   path.spaces 的证据逐行相同  14 行逐行相同
+  [ok]   path.reparse 的证据逐行相同  3 行逐行相同
+  [ok]   本机没有非 ASCII 条目 → doctor 也不该报  脚本 0 条
+  [ok]   本机没有相对路径条目 → doctor 也不该报  脚本 0 条
+  [ok]   预算档是 ok → 不报 path.length-budget（不制造永远修不好的发现）
+  [ok]   没有 shim 在盘上 → 不报 path.shadowed  shimsOnDisk=0
+
+── 4 独立核对 env.*（脚本自己读注册表）
+  [ok]   summary.envVars == 脚本数的持久变量 - 脚本自己判定的凭据形状名  32 vs 32（总数 33 - 凭据形状 1）
+  [ok]   env.duplicated-scope 的证据逐行相同  4 行逐行相同
+  [ok]   env.duplicated-scope 的 finding 数 == 脚本数的重名变量数  finding 2 / 脚本 2：NVM_HOME, NVM_SYMLINK
+  [ok]   env.path-literal 的证据逐行相同  5 行逐行相同
+  [ok]   env.missing-target 的证据逐行相同  1 行逐行相同
+  [ok]   env.name-with-spaces 的证据逐行相同  1 行逐行相同
+
+── 5 独立核对 system.* 与 WSL
+  [ok]   system.elevated 与脚本自己的提权判定一致  1 行逐行相同
+  [ok]   system.developer-mode 与脚本自己读的注册表一致  1 行逐行相同
+  [ok]   system.long-paths 与脚本自己读的注册表一致  1 行逐行相同
+  [ok]   summary.wslDistributions == 脚本数的 Lxss 发行版  2 vs 2（Arch-Linux-current, docker-desktop）
+  [ok]   system.wsl-nonstandard-path 的证据逐行相同  5 行逐行相同
+  [ok]   标准位置的发行版没有被报（报出来的只有脚本自己算出的非标准那几个）  报了：Arch-Linux-current；脚本判非标准：Arch-Linux-current
+  [ok]   system.* 这一族全是 info（状态报告，不是错误）
+
+── 6 独立核对 tool.*（脚本自己解析 PATH 与注册表）
+  [ok]   从源码解析出 12 个工具 / 23 个命令名  工具 12 / 名字 23
+  [ok]   summary.resolvedCommands == 源码里的命令名总数（每条名字都被探过一次）  23 vs 23
+  [ok]   tool.multiple-active 的证据逐行相同  4 行逐行相同
+  [ok]   tool.multiple-active 的 finding 数 == 脚本数的"命令落在多个目录"的工具数  finding 2 / 脚本 2：python, java
+  [ok]   nvm4w 真的在管 node（NVM_SYMLINK 指向一个 reparse point）  C:\nvm4w\nodejs -> C:\Users\Muelsyse\AppData\Local\nvm\v24.19.0
+  [ok]   tuoen 真的在管 node（store 里有 node 的安装记录）  \node\current, \node\versions, \node\versions\24.19.0, \node\versions\24.19.0.json
+  [ok]   tool.multi-manager 的证据是"两个真正的管理器"  node manager=nvm4w | node manager=tuoen
+  [ok]   全局前缀的 reparse 目标 == 脚本自己读出来的目标  C:\Users\Muelsyse\AppData\Local\nvm\v24.19.0
+  [ok]   目标名的版本成分 == 证据里的 version  v24.19.0 vs 24.19.0
+  [ok]   证据里的 reparse 种类与脚本读到的 LinkType 一致  SymbolicLink
+  [ok]   证据里的 origin=probe（这条只有探测才拿得到）  tool=node prefix=C:\nvm4w\nodejs | origin=probe | reparse=symlink-dir | link-target=C:\Users\Muelsyse\AppData\Local\nvm\v24.19.0 | version=24.19.0
+  [ok]   tool.ghost 的每个卸载键都在 ARP 里且没有可用 InstallLocation  5 / 5  
+  [ok]   tool.ghost 的占位符行数与没有 InstallLocation 的键数一致  5 行
+  [ok]   tool.unmanaged-directory 的目录存在且孩子数与磁盘一致  2 条  
+  [ok]   python 赢在 WindowsApps 的 0 字节 reparse（App Execution Alias）上  C:\Users\Muelsyse\AppData\Local\Microsoft\WindowsApps\python.exe 长度 0
+
+── 7 收尾核对：这条命令真的只读
+  [ok]   用户级 Path 逐字节相同（含类型）  51aeee76b367
+  [ok]   机器级 Path 逐字节相同（含类型）  9c398a20981e
+  [ok]   %LOCALAPPDATA%\tuoen 没被动过（含 shims 里一层）  shims, store, shims/{}
+  [ok]   store 没被动过
+  [ok]   Lxss 没被动过
+  [ok]   持久变量的个数没变  33 vs 33
+  [ok]   没有在 %TEMP% 根上留下 tuoen.d
+
+SUMMARY checks_passed=90 checks_failed=0 checks_skipped=0 verdict=PASS version=0.1.0 
+        findings=29 error=7 warn=13 info=9 path_entries=49 env_vars=32 tool_rows=27 resolved_commands=23 wsl_distributions=2 shims_on_disk=0
+        raw_user_chars=773 raw_machine_chars=1007 effective_chars=1781 level=ok duplicates_surplus=18 username_deps=12 missing=7 empty=1 reparse=3
+        user_path_untouched=True machine_path_untouched=True tuoen_dir_untouched=True out_root=C:\Users\Muelsyse\AppData\Local\Temp\tuoen-acceptance-L1-13

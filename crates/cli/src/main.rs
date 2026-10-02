@@ -16,6 +16,9 @@ mod capture_cmd;
 mod catalog;
 mod cli;
 mod detect;
+mod doctor;
+mod doctor_cmd;
+mod doctor_view;
 mod envelope;
 mod exit;
 mod manage;
@@ -69,6 +72,9 @@ fn run() -> i32 {
         // 区别只在这条命令会把读到的东西写成 `tuoen.d/`（落到 `--out`），
         // 而 `detect` 只把结果印出来。
         Command::Capture(args) => capture_cmd::run(&args),
+        // `doctor` 与 `capture` 是同一类：读这台机器、**一个字节都不改**。
+        // 区别在 `capture` 把状态写成文件，而 `doctor` 判断这份状态哪里是坏的。
+        Command::Doctor(args) => doctor_cmd::run(&args),
         Command::Install(args) => manage_cmd::run_install(&args),
         Command::Use(args) => manage_cmd::run_use(&args),
         Command::Uninstall(args) => manage_cmd::run_uninstall(&args),

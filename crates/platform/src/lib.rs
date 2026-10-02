@@ -49,8 +49,9 @@ pub use managed::{ManagedStore, ManagedTool, RealManagedStore};
 pub use path::{
     BudgetLevel, DanglingEntry, Duplicate, EntryRef, NoopReason, PATH_EXTENSIONS, PATH_NAME,
     PathAction, PathAnalysis, PathApplied, PathBudget, PathChange, PathEntry, PathPlan, ScopedPath,
-    ShadowedShim, UsernameDependency, analyze, apply, hardcoded_username, missing_from_path,
-    normalize_entry, parse_entries, plan_add, plan_remove, run, shim_commands, write_type_for,
+    ShadowedShim, UsernameDependency, analyze, apply, detect_shadowing, hardcoded_username,
+    missing_from_path, normalize_entry, parse_entries, plan_add, plan_remove, run, shim_commands,
+    write_type_for,
 };
 pub use process::{DEFAULT_PROBE_TIMEOUT, ProcessOutcome, ProcessRunner, SystemProcessRunner};
 pub use registry::{RealRegistry, RegHive, RegValue, Registry, expand_vars};

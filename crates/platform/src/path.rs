@@ -530,7 +530,16 @@ where
 /// 走**真实的生效顺序**（`effective`），对每条命令取第一个命中它的目录；
 /// 命中目录不是我们的 shim 目录就是被遮蔽了。`by` 里带着那条条目的出处
 /// —— 可能是机器级、用户级，也可能是**进程注入**的（它排在机器级前面）。
-fn detect_shadowing<F: FileSystem + ?Sized>(
+///
+/// # 为什么是 `pub`
+///
+/// `tuoen doctor` 的 `path.shadowed` 要问的正是这个问题，而**"谁赢了名字冲突"
+/// 的判据只能有一处**：`path add` 用它决定要不要提醒，`doctor` 用它报体检结论。
+/// 抄一份到 core 里迟早会与这里漂移，而漂移的后果是两处对同一台机器给出不同的
+/// 答案（"谁遮蔽了谁"恰好是最容易被抄错的那类逻辑：扩展名集合、只列一次目录、
+/// 空目录的分母）。
+#[must_use]
+pub fn detect_shadowing<F: FileSystem + ?Sized>(
     fs: &F,
     effective: &[EntryRef],
     shim_dir: &Path,

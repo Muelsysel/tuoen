@@ -80,18 +80,93 @@ fn read_file(dir: &TempDir, name: &str) -> String {
         .unwrap_or_else(|error| panic!("读 `{name}` 失败：{error}"))
 }
 
-/// 去掉时间戳行，用来比较两次捕获。
+/// 去掉时间戳，用来比较两次捕获。
 ///
 /// **契约测试自己写一份，不从 `tuoen_core` 导入 `without_timestamp`。**
 /// 导入生产代码的那一份会让两件事一起漂移：生产代码把时间戳键改了名，
 /// 测试就跟着"通过"了，而两份输出其实已经不再可比 —— 测试要能发现
 /// "生产代码改了形状而测试跟着改"这种共谋。
+///
+/// # 两种形状必须分开处理（这一条是真机验收抓出来的）
+///
+/// TOML 里时间戳**自己占一行**（`captured_at = "…"`），删掉那一行即可。
+/// 而 `--json` 的成功载荷是**一整行**，删行等于删掉整份载荷 —— 第一版就是这么写的，
+/// 于是"两次逐字节相同"这条断言实际上只在**两次调用落在同一秒**时才成立：
+/// 断言没红不是因为输出稳定，而是因为时钟恰好没走。真机验收里它红了一次
+/// （`19:18:03Z` vs `19:18:04Z`），红的原因却是这条用例自己的实现。
+/// 现在 JSON 走**只替换值、保留键与引号**的分支：`"capturedAt":"<stripped>"`
+/// 的形状本身也是契约，键名改了这条断言仍然要红。
 fn strip_timestamp(text: &str) -> String {
-    text.lines()
-        .filter(|line| !line.trim_start().starts_with("captured_at"))
-        .filter(|line| !line.trim_start().starts_with("\"capturedAt\""))
-        .collect::<Vec<_>>()
-        .join("\n")
+    const KEY: &str = "\"capturedAt\"";
+    let mut out = String::with_capacity(text.len());
+    for line in text.lines() {
+        if line.trim_start().starts_with("captured_at") {
+            continue;
+        }
+        if let Some(at) = line.find(KEY) {
+            // `"capturedAt"` 之后应当是 `:` 空白 `"值"`。三段里任何一段找不到引号，
+            // 就原样留下这一行 —— 那时比较会红，而"红"正是我们要的结果：
+            // 载荷的形状变了。
+            let rest = &line[at + KEY.len()..];
+            let after_colon = rest.find(':').map_or("", |colon| &rest[colon + 1..]);
+            let value_and_tail = after_colon
+                .find('"')
+                .map_or("", |open| &after_colon[open + 1..]);
+            match value_and_tail.find('"') {
+                Some(close) => {
+                    out.push_str(&line[..at]);
+                    out.push_str("\"capturedAt\":\"<stripped>\"");
+                    out.push_str(&value_and_tail[close + 1..]);
+                }
+                None => out.push_str(line),
+            }
+        } else {
+            out.push_str(line);
+        }
+        out.push('\n');
+    }
+    out
+}
+
+/// 钉住上面那个助手自己：**单行 JSON 不许被删成空**。
+///
+/// 这条用例的价值在于它**在旧实现下必须红** —— 旧实现按行删，单行载荷会被整份删掉，
+/// 于是"两次相同"退化成"两份空串相同"。一个把两边都删光的断言永远通过。
+#[test]
+fn strip_timestamp_scrubs_the_json_value_without_dropping_the_payload() {
+    let first = r#"{"capturedAt":"2026-10-02T19:18:03Z","outDir":"C:\\x","files":["a"]}"#;
+    let second = r#"{"capturedAt":"2026-10-02T19:18:04Z","outDir":"C:\\x","files":["a"]}"#;
+    let a = strip_timestamp(first);
+    let b = strip_timestamp(second);
+    assert_eq!(a, b, "两次捕获只差时间戳，去掉时间戳后必须逐字节相同");
+    assert!(
+        a.contains(r#""capturedAt":"<stripped>""#),
+        "键与引号要留下（形状也是契约）：{a}"
+    );
+    assert!(
+        a.contains(r#""outDir":"C:\\x""#),
+        "载荷的其余部分不许被删：{a}"
+    );
+    assert!(
+        a.contains(r#""files":["a"]"#),
+        "载荷的其余部分不许被删：{a}"
+    );
+
+    // TOML：时间戳自己占一行 → 整行删掉，且不留空行。
+    let toml = "schema_version = 1\ncaptured_at = \"2026-10-02T19:18:03Z\"\nsections = []\n";
+    assert_eq!(
+        strip_timestamp(toml),
+        "schema_version = 1\nsections = []\n",
+        "TOML 的时间戳行要整行消失"
+    );
+
+    // 键改名了就必须留下时间戳（= 比较要红）：这是"生产代码改了形状"能被发现的地方。
+    let renamed = r#"{"capturedAtMs":"2026-10-02T19:18:03Z"}"#;
+    assert!(
+        strip_timestamp(renamed).contains("2026-10-02T19:18:03Z"),
+        "键改名后不许再被当成时间戳擦掉：{}",
+        strip_timestamp(renamed)
+    );
 }
 
 /// 从 `schema.toml` 里取出 `sections` 数组。

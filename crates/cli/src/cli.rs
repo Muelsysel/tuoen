@@ -8,6 +8,7 @@ use clap::{Args, Parser, Subcommand};
 use crate::capture::CaptureArgs;
 use crate::catalog::CatalogCommand;
 use crate::detect::DetectArgs;
+use crate::doctor::DoctorArgs;
 use crate::manage::{InstallArgs, UninstallArgs, UseArgs};
 use crate::path::PathCommand;
 use crate::shim::ShimCommand;
@@ -101,6 +102,55 @@ pub enum Command {
 写到**当前目录**下的 `tuoen.d/`。`--no-version` 跳过版本探测（快得多，
 `tools.toml` 里的版本会是空的）；`--json` 给脚本与未来的 GUI 读，键与取值不本地化。"#)]
     Capture(CaptureArgs),
+
+    /// 只读地给这台机器做一次体检：哪里会静默失效，哪里会突然全体失效。
+    #[command(long_about = r#"只读地给这台机器做一次体检（`tuoen doctor`）。
+
+**这条命令只读，而且刻意不提供任何「顺手修一下」的开关。** 它不会写 `PATH`、
+不会写注册表、不会动任何工具，也不会把它报出来的东西顺手清掉
+（决策 24：`PATH` 上的东西是你的）。`capture` 把状态写下来，`doctor` 判断
+这份状态哪里是坏的；真正改机器的那条路是 `restore`，而它还不存在。
+
+不给这类开关不是「这一版还没做」，而是这一票的判据：体检的结论要能被信，
+前提是它**没有动机**把结论做得好看。（票据点名否掉的那个开关，连名字都不在
+这份帮助里 —— 少一个能顺手改机器的入口，就少一处「报告是症状」与
+「报告是它自己动过的痕迹」分不清的地方。）
+
+## 每条发现五列
+
+  id          稳定的机器可读 ID（`path.length-budget`、`tool.ghost` …）
+  severity    error / warn / info —— error 是「会静默失效」或「会突然全体失效」
+  message     中文一句话（**只在人类输出里**）
+  evidence    具体是哪几条：PATH 条目的位置、变量名、目录
+  source      这条结论从哪来（注册表 / 路径解析 / 文件系统 / 检测引擎 …）
+
+## 退出码
+
+**0 = 体检跑完了，哪怕发现了 error。** "发现了问题"是体检的**结论**，
+不是体检的**失败** —— 报成非 0 会让每一次"看一眼这台机器怎么了"都看起来像一次
+故障，于是 `|| true` 就成了习惯，而判据反而丢了。
+
+脚本要的判据是 `--json` 里的 `counts.error`：一个不用解析人话就能读到的数字。
+这也是这里**没有** `--fail-on` / `--strict` 之类开关的原因 —— 严重度本身就是数据，
+要不要因此变红由消费者决定。
+
+**1 = 跑不起来**（算不出 tuoen 自己的根位置：`%LOCALAPPDATA%` 与
+`%USERPROFILE%` 都读不到）。此时用部分信封报错，并带出算出来的那两个根。
+
+## 两个开关
+
+  --json        机器输出：稳定、不本地化（决策 35）。`message` 不进 JSON
+                （它天生是中文），机器读的是 `id` / `severity` / `source` / `confidence`。
+  --no-probe    不跑「全局包前缀在哪」这类探测。默认**开**，因为它是
+                `tool.global-prefix-inside-version-dir` 唯一的输入；关掉之后
+                那一类结论就是「没看」，而不是「没有」。
+
+## 一台坏机器上它先说什么
+
+它把「`PATH` 上确认可执行」与「注册表声称已装但文件缺失」并列展示 ——
+用户看一眼就会决定信不信这个工具。所以报告里每一句都带证据，
+而且**没有发现时会明说「没有发现问题」，并同时印出这次看了多少**。"#)]
+    Doctor(DoctorArgs),
 
     /// 下载并安装一个工具的某个版本到 tuoen 的存储里。
     #[command(long_about = r#"下载并安装一个工具的某个版本到 tuoen 的存储里。

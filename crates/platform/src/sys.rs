@@ -502,6 +502,54 @@ mod imp {
         if replied == 0 { 0 } else { result }
     }
 
+    /// 当前进程**有没有管理员权限**。
+    ///
+    /// # 为什么用 `TokenElevation` 而不是"用户是不是管理员"
+    ///
+    /// UAC 下，一个未提权的进程里管理员组仍然在令牌里，只是被标成
+    /// `SE_GROUP_USE_FOR_DENY_ONLY` —— 所以"这个用户是管理员"与"这个进程现在能不能
+    /// 写 `HKLM` / 建 symlink"是两个问题，而只有后者决定我们能不能做那些事。
+    /// `TokenElevation` 问的正是后者。
+    ///
+    /// 读不到令牌时返回 `None`（**不是 `false`**）："不知道"与"没提权"是两件事，
+    /// 而 `system.elevated` 会把它们印成不同的字。
+    pub fn is_elevated() -> Option<bool> {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::Security::{
+            GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation,
+        };
+        use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+        let mut token: windows_sys::Win32::Foundation::HANDLE = ptr::null_mut();
+        // SAFETY: `GetCurrentProcess` 返回一个伪句柄（不需要关闭）；
+        // `&mut token` 是有效出参；`TOKEN_QUERY` 是文档要求的最小权限。
+        let opened = unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) };
+        if opened == 0 {
+            return None;
+        }
+
+        let mut elevation = TOKEN_ELEVATION { TokenIsElevated: 0 };
+        let mut returned: u32 = 0;
+        // SAFETY: `token` 是刚打开的有效句柄；出参缓冲的大小按 `size_of` 给出，
+        // 正是 `GetTokenInformation` 对 `TokenElevation` 的要求。
+        let ok = unsafe {
+            GetTokenInformation(
+                token,
+                TokenElevation,
+                ptr::addr_of_mut!(elevation).cast(),
+                u32::try_from(std::mem::size_of::<TOKEN_ELEVATION>()).unwrap_or(4),
+                &mut returned,
+            )
+        };
+        // SAFETY: 句柄由 `OpenProcessToken` 打开，这里关闭它一次。
+        unsafe { CloseHandle(token) };
+
+        if ok == 0 {
+            return None;
+        }
+        Some(elevation.TokenIsElevated != 0)
+    }
+
     /// 一个路径在"链接"这件事上的形状。
     pub fn junction_state(path: &Path) -> super::JunctionState {
         match super::find_first(path) {
@@ -765,6 +813,14 @@ mod imp {
         0
     }
 
+    /// 非 Windows 上不假装知道 —— 返回"问不出来"，而不是 `false`。
+    ///
+    /// 这一条不是形式主义：`system.elevated` 会把 `None` 印成"不知道"，
+    /// 而 `Some(false)` 印成"未提权"。把前者写成后者是在编一个答案。
+    pub fn is_elevated() -> Option<bool> {
+        None
+    }
+
     /// 非 Windows 上没有 junction：返回"缺能力"，而不是假装成功。
     pub fn junction_state(_path: &Path) -> JunctionState {
         super::JunctionState::Missing
@@ -787,8 +843,9 @@ mod imp {
 }
 
 pub use imp::{
-    broadcast_environment_change, create_junction, find_first, junction_state, reg_delete_value,
-    reg_set_string, reg_subkeys, reg_values, remove_reparse_point, set_junction_data,
+    broadcast_environment_change, create_junction, find_first, is_elevated, junction_state,
+    reg_delete_value, reg_set_string, reg_subkeys, reg_values, remove_reparse_point,
+    set_junction_data,
 };
 
 #[cfg(test)]

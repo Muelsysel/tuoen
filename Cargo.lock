@@ -476,6 +476,7 @@ dependencies = [
  "thiserror",
  "toml",
  "tuoen-platform",
+ "tuoen-shim",
  "tuoen-store",
 ]
 

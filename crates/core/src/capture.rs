@@ -39,8 +39,10 @@
 //! 环境块 / 进程），所以采集器可以在**假机器**上跑到字节级确定
 //! （[`test_support::CaptureFixture`]）。`--json` 与磁盘副作用用 CLI 进程边界测。
 
-mod collect;
-mod files;
+// `doctor` 是同一个 crate 里的兄弟模块，它的事实就是这四个文件形状 ——
+// 所以这两个模块对 crate 内可见（对外仍然是私有的：`pub use files::{…}` 才是门面）。
+pub(crate) mod collect;
+pub(crate) mod files;
 pub mod secrets;
 pub mod test_support;
 

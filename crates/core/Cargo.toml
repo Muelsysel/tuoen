@@ -21,6 +21,10 @@ tuoen-platform = { path = "../platform" }
 # `tuoen list` 列的是**我们自己的存储**，所以 core 要知道 store 的存在。
 # 方向是 core → store → platform，没有反向边：store 不知道"检测"是什么。
 tuoen-store = { workspace = true }
+# `doctor` 要认得 shim 目录里的**模板**（它跟真正的 shim 躺在同一个目录里，
+# 不是一条命令）。模板文件名只有一处定义，所以直接引用它 —— 抄一份字符串
+# 会在某次改名后静默变成"把模板当成一条 shim 报出去"。
+tuoen-shim = { workspace = true }
 
 [dev-dependencies]
 serde_json.workspace = true
