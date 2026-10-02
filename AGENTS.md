@@ -63,6 +63,16 @@ Single-context: one `GLOSSARY.md` and one `docs/adr/` at the repo root. See `doc
 - `PATH` 上 29% 的条目含空格，最糟的同时含空格和版本号
 - 归档：系统自带 `tar.exe` 是 bsdtar 3.8.8（zip/tar.gz/tar.xz/tar.zst/tar.bz2 都能走它），**`.7z` 是唯一缺口**
 
+## 构建这台机器（三个实测发现，别重新踩）
+
+**本机没有 MSVC Build Tools —— `link.exe` 不存在。** 所以只能走 `x86_64-pc-windows-gnu`。以下三条都是实测出来的，不是推断：
+
+1. **`rust-toolchain.toml` 必须写完整 host 三元组**（`channel = "stable-x86_64-pc-windows-gnu"`）。只写 `"stable"` 时 rustup 按 `Default host`（= msvc）解析，host 侧的构建脚本与 proc-macro 会失败：`error: linker link.exe not found`。
+2. **rustup 的 `rust-mingw` 组件不提供可用的 `dlltool`。** `windows-sys` 在 GNU target 上需要它生成 import library，而 rustup 自带的是垫片（旁边的 `GCC-WARNING.txt` 说那个 gcc 只能当链接器用），会报 `dlltool could not create import library …: CreateProcess`。已装一份用户级 MinGW-w64 在 `C:\Users\Muelsyse\.local\toolchains\mingw64`（WinLibs，不需要管理员）。
+3. **rustc 在 GNU target 下不认 `DLLTOOL_<target>` 变量，它就在 `PATH` 上找 `dlltool.exe`**；而 cargo 的 `[env]` 对已存在的变量默认不生效（`force = true` 时也不是前置而是覆盖）——两种写法都实测失败。所以 MinGW 的 `bin` 在 `HKCU\Environment\Path` 里（只读、非提权、`REG_SZ` 保持不变），linker 路径留在 `.cargo/config.toml` 的 `[target.x86_64-pc-windows-gnu]`。
+
+`cargo` 与 `rustc` **不在**默认 `PATH` 上，用 `$env:USERPROFILE\.cargo\bin`。
+
 ## 遇到实现问题的第一参考对象
 
 **`mise`**（Rust、MIT、34.5k★、周更）——尤其是它的 Windows shim 处理、PATH 管理、`bootstrap` 资源抽象，以及 issue 区对已知 Windows 坑的记录。这是项目所有者明确指定的。
