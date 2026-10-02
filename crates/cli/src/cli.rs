@@ -5,6 +5,8 @@
 
 use clap::{Args, Parser, Subcommand};
 
+use crate::catalog::CatalogCommand;
+
 /// 拓境 — 让你的 Windows 开发环境可搬运、可复现。
 #[derive(Debug, Parser)]
 #[command(
@@ -35,6 +37,10 @@ pub enum Command {
 检测整机已安装的工具请用 `tuoen detect`；
 整机状态快照请用 `tuoen capture`。"#)]
     List(ListArgs),
+
+    /// 查看 tuoen 认识哪些工具、它们的许可证，以及某个版本能不能装。
+    #[command(subcommand)]
+    Catalog(CatalogCommand),
 }
 
 #[derive(Debug, Args)]
@@ -60,6 +66,7 @@ mod tests {
         let cli = Cli::try_parse_from(["tuoen", "list", "--json"]).expect("parse");
         match cli.command {
             Command::List(args) => assert!(args.json),
+            other => panic!("应当是 list，实际：{other:?}"),
         }
     }
 
@@ -68,6 +75,7 @@ mod tests {
         let cli = Cli::try_parse_from(["tuoen", "list"]).expect("parse");
         match cli.command {
             Command::List(args) => assert!(!args.json),
+            other => panic!("应当是 list，实际：{other:?}"),
         }
     }
 

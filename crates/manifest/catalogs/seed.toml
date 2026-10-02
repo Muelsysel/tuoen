@@ -1,0 +1,153 @@
+# tuoen 种子 catalog（内置）
+#
+# **为什么内置**（`docs/DESIGN.md` 决策 19）：全内置则每次上游发版都要跟着发版；
+# 全远程则无网络用户什么都装不了（与"离线包"自相矛盾）。
+# 所以是"内置种子 + 可选远程签名索引"。先例：Python 3.14 官方安装器即
+# `index.json` + Authenticode 签名目录 + `requires_signature`。
+#
+# **这里的每个哈希都是从上游真实取的**，不是编的：
+#   - Node.js：https://nodejs.org/dist/v<ver>/SHASUMS256.txt
+#   - Temurin：https://api.adoptium.net/v3/assets/feature_releases/21/ga?…
+# 取数日期：2026-10-02
+#
+# **默认只镜像元数据（URL + SHA256），不镜像二进制。**
+
+schema_version = 1
+name = "tuoen 内置种子目录"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Node.js —— 再分发许可明确允许（MIT）
+# ─────────────────────────────────────────────────────────────────────────────
+[[tool]]
+id = "node"
+display_name = "Node.js"
+aliases = ["nodejs"]
+description = "JavaScript 运行时。附带 npm / npx / corepack。"
+homepage = "https://nodejs.org/"
+version_source = [
+  { kind = "api", index_url = "https://nodejs.org/dist/index.json", version_field = "version" },
+]
+
+  [tool.licence]
+  redistribution = "allowed"
+  spdx_or_name = "MIT"
+  url = "https://github.com/nodejs/node/blob/main/LICENSE"
+  notes = "MIT，可再分发。商标另受 OpenJS 管辖 —— 再分发时不要品牌化成官方 Node.js 发行版。"
+
+  # 注意 URL 里的 `v{version}`：Node 的目录名带 v，而版本号本身不带。
+  [[tool.recipe]]
+  version = "24.21.0"
+  platform = "windows-x64"
+  url = "https://nodejs.org/dist/v{version}/node-v{version}-win-x64.zip"
+  archive = "zip"
+  checksum = { algorithm = "sha256", value = "158f7685b44de51f6c0df1d153526cbcd3e1bc739a8dfc607721cef75de9e541" }
+  layout = { strip_components = 1, bin = { node = "node.exe", npm = "npm.cmd", npx = "npx.cmd", corepack = "corepack.cmd" } }
+
+  [[tool.recipe]]
+  version = "24.20.0"
+  platform = "windows-x64"
+  url = "https://nodejs.org/dist/v{version}/node-v{version}-win-x64.zip"
+  archive = "zip"
+  checksum = { algorithm = "sha256", value = "6cac9ffbca8f6a47091e4b5c772e0606049c3871cb67d900c0cedde630e545ba" }
+  layout = { strip_components = 1, bin = { node = "node.exe", npm = "npm.cmd", npx = "npx.cmd", corepack = "corepack.cmd" } }
+
+  [[tool.recipe]]
+  version = "24.19.0"
+  platform = "windows-x64"
+  url = "https://nodejs.org/dist/v{version}/node-v{version}-win-x64.zip"
+  archive = "zip"
+  checksum = { algorithm = "sha256", value = "57f71ab3652e797d84acddc79c81cc9ff1c6ddb2a1974cdb83f00fee9bff4c73" }
+  layout = { strip_components = 1, bin = { node = "node.exe", npm = "npm.cmd", npx = "npx.cmd", corepack = "corepack.cmd" } }
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Eclipse Temurin JDK 21 —— 再分发许可明确允许（GPLv2 + Classpath Exception）
+#
+# 选它而不是 Oracle JDK 的理由：Oracle JDK 21+ 是 NFTC（有条件），
+# 而 Temurin 是干净的 GPLv2+CE。
+# ─────────────────────────────────────────────────────────────────────────────
+[[tool]]
+id = "temurin"
+display_name = "Eclipse Temurin JDK"
+aliases = ["temurin-21", "jdk", "java"]
+description = "OpenJDK 的 Eclipse 发行版（LTS 21）。GPLv2 + Classpath Exception，可再分发。"
+homepage = "https://adoptium.net/"
+version_source = [
+  { kind = "api", index_url = "https://api.adoptium.net/v3/assets/feature_releases/21/ga?architecture=x64&image_type=jdk&os=windows&vendor=eclipse&page_size=20" },
+]
+
+  [tool.licence]
+  redistribution = "allowed"
+  spdx_or_name = "GPL-2.0-with-classpath-exception"
+  url = "https://adoptium.net/about/"
+  notes = "GPLv2 + Classpath Exception，可再分发。这是 OpenJDK 生态里许可最干净的一档。"
+
+  # Temurin 的版本串是 `release_name`（`21.0.12.1+1`），不是 semver。
+  # 文件名里的 `+` 被换成 `_`，而下载路径里的 `+` 必须编码成 `%2B` ——
+  # 这两处不一致是上游的实际形状，模板如实反映它。
+  [[tool.recipe]]
+  version = "21.0.12.1+1"
+  platform = "windows-x64"
+  url = "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-{version:urlencoded}/OpenJDK21U-jdk_x64_windows_hotspot_{version:filename}.zip"
+  archive = "zip"
+  checksum = { algorithm = "sha256", value = "f9d6e191ab098c0d416e7d588a24420a8621cd2f4720dab2459b8b7b2d2d8b4e" }
+  layout = { strip_components = 1, home = ".", bin = { java = "bin/java.exe", javac = "bin/javac.exe", jar = "bin/jar.exe", jshell = "bin/jshell.exe" } }
+
+  [[tool.recipe]]
+  version = "21.0.12+8"
+  platform = "windows-x64"
+  url = "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-{version:urlencoded}/OpenJDK21U-jdk_x64_windows_hotspot_{version:filename}.zip"
+  archive = "zip"
+  checksum = { algorithm = "sha256", value = "9ba963ee2371874a74185d18bc7bb2ab9407df7683300855ed7606e0662321d0" }
+  layout = { strip_components = 1, home = ".", bin = { java = "bin/java.exe", javac = "bin/javac.exe", jar = "bin/jar.exe", jshell = "bin/jshell.exe" } }
+
+  [[tool.recipe]]
+  version = "21.0.11+10"
+  platform = "windows-x64"
+  url = "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-{version:urlencoded}/OpenJDK21U-jdk_x64_windows_hotspot_{version:filename}.zip"
+  archive = "zip"
+  checksum = { algorithm = "sha256", value = "d3625e7cadf23787ea540229544b6e2ab494b3b54da1801879e583e1dfee0a64" }
+  layout = { strip_components = 1, home = ".", bin = { java = "bin/java.exe", javac = "bin/javac.exe", jar = "bin/jar.exe", jshell = "bin/jshell.exe" } }
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 不可再分发的反例（一）：Oracle JDK 8
+#
+# **故意留在种子目录里**，用来证明许可证门禁真的会拦。
+# 它不是一个"应该删掉的脏数据" —— 它是这个目录的测试用例，也是给用户的说明：
+# "我们知道 Oracle JDK 8 存在，但你不能通过 tuoen 装它，原因如下。"
+# ─────────────────────────────────────────────────────────────────────────────
+[[tool]]
+id = "oracle-jdk"
+display_name = "Oracle JDK（不可再分发）"
+aliases = ["oracle-java"]
+description = "Oracle JDK。**tuoen 不会下载或安装它** —— 用来演示许可证门禁。"
+homepage = "https://www.oracle.com/java/technologies/downloads/"
+
+  [tool.licence]
+  redistribution = "prohibited"
+  spdx_or_name = "Oracle Binary Code License (BCL)"
+  url = "https://www.oracle.com/java/technologies/javase/javase8-archive-downloads.html"
+  notes = "Oracle JDK 8 / 11 / 17 的许可不允许再分发；只有 21+ 的 NFTC 允许（且前提是不收费）。请从 Oracle 官网自行获取。"
+
+  # 故意**不给 recipe**：没有下载地址，因为不可再分发。
+  # 门禁在 resolve 阶段就会拒绝，不需要走到"找不到 recipe"。
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 不可再分发的反例（二）：MSVC / VS Build Tools
+#
+# 更根本的一层：它**不是一个包**。微软文档说 `--quiet` "对标准用户不可编程使用"、
+# 安装操作"需要管理员权限"，且不可再分发。
+# 唯一正确做法：以管理员调用微软自己的 bootstrapper + `.vsconfig`。
+# 所以它是**带外管理员前置条件**，不是可管理包。
+# ─────────────────────────────────────────────────────────────────────────────
+[[tool]]
+id = "msvc"
+display_name = "MSVC 生成工具（带外管理员前置条件）"
+aliases = ["build-tools", "vs-build-tools"]
+description = "Visual Studio Build Tools 的 C++ 工作负载。**不是一个包** —— 需要你以管理员身份运行微软自己的安装器。"
+homepage = "https://visualstudio.microsoft.com/downloads/"
+
+  [tool.licence]
+  redistribution = "prohibited"
+  spdx_or_name = "Microsoft 专有（不可再分发）"
+  url = "https://visualstudio.microsoft.com/license-terms/"
+  notes = "微软许可不允许再分发，且安装需要管理员权限。tuoen 只做两件事：检测它是否已安装、以及告诉你要装哪个组件（`Microsoft.VisualStudio.Component.VC.Tools.x86.x64`）。"

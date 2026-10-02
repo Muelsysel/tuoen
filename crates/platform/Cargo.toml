@@ -14,6 +14,21 @@ workspace = true
 [dependencies]
 serde.workspace = true
 thiserror.workspace = true
+toml.workspace = true
+
+# 只开真正用到的 feature（理由见 `src/sys.rs` 头部注释）：
+# `Win32_Foundation`（HANDLE / 错误码）、`Win32_Storage_FileSystem`（`FindFirstFileW`）、
+# `Win32_System_Registry`（注册表枚举）。三个 reparse tag 常量所在的
+# `Win32_System_SystemServices` / `Win32_System_Ioctl` 故意不开 —— 为两个常量引入两个
+# feature 不值，改为在 `src/sys.rs` 里定义并用测试钉住取值。
+#
+# **必须在 `cfg(windows)` 下**：`windows-sys` 只在 Windows 目标上提供 `Win32` 模块。
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Registry",
+] }
 
 [dev-dependencies]
 serde_json.workspace = true
