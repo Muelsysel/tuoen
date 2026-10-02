@@ -31,7 +31,9 @@ pub const IO_REPARSE_TAG_APPEXECLINK: u32 = 0x8000_001b;
 ///
 /// 序列化形状是**字符串**（`"junction"` / `"app-exec-alias"` / `"other:0x8000001b"`），
 /// 这样固定装置（`fixtures/`）可读，且不需要在 TOML 里写一个联合体的形状。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize,
+)]
 #[serde(try_from = "String", into = "String")]
 pub enum ReparseKind {
     /// 普通文件或目录，没有 reparse 位。
@@ -241,9 +243,9 @@ impl FileSystem for RealFileSystem {
     fn inspect(&self, path: &Path) -> FileFacts {
         match sys::find_first(path) {
             Ok(found) => {
-                let reparse = found
-                    .reparse_tag
-                    .map_or(ReparseKind::None, |tag| ReparseKind::from_tag(tag, found.is_dir));
+                let reparse = found.reparse_tag.map_or(ReparseKind::None, |tag| {
+                    ReparseKind::from_tag(tag, found.is_dir)
+                });
                 FileFacts {
                     path: path.to_path_buf(),
                     exists: true,
@@ -392,7 +394,12 @@ mod tests {
         let entries = fs.list_dir(dir.path());
         let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, vec!["plain.txt", "sub"], "必须排序且只有一个层级");
-        assert!(entries.iter().find(|e| e.name == "sub").is_some_and(|e| e.is_dir));
+        assert!(
+            entries
+                .iter()
+                .find(|e| e.name == "sub")
+                .is_some_and(|e| e.is_dir)
+        );
     }
 
     #[test]

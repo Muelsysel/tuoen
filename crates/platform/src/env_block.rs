@@ -126,6 +126,131 @@ impl ProcessEnv for InMemoryEnv {
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 真实实现
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// 用户级环境变量所在的子键（相对 `HKCU` 的 `SOFTWARE`）。
+pub const USER_ENV_SUBKEY: &str = "Environment";
+
+/// 机器级环境变量所在的子键。
+///
+/// **注意它不在 `SOFTWARE` 下面** —— 这是 [`crate::RegHive::resolve`] 必须支持
+/// 绝对路径的原因。这条路径是 Windows 上最容易写错的一条注册表路径之一。
+pub const MACHINE_ENV_SUBKEY: &str =
+    r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment";
+
+/// 真实实现：从注册表读持久环境变量。
+///
+/// **两个泛型而不是两个 `&dyn`**：这样测试可以直接塞进 `FakeRegistry` + `FakeFileSystem`，
+/// 从而在不碰真实注册表、真实磁盘的前提下测"读出来的 `EnvVar` 形状对不对"。
+#[derive(Debug, Clone, Copy)]
+pub struct RealEnvBlock<R: crate::Registry, F: crate::FileSystem> {
+    registry: R,
+    fs: F,
+}
+
+impl<R: crate::Registry, F: crate::FileSystem> RealEnvBlock<R, F> {
+    #[must_use]
+    pub const fn new(registry: R, fs: F) -> Self {
+        Self { registry, fs }
+    }
+
+    fn read(&self, scope: EnvScope, subkey: &str) -> Vec<EnvVar> {
+        let hive = match scope {
+            EnvScope::User => crate::RegHive::Hkcu,
+            EnvScope::Machine => crate::RegHive::Hklm,
+            // 进程环境块不属于注册表；调用方该用 `RealProcessEnv`。
+            EnvScope::ProcessOnly => return Vec::new(),
+        };
+        let Ok(values) = self.registry.values(hive, subkey) else {
+            // 键不存在 = 这个 scope 没有变量，不是失败。
+            return Vec::new();
+        };
+
+        // 展开 `%VAR%` 要用的名字表。用**已读到的变量本身**：
+        // Windows 的行为就是这样（同一个键里的变量互相引用是常见写法，
+        // 例如本机的 `NVM_SYMLINK` 与 `NVM_HOME`）。
+        let lookup: Vec<(String, String)> = values
+            .iter()
+            .filter_map(|(name, value)| value.as_str().map(|text| (name.clone(), text.to_owned())))
+            .collect();
+
+        values
+            .into_iter()
+            .filter_map(|(name, value)| {
+                let text = value.as_str()?.to_owned();
+                let reg_type = match value {
+                    crate::RegValue::ExpandSz(_) => RegType::ExpandSz,
+                    // `REG_MULTI_SZ` 的 `Path` 在真实机器上存在（历史上是常见写法）。
+                    // 当成 `REG_SZ` 处理并保留原样，比丢掉它好。
+                    _ => RegType::Sz,
+                };
+                let expanded = crate::expand_vars(&text, &lookup);
+                // **真的去看一眼目标在不在。** 这条检测有真实价值：本机的
+                // `HALCONROOT` 指向一个不存在的目录，而换账号名之后
+                // 11 条硬编码用户名的路径会静默失效。
+                let target_exists = expanded
+                    .split(';')
+                    .map(str::trim)
+                    .find(|part| !part.is_empty())
+                    .is_some_and(|first| self.fs.inspect(std::path::Path::new(first)).exists);
+                Some(EnvVar {
+                    name,
+                    value_raw: text,
+                    value_expanded: expanded,
+                    scope,
+                    reg_type,
+                    target_exists,
+                })
+            })
+            .collect()
+    }
+}
+
+impl<R: crate::Registry, F: crate::FileSystem> EnvBlock for RealEnvBlock<R, F> {
+    fn list(&self, scope: EnvScope) -> Vec<EnvVar> {
+        match scope {
+            EnvScope::User => self.read(scope, USER_ENV_SUBKEY),
+            EnvScope::Machine => self.read(scope, MACHINE_ENV_SUBKEY),
+            EnvScope::ProcessOnly => Vec::new(),
+        }
+    }
+
+    fn get(&self, scope: EnvScope, name: &str) -> Option<EnvVar> {
+        self.list(scope)
+            .into_iter()
+            .find(|var| var.name.eq_ignore_ascii_case(name))
+    }
+}
+
+/// 真实实现：读**当前进程**的环境块。
+///
+/// **它与注册表读出来的值会不一样，而那个不一样本身是信息**：本机实测有 77 字符的
+/// PowerShell MSIX 别名只存在于进程环境块里，注册表里一条都没有。
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RealProcessEnv;
+
+impl RealProcessEnv {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+}
+
+impl ProcessEnv for RealProcessEnv {
+    fn vars(&self) -> Vec<(String, String)> {
+        std::env::vars().collect()
+    }
+
+    fn path_entries(&self) -> Vec<String> {
+        std::env::var("Path")
+            .or_else(|_| std::env::var("PATH"))
+            .map(|value| value.split(';').map(ToOwned::to_owned).collect())
+            .unwrap_or_default()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

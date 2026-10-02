@@ -30,8 +30,6 @@
 //! `RegEnumKeyExW` / `RegEnumValueW`。没有任何写注册表、写文件、改 reparse point 的调用，
 //! 这是 ticket #11"只读检测"在代码层面的落点。
 
-use std::path::Path;
-
 /// Win32 码。**判断逻辑只看码，不看文本**（`AGENTS.md`：本机 zh-CN，错误文本是本地化的）。
 pub type Win32Code = u32;
 
@@ -83,25 +81,30 @@ pub struct RawRegValue {
 }
 
 #[cfg(windows)]
+#[allow(
+    unsafe_code,
+    reason = "全仓库唯一允许 unsafe 的地方：Win32 FFI 的调用点。声明本身由 windows-sys 提供，\
+              这里的每个 unsafe 块都带 SAFETY 注释说明指针来源与生命周期。业务逻辑（tuoen-core）\
+              永远不会看到 unsafe。"
+)]
 mod imp {
     use std::iter;
-    use std::os::windows::ffi::OsStrExt as _;
     use std::path::Path;
     use std::ptr;
 
     use windows_sys::Win32::Foundation::{
-        GetLastError, ERROR_SUCCESS, WIN32_ERROR,
+        ERROR_SUCCESS, GetLastError, INVALID_HANDLE_VALUE, WIN32_ERROR,
     };
     use windows_sys::Win32::Storage::FileSystem::{
-        FindClose, FindFirstFileW, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT,
-        INVALID_HANDLE_VALUE, WIN32_FIND_DATAW,
+        FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FindClose, FindFirstFileW,
+        WIN32_FIND_DATAW,
     };
     use windows_sys::Win32::System::Registry::{
-        RegCloseKey, RegEnumKeyExW, RegEnumValueW, RegOpenKeyExW, HKEY, HKEY_CURRENT_USER,
-        HKEY_LOCAL_MACHINE, KEY_READ,
+        HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, RegCloseKey, RegEnumKeyExW,
+        RegEnumValueW, RegOpenKeyExW,
     };
 
-    use super::{FindFacts, RawRegValue, RootKey, Win32Code, ERROR_INVALID_NAME};
+    use super::{ERROR_INVALID_NAME, FindFacts, RawRegValue, RootKey, Win32Code};
 
     /// UTF-16 + NUL，供 `*W` 系列调用。
     fn wide(s: &str) -> Vec<u16> {
@@ -117,6 +120,7 @@ mod imp {
     /// - 它**拒绝尾部分隔符**（`C:\dir\` 直接失败），而 `PATH` 上的条目真的会带尾部分隔符
     ///   （本机 48 条里就有）。所以削掉，但**保住裸盘符**：`C:\` 削成 `C:` 会变成
     ///   "C 盘当前目录"，语义变了。
+    ///
     /// `pub(super)`：本文件底部的测试要直接验这段纯逻辑（它不碰文件系统）。
     pub(super) fn find_pattern(path: &Path) -> Result<Vec<u16>, Win32Code> {
         let text = path.as_os_str().to_string_lossy();
@@ -275,7 +279,7 @@ mod imp {
 mod imp {
     use std::path::Path;
 
-    use super::{FindFacts, RawRegValue, RootKey, Win32Code, ERROR_NOT_SUPPORTED};
+    use super::{ERROR_NOT_SUPPORTED, FindFacts, RawRegValue, RootKey, Win32Code};
 
     /// 非 Windows 上**故意不提供任何实现**：`tuoen` V1 只发 Windows 二进制
     /// （`docs/DESIGN.md` 决策 5）。这里返回"不支持"而不是假装路径不存在，
@@ -297,6 +301,8 @@ pub use imp::{find_first, reg_subkeys, reg_values};
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use super::*;
 
     /// 这三个 tag 是本票最贵的一条知识的落点：`alias-ghost` 的判定完全依赖它们。
@@ -348,21 +354,22 @@ mod tests {
     fn find_pattern_handles_the_path_shapes_that_appear_on_real_path_values() {
         use super::imp::find_pattern;
 
+        /// 拿到给 `FindFirstFileW` 的 UTF-16 缓冲的文本部分，**并断言它以 NUL 结尾**
+        /// （忘了结尾 NUL 会读到栈后面的垃圾，是这类代码最经典的静默 bug）。
+        fn pattern_text(path: &str) -> String {
+            let mut wide = find_pattern(Path::new(path)).expect("应当接受");
+            assert_eq!(wide.pop(), Some(0), "必须以 NUL 结尾：{wide:?}");
+            String::from_utf16(&wide).expect("合法 UTF-16")
+        }
+
         // 本机 PATH 上真的存在带尾部分隔符的条目，它们必须仍能被查。
         assert_eq!(
-            String::from_utf16(&find_pattern(Path::new(r"C:\Dev\base\JDK\JDK8\bin\")).unwrap())
-                .unwrap(),
+            pattern_text(r"C:\Dev\base\JDK\JDK8\bin\"),
             r"C:\Dev\base\JDK\JDK8\bin"
         );
         // 裸盘符削成 `C:` 会变成"C 盘当前目录"，语义就变了 —— 必须保住反斜杠。
-        assert_eq!(
-            String::from_utf16(&find_pattern(Path::new(r"C:\")).unwrap()).unwrap(),
-            r"C:\"
-        );
-        assert_eq!(
-            String::from_utf16(&find_pattern(Path::new("C:/")).unwrap()).unwrap(),
-            r"C:\"
-        );
+        assert_eq!(pattern_text(r"C:\"), r"C:\");
+        assert_eq!(pattern_text("C:/"), r"C:\");
         // 通配符必须被拒绝：若放过去，`C:\*` 会被 `FindFirstFileW` 匹配成"存在"。
         assert_eq!(
             find_pattern(Path::new(r"C:\*")).unwrap_err(),

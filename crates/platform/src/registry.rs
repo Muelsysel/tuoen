@@ -11,8 +11,6 @@
 //! **测试实现**：[`crate::fixture::FakeRegistry`]。测试**绝不读真实注册表**
 //! （ticket #11 硬约束）。
 
-use std::collections::BTreeMap;
-
 use serde::{Deserialize, Serialize};
 
 use crate::error::PlatformError;
@@ -68,18 +66,52 @@ impl RegHive {
     }
 
     /// 真实实现要打开的根键与完整子键路径。
+    ///
+    /// **以 `SYSTEM\` 或 `SOFTWARE\` 开头的路径是绝对路径**（相对该 hive 的根，而不是
+    /// 相对 `SOFTWARE`）。这条存在的唯一理由是机器级环境变量：
+    /// `HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment`
+    /// **不在 `SOFTWARE` 下面**，所以它没法用"相对 `SOFTWARE`"的写法表达。
+    ///
+    /// 判定前缀是**注册表不区分大小写**的，所以这里也大小写不敏感。
+    /// ARP 与 App Paths 用的都是 `Microsoft\Windows\...`，不匹配这两个前缀，
+    /// 所以它们的解析完全不受影响。
     #[must_use]
     fn resolve(self, subkey: &str) -> (sys::RootKey, String) {
         let subkey = subkey.trim_matches('\\');
+        let root = match self {
+            Self::Hkcu => sys::RootKey::CurrentUser,
+            Self::Hklm | Self::HklmWow6432 => sys::RootKey::LocalMachine,
+        };
+        if let Some(absolute) = strip_absolute_prefix(subkey) {
+            return (root, absolute);
+        }
         match self {
-            Self::Hkcu => (sys::RootKey::CurrentUser, format!(r"SOFTWARE\{subkey}")),
-            Self::Hklm => (sys::RootKey::LocalMachine, format!(r"SOFTWARE\{subkey}")),
-            Self::HklmWow6432 => (
-                sys::RootKey::LocalMachine,
-                format!(r"SOFTWARE\WOW6432Node\{subkey}"),
-            ),
+            Self::Hkcu => (root, format!(r"SOFTWARE\{subkey}")),
+            Self::Hklm => (root, format!(r"SOFTWARE\{subkey}")),
+            Self::HklmWow6432 => (root, format!(r"SOFTWARE\WOW6432Node\{subkey}")),
         }
     }
+}
+
+/// 绝对路径前缀（相对 hive 根）。见 [`RegHive::resolve`] 的说明。
+///
+/// - `SYSTEM\` —— 机器级环境变量在那里
+/// - `SOFTWARE\` —— 显式写全的路径
+/// - `Python\` —— CPython 官方安装器的键（`HKCU\SOFTWARE\Python\PythonCore\<ver>\InstallPath`）
+///
+/// `Python\` 这条**不是**为了绕过 `SOFTWARE` 前缀，而是因为它必须**同时**用于
+/// `HKCU` 与 `HKLM` 两个 hive，而 `RegHive::HklmWow6432` 会额外插一层
+/// `WOW6432Node`。显式走绝对路径能让调用方说清楚"我要的是这个 hive 的根下面的 Python"。
+const ABSOLUTE_PREFIXES: &[&str] = &["SYSTEM\\", "SOFTWARE\\", "Python\\"];
+
+fn strip_absolute_prefix(subkey: &str) -> Option<String> {
+    let upper = subkey.to_uppercase();
+    ABSOLUTE_PREFIXES
+        .iter()
+        .find(|prefix| upper.starts_with(**prefix))
+        // 用**原样**的子键，不是大写后的 —— 注册表不区分大小写，但把用户给的路径
+        // 原样传下去更容易在错误信息里认出来。
+        .map(|_| subkey.to_owned())
 }
 
 /// 一个注册表值。
@@ -132,11 +164,8 @@ pub trait Registry {
     fn subkeys(&self, hive: RegHive, subkey: &str) -> Result<Vec<String>, PlatformError>;
 
     /// 一个键下的全部值（名 → 值）。默认值的名字是空字符串。
-    fn values(
-        &self,
-        hive: RegHive,
-        subkey: &str,
-    ) -> Result<Vec<(String, RegValue)>, PlatformError>;
+    fn values(&self, hive: RegHive, subkey: &str)
+    -> Result<Vec<(String, RegValue)>, PlatformError>;
 
     /// 取单个值。找不到返回 `None`（值缺失与键缺失在这一层不区分，
     /// 因为检测对两者的处理相同：这条记录没有这个字段）。
@@ -165,7 +194,7 @@ impl RealRegistry {
             REG_EXPAND_SZ => RegValue::ExpandSz(decode_utf16z(&raw.bytes)),
             REG_MULTI_SZ => RegValue::MultiSz(
                 decode_utf16(&raw.bytes)
-                    .split(|c| *c == '\0')
+                    .split('\0')
                     .filter(|part| !part.is_empty())
                     .map(ToOwned::to_owned)
                     .collect(),
@@ -191,8 +220,10 @@ fn decode_utf16z(bytes: &[u8]) -> String {
 
 fn decode_utf16(bytes: &[u8]) -> String {
     let units: Vec<u16> = bytes
-        .chunks_exact(2)
-        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| u16::from_le_bytes(*pair))
         .collect();
     String::from_utf16_lossy(&units)
 }
@@ -403,7 +434,10 @@ mod tests {
             r"C:\Program Files\Git\cmd\git.exe"
         );
         // 变量名大小写不敏感（Windows 环境变量就是这样）。
-        assert_eq!(expand_vars(r"%PROGRAMFILES%\x", &vars), r"C:\Program Files\x");
+        assert_eq!(
+            expand_vars(r"%PROGRAMFILES%\x", &vars),
+            r"C:\Program Files\x"
+        );
         // 两个变量连写，以及值里带百分号的情况。
         assert_eq!(expand_vars(r"a%b%c", &env(&[("b", "B")])), "aBc");
         assert_eq!(expand_vars("100%", &vars), "100%");

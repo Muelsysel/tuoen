@@ -1,0 +1,43 @@
+工具      版本              置信度                路径
+node    24.19.0         executable           C:\nvm4w\nodejs\node.exe
+node    24.19.0         manager-owned      ✗ C:\Users\Muelsyse\AppData\Local\nvm
+python  ?               registered-missing  ✗ <无 InstallLocation，卸载键 {665A0435-D5D5-4A49-9DE0-FBC23C5425ED}>
+python  ?               alias-ghost        ✗ C:\Users\Muelsyse\AppData\Local\Microsoft\WindowsApps\python.exe
+python  ?               registered-missing  ✗ C:\Users\Muelsyse\AppData\Local\Programs\Python\Python311\
+python  3.12.10         registered           C:\Users\Muelsyse\AppData\Local\Programs\Python\Python312\
+python  3.12.10         executable           C:\Users\Muelsyse\AppData\Local\Programs\Python\Python312\python.exe
+java    ?               registered-missing  ✗ <无 InstallLocation，卸载键 {4A03706F-666A-4037-7777-5F2748764D10}>
+java    ?               directory-only     ✗ C:\Dev\base\JDK
+java    1.8.0_492       executable           C:\Dev\base\JDK\JDK8\bin\java.exe
+java    1.8.0_491       executable           C:\Program Files (x86)\Common Files\Oracle\Java\java8path\java.exe
+java    1.8.0_491       registered           C:\Program Files\Java\jre1.8.0_491\
+git     2.53.0.vfs.0.7  registered           C:\Program Files\Git\
+git     2.53.0.vfs.0.7  executable           C:\Program Files\Git\cmd\git.exe
+uv      0.12.3          executable           C:\Users\Muelsyse\.local\bin\uv.exe
+cargo   1.99.0          executable           C:\Users\Muelsyse\.cargo\bin\cargo.exe
+rustc   1.99.0          executable           C:\Users\Muelsyse\.cargo\bin\rustc.exe
+maven   3.9.5           directory-only     ✗ C:\Dev\Tool\apache-maven-3.9.5
+dotnet  ?               registered-missing  ✗ <无 InstallLocation，卸载键 {2D690786-1257-44F3-AB75-7F55B62B42E9}>
+dotnet  ?               registered-missing  ✗ <无 InstallLocation，卸载键 {33CBD71A-9813-4440-92B8-B06C04852B34}>
+dotnet  ?               executable           C:\Program Files\dotnet\dotnet.exe
+pnpm    11.21.0         executable           C:\nvm4w\nodejs\pnpm.cmd
+wsl     ?               registered-missing  ✗ <无 InstallLocation，卸载键 {497CB23D-8747-4047-A079-DD98E0EDFC18}>
+wsl     2.7.11.0        executable           C:\Program Files\WindowsApps\MicrosoftCorporationII.WindowsSubsystemForLinux_2.7.11.0_x64__8wekyb3d8bbwe\wsl.exe
+wsl     ?               registered           C:\Program Files\WSL Dashboard\
+wsl     ?               alias-ghost        ✗ C:\Users\Muelsyse\AppData\Local\Microsoft\WindowsApps\wsl.exe
+wsl     2.7.11.0        executable           C:\Windows\system32\wsl.exe
+
+共 27 条记录。
+来源：path-resolution 13 · app-paths 1 · registry-arp 10 · filesystem-scan 2 · manager 1
+置信度：executable 12 · registered 4 · manager-owned 1 · directory-only 2 · registered-missing 6 · alias-ghost 2
+
+注意：
+  · 6 条是**幽灵条目** —— 注册表声称已安装，但文件不存在。
+    tuoen 只报告它们，不会去清理（那属于你的决定）。
+  · 2 条是**App Execution Alias** —— 0 字节，`Test-Path` 通过，
+    但它不是文件。`Get-Command` 会成功，实际执行会打开应用商店。
+
+标 ✗ 的 11 条**不能由 tuoen 自动重建**（它们是别人的安装、
+只剩目录、或根本不存在）。其余条目是 `capture` 的捕获对象。
+
+用 `tuoen detect --json` 拿机器可读的输出。

@@ -11,6 +11,7 @@
 //! 见 `docs/specs/L1-dev-state.md` 的输出契约与 `docs/DESIGN.md` 决策 35。
 
 use serde::Serialize;
+use tuoen_core::detect::{Confidence, DetectedTool, DetectionSummary};
 use tuoen_manifest::{Catalog, GateVerdict, ResolvedRecipe, Tool, resolve};
 
 /// `tuoen catalog list --json` 的载荷。
@@ -253,6 +254,135 @@ impl CheckView {
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// `tuoen detect`
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// `tuoen detect --json` 的载荷。
+///
+/// **六个来源与七层置信度的计数恒定出现**（即使是 0）。理由：消费者可以据此断言
+/// "这一版引擎认这七层"，而不是从"某个层级缺席"里读出"这个层级被删了"。
+/// 一个会随内容改变键集合的 JSON 不是稳定的接口。
+#[derive(Debug, Serialize)]
+pub struct DetectView {
+    #[serde(rename = "schemaVersion")]
+    pub schema_version: u32,
+    pub tool: Vec<DetectedToolView>,
+    pub summary: DetectSummaryView,
+}
+
+/// 一条检测记录。
+#[derive(Debug, Serialize)]
+pub struct DetectedToolView {
+    pub name: String,
+    pub version: Option<String>,
+    pub path: String,
+    /// `tuoen` / `path-resolution` / `app-paths` / `registry-arp` /
+    /// `filesystem-scan` / `manager` —— **不本地化**。
+    pub source: &'static str,
+    /// `managed` / `executable` / `manager-owned` / `directory-only` /
+    /// `registered-missing` / `alias-ghost` —— **不本地化**。
+    pub confidence: &'static str,
+    /// 第三方版本管理器名（如 `nvm4w`），无则为 `null`。
+    pub manager: Option<String>,
+    /// 这一条是怎么被发现的。自由文本，**允许中文** —— 它是给人读的。
+    pub evidence: String,
+    /// 这一条能不能被 tuoen 在新机器上自动重建。
+    ///
+    /// 这是**派生的、但值得显式给出**的字段：消费者最常问的就是这个，
+    /// 而让它自己从 `confidence` 推会把这套规则复制到每个消费者里。
+    pub reproducible: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DetectSummaryView {
+    pub total: usize,
+    #[serde(rename = "byConfidence")]
+    pub by_confidence: Vec<CountView>,
+    #[serde(rename = "bySource")]
+    pub by_source: Vec<CountView>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CountView {
+    /// 层级或来源的稳定英文取值。
+    pub key: &'static str,
+    pub count: usize,
+}
+
+impl DetectView {
+    #[must_use]
+    pub fn new(summary: &DetectionSummary) -> Self {
+        Self {
+            schema_version: 1,
+            tool: summary.tools.iter().map(DetectedToolView::from).collect(),
+            summary: DetectSummaryView {
+                total: summary.tools.len(),
+                by_confidence: summary
+                    .count_by_confidence()
+                    .into_iter()
+                    .map(|(level, count)| CountView {
+                        key: level.as_str(),
+                        count,
+                    })
+                    .collect(),
+                by_source: summary
+                    .count_by_source()
+                    .into_iter()
+                    .map(|(source, count)| CountView {
+                        key: source.as_str(),
+                        count,
+                    })
+                    .collect(),
+            },
+        }
+    }
+}
+
+impl From<&DetectedTool> for DetectedToolView {
+    fn from(tool: &DetectedTool) -> Self {
+        Self {
+            name: tool.name.clone(),
+            version: tool.version.clone(),
+            path: tool.path.clone(),
+            source: tool.source.as_str(),
+            confidence: tool.confidence.as_str(),
+            manager: tool.manager.clone(),
+            evidence: tool.evidence.clone(),
+            reproducible: is_reproducible(tool.confidence),
+        }
+    }
+}
+
+/// 这一层置信度能不能被自动重建。
+///
+/// **判据本身在 [`Confidence::is_reproducible`] 上**（它是"捕获/还原"的核心规则，
+/// 散落成多份 `match` 必然会漂移）；这个函数只是它的投影，供 `--json` 与人类输出共用。
+#[must_use]
+pub const fn is_reproducible(confidence: Confidence) -> bool {
+    confidence.is_reproducible()
+}
+
+#[cfg(test)]
+mod source_label_tests {
+    use tuoen_core::detect::DetectionSource;
+
+    #[test]
+    fn source_values_are_the_ones_the_contract_names() {
+        // 人类输出与 JSON 用**同一个**取值（`DetectionSource::as_str()`），
+        // 否则"表格里写的名字"与"脚本里读到的名字"会漂移成两套词汇。
+        //
+        // 这个断言放在 CLI 侧而不是 core 侧，是因为**契约的这一头在这里**：
+        // `detect_contract.rs` 断言 `--json` 里出现的就是这些字符串。
+        assert_eq!(DetectionSource::AppPaths.as_str(), "app-paths");
+        assert_eq!(DetectionSource::RegistryArp.as_str(), "registry-arp");
+        assert_eq!(DetectionSource::PathResolution.as_str(), "path-resolution");
+        assert_eq!(DetectionSource::FilesystemScan.as_str(), "filesystem-scan");
+        assert_eq!(DetectionSource::Manager.as_str(), "manager");
+        assert_eq!(DetectionSource::Tuoen.as_str(), "tuoen");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -328,5 +458,68 @@ mod tests {
         assert!(json.contains("\"url\""), "{json}");
         assert!(json.contains("nodejs.org"), "{json}");
         assert!(json.contains(r#""installable":true"#), "{json}");
+    }
+
+    #[test]
+    fn detect_view_keeps_source_and_confidence_as_english_labels() {
+        let summary = tuoen_core::detect::DetectionSummary {
+            tools: vec![tuoen_core::detect::DetectedTool {
+                name: "python".to_owned(),
+                version: None,
+                path: r"C:\Users\x\AppData\Local\Microsoft\WindowsApps\python.exe".to_owned(),
+                source: tuoen_core::detect::DetectionSource::PathResolution,
+                confidence: tuoen_core::detect::Confidence::AliasGhost,
+                manager: None,
+                evidence: "PATH 第 1 条里有 python.exe，但它是 0 字节的 App Execution Alias"
+                    .to_owned(),
+            }],
+        };
+        let view = DetectView::new(&summary);
+        let json = serde_json::to_string(&view).expect("serialise");
+        // 取值必须是英文小写 kebab —— 界面语言不能绑死脚本。
+        assert!(json.contains(r#""source":"path-resolution""#), "{json}");
+        assert!(json.contains(r#""confidence":"alias-ghost""#), "{json}");
+        // 但 evidence 是给人读的，可以是中文。
+        assert!(
+            json.contains("幽灵") || json.contains("App Execution Alias"),
+            "{json}"
+        );
+        // 顶层字段名。
+        assert!(json.contains(r#""schemaVersion":1"#), "{json}");
+    }
+
+    #[test]
+    fn detect_summary_lists_every_confidence_level_even_at_zero() {
+        // 七个层级**恒定出现**：消费者可以据此断言"这一版引擎认这七层"，
+        // 而不是从"某个层级缺席"里读出"这个层级不存在了"。
+        let summary = tuoen_core::detect::DetectionSummary { tools: Vec::new() };
+        let view = DetectView::new(&summary);
+        let json = serde_json::to_string(&view).expect("serialise");
+        for level in [
+            "managed",
+            "executable",
+            "manager-owned",
+            "directory-only",
+            "registered-missing",
+            "alias-ghost",
+        ] {
+            assert!(json.contains(level), "缺少层级 {level}：{json}");
+        }
+    }
+
+    #[test]
+    fn detect_view_always_reports_all_six_sources() {
+        let summary = tuoen_core::detect::DetectionSummary { tools: Vec::new() };
+        let json = serde_json::to_string(&DetectView::new(&summary)).expect("serialise");
+        for source in [
+            "tuoen",
+            "path-resolution",
+            "app-paths",
+            "registry-arp",
+            "filesystem-scan",
+            "manager",
+        ] {
+            assert!(json.contains(source), "缺少来源 {source}：{json}");
+        }
     }
 }

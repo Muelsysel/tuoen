@@ -11,7 +11,7 @@
 //! **测试实现**：[`crate::fixture::FakeProcessRunner`]。
 //! 真实实现 [`SystemProcessRunner`] 的超时有独立用例：真的起一个不返回的进程。
 
-use std::io::Read as _;
+use std::io::Read;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -119,7 +119,7 @@ impl Capture {
 
     /// 取走已经读到的内容。
     fn finish(self: &Arc<Self>) -> String {
-        let deadline = Instant::now() + Self::DRAIN_GRACE;
+        let deadline = Instant::now() + SystemProcessRunner::DRAIN_GRACE;
         while !self.done.load(Ordering::SeqCst) && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(5));
         }
@@ -206,7 +206,9 @@ mod tests {
     /// `-n 6` 把"万一没杀掉"的最坏情况限制在约 5 秒。
     fn a_process_that_does_not_return() -> Option<std::path::PathBuf> {
         let root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_owned());
-        let ping = std::path::Path::new(&root).join("System32").join("ping.exe");
+        let ping = std::path::Path::new(&root)
+            .join("System32")
+            .join("ping.exe");
         ping.exists().then_some(ping)
     }
 

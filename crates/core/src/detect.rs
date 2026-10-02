@@ -1,8 +1,35 @@
-//! 检测引擎的**形状**（ticket #2 定型，ticket #11 填充实现）。
+//! 检测引擎：把"这台机器上装了什么开发工具"读成结构化记录。
 //!
-//! 这一模块现在只定义类型，因为它编码的是**公开契约**：`--json` 输出里的取值、
-//! 六个置信度层级、以及"每条记录都必须有来源"这条不变量。
-//! 见 `docs/specs/L1-dev-state.md`。
+//! **七层置信度**（[`Confidence`]）与**六种来源**（[`DetectionSource`]）是公开契约，
+//! 它们编码的是本机取证里最贵的几条知识：
+//!
+//! - `alias-ghost` 必须独立存在：`WindowsApps\python.exe` 是 0 字节、
+//!   reparse tag `0x8000001b` 的 App Execution Alias，而 `Get-Command python` **成功**
+//!   并排在 `PATH` 最前。任何"`Test-Path` 通过就算存在"的实现都会在这里给出错误答案。
+//! - `registered-missing` 必须与真实安装分开：本机 `Python311` 有 9 个活卸载键而
+//!   `Test-Path` 为 `False`。把幽灵条目与真实安装并列展示，用户看一眼就不再信任这个工具。
+//! - `manager-owned` 是**只读采纳**：能看见、能选中、能 pin，但 `uninstall` 不去动它们。
+//!
+//! **这一层只读。** 六个来源的实现见 [`engine`]。
+//!
+//! ## 测试约束
+//!
+//! 检测引擎只依赖 [`context::DetectContext`] 里的 trait，所以测试可以注入固定装置，
+//! **绝不读真实的 `HKCU\Environment` / `HKLM` / 真实 `PATH` / 用户真实安装目录**。
+
+pub mod context;
+pub mod engine;
+pub mod spec;
+/// 测试支撑：把 `tuoen_platform::fixture` 的假机器接成 [`context::DetectContext`]。
+///
+/// **是公开 API 而不是 `#[cfg(test)]`**：`crates/cli/tests/*.rs` 是独立 crate，
+/// 拿不到 `#[cfg(test)]` 的东西，而"测试绝不读真机"是硬约束。
+/// 代价是它也会进生产二进制 —— 几百行零依赖代码换"测试不会改开发者的机器"，值。
+pub mod test_support;
+
+pub use context::{DetectContext, PathEntry, PathScope, ScanRoot};
+pub use spec::{KNOWN_TOOLS, ToolSpec, VersionStream};
+pub use test_support::DetectFixture;
 
 use serde::{Deserialize, Serialize};
 
@@ -29,7 +56,7 @@ pub struct DetectedTool {
 }
 
 /// 检测来源。`--json` 里是这些字符串本身，**不本地化**。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum DetectionSource {
     /// tuoen 自己的安装记录。
@@ -60,7 +87,7 @@ impl DetectionSource {
     }
 }
 
-/// 六层置信度。**层级数量与名字都是公开契约。**
+/// 七层置信度。**层级数量与名字都是公开契约。**
 ///
 /// `AliasGhost` 必须独立存在：本机实测 `WindowsApps\python.exe` 是 0 字节、
 /// reparse tag `0x8000001b` 的 App Execution Alias，而 `Get-Command python` **成功**并排在
@@ -80,6 +107,17 @@ pub enum Confidence {
     AliasGhost,
     /// 由第三方版本管理器管理（只读采纳）。
     ManagerOwned,
+    /// 注册表声称已安装，且**安装目录真的存在**，但它不在 `PATH` 上。
+    ///
+    /// **这一层是独立验收逼出来的**：ARP 的 `InstallLocation` 常常是一个**目录**
+    /// （本机 `C:\Program Files\Git\` / `C:\Program Files\Java\jre1.8.0_491\` /
+    /// `C:\Program Files\WSL Dashboard\`）。把它们报成 `executable` 是错的 ——
+    /// `executable` 的判据是"在 `PATH` 上能解析到、文件真实存在且大小 > 0"，
+    /// 而这三条一条都不满足。
+    ///
+    /// 它与 `DirectoryOnly` 的区别是**有注册表记录**（因此能被自动重建），
+    /// 与 `RegisteredMissing` 的区别是**目录真的在**（所以不是幽灵）。
+    Registered,
 }
 
 impl Confidence {
@@ -92,7 +130,23 @@ impl Confidence {
             Self::DirectoryOnly => "directory-only",
             Self::AliasGhost => "alias-ghost",
             Self::ManagerOwned => "manager-owned",
+            Self::Registered => "registered",
         }
+    }
+
+    /// 这一层能不能被 tuoen 在新机器上自动重建。
+    ///
+    /// **这个判断放在 `Confidence` 上而不是 CLI 里**：它是"捕获/还原"的核心判据，
+    /// 散落成多份 `match` 必然会漂移。`--json` 的 `reproducible` 字段就是它的投影。
+    ///
+    /// - `managed` / `executable` / `registered` → 能（我们知道它是什么、在哪）
+    /// - `manager-owned` → **不能由我们重建**（那是别人的版本管理器，我们只读采纳）
+    /// - `directory-only` → 不能（知道目录在哪，但不知道它怎么装上去的）
+    /// - `registered-missing` → 不能（它根本不存在）
+    /// - `alias-ghost` → 不能（那是系统别名，不是安装）
+    #[must_use]
+    pub const fn is_reproducible(self) -> bool {
+        matches!(self, Self::Managed | Self::Executable | Self::Registered)
     }
 
     /// 这条记录是否代表"现在真的能用"。
@@ -101,7 +155,10 @@ impl Confidence {
     /// 把它们与真实安装并列展示会让用户看一眼就不再信任这个工具。
     #[must_use]
     pub const fn is_usable(self) -> bool {
-        matches!(self, Self::Managed | Self::Executable | Self::ManagerOwned)
+        matches!(
+            self,
+            Self::Managed | Self::Executable | Self::ManagerOwned | Self::Registered
+        )
     }
 }
 
@@ -109,6 +166,70 @@ impl Confidence {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DetectionSummary {
     pub tools: Vec<DetectedTool>,
+}
+
+impl DetectionSummary {
+    /// 按置信度层级分组计数（给人类输出用）。
+    #[must_use]
+    pub fn count_by_confidence(&self) -> Vec<(Confidence, usize)> {
+        // 固定顺序，便于稳定输出。
+        const ORDER: &[Confidence] = &[
+            Confidence::Managed,
+            Confidence::Executable,
+            Confidence::Registered,
+            Confidence::ManagerOwned,
+            Confidence::DirectoryOnly,
+            Confidence::RegisteredMissing,
+            Confidence::AliasGhost,
+        ];
+        ORDER
+            .iter()
+            .map(|level| {
+                (
+                    *level,
+                    self.tools.iter().filter(|t| t.confidence == *level).count(),
+                )
+            })
+            .collect()
+    }
+
+    /// 按来源分组计数。
+    #[must_use]
+    pub fn count_by_source(&self) -> Vec<(DetectionSource, usize)> {
+        engine::SOURCE_ORDER
+            .iter()
+            .map(|source| {
+                (
+                    *source,
+                    self.tools.iter().filter(|t| t.source == *source).count(),
+                )
+            })
+            .collect()
+    }
+}
+
+/// **检测引擎的入口**：跑六个来源、合并、返回汇总。
+///
+/// 六个来源的**执行顺序不影响结果**（合并时按 [`engine::SOURCE_ORDER`] 重排），
+/// 但它们的**代价差别很大**：`PATH` 解析要对每个条目做定向探测，
+/// 文件系统扫描要列目录，而版本探测要起进程。所以 `probe_versions = false`
+/// 时整个检测只做结构查询，`doctor` 用它。
+#[must_use]
+pub fn detect_all(ctx: &DetectContext<'_>) -> DetectionSummary {
+    let entries = engine::path_entries(ctx);
+
+    let groups = vec![
+        engine::from_managed(ctx),
+        engine::from_path(ctx, &entries),
+        engine::from_app_paths(ctx),
+        engine::from_arp(ctx),
+        engine::from_filesystem_scan(ctx),
+        engine::from_managers(ctx),
+    ];
+
+    DetectionSummary {
+        tools: engine::merge(groups),
+    }
 }
 
 #[cfg(test)]

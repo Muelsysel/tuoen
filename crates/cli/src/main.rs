@@ -13,6 +13,7 @@
 
 mod catalog;
 mod cli;
+mod detect;
 mod envelope;
 mod exit;
 mod view;
@@ -23,7 +24,7 @@ use tuoen_manifest::{GateVerdict, Redistribution, ResolvedRecipe};
 use catalog::{CatalogCommand, CheckArgs, JsonFlag, ShowArgs};
 use cli::{Cli, Command};
 use envelope::Envelope;
-use view::{CatalogListView, CheckView, ToolDetailView};
+use view::{CatalogListView, CheckView, DetectView, ToolDetailView};
 
 fn main() {
     // 退出码约定：0 成功，1 运行期错误，2 用法错误（由 clap 直接退出）。
@@ -49,7 +50,163 @@ fn run() -> i32 {
             CatalogCommand::Show(args) => run_catalog_show(&args),
             CatalogCommand::Check(args) => run_catalog_check(&args),
         },
+        Command::Detect(args) => run_detect(&args),
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// `tuoen detect`
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// 只读地检测这台机器。
+///
+/// **六个依赖全是真实实现，没有一个是写死的** —— 这也是为什么固定装置
+/// （`tuoen_core::fixture`）必须是公开 API：测试能注入假实现，真机跑真实现。
+fn run_detect(args: &detect::DetectArgs) -> i32 {
+    let fs = tuoen_platform::RealFileSystem;
+    let registry = tuoen_platform::RealRegistry;
+    // 环境变量里 `target_exists` 要真的去看磁盘，所以这里把 fs 也传进去。
+    let env = tuoen_platform::RealEnvBlock::new(registry, fs);
+    let process_env = tuoen_platform::RealProcessEnv::new();
+    let runner = tuoen_platform::SystemProcessRunner;
+    let managed = tuoen_platform::RealManagedStore::default();
+    let scan_roots = tuoen_core::detect::engine::default_scan_roots(&process_env);
+
+    let ctx = tuoen_core::detect::DetectContext {
+        fs: &fs,
+        registry: &registry,
+        env: &env,
+        process_env: &process_env,
+        runner: &runner,
+        managed: &managed,
+        probe_timeout: tuoen_platform::DEFAULT_PROBE_TIMEOUT,
+        probe_versions: !args.no_version,
+        scan_roots,
+    };
+
+    let summary = tuoen_core::detect::detect_all(&ctx);
+
+    if args.json {
+        print_json(&Envelope::ok("detect", &DetectView::new(&summary)));
+    } else {
+        print_human_detect(&summary, args.no_version);
+    }
+    exit::SUCCESS
+}
+
+fn print_human_detect(summary: &tuoen_core::detect::DetectionSummary, no_version: bool) {
+    if summary.tools.is_empty() {
+        println!("（没有检测到任何开发工具）");
+        println!();
+        println!("这不太可能是真的 —— 请把这个输出报告给我们。");
+        return;
+    }
+
+    // 列宽按实际内容算，中文与长路径都不会把表挤歪。
+    let name_w = summary
+        .tools
+        .iter()
+        .map(|t| display_width(&t.name))
+        .max()
+        .unwrap_or(4)
+        .max(4);
+    let version_w = summary
+        .tools
+        .iter()
+        .map(|t| display_width(t.version.as_deref().unwrap_or("?")))
+        .max()
+        .unwrap_or(1)
+        .max(7);
+
+    println!(
+        "{:<name_w$}  {:<version_w$}  {:<17}  路径",
+        "工具",
+        "版本",
+        "置信度",
+        name_w = name_w,
+        version_w = version_w
+    );
+    for tool in &summary.tools {
+        let mark = if view::is_reproducible(tool.confidence) {
+            " "
+        } else {
+            "✗"
+        };
+        println!(
+            "{:<name_w$}  {:<version_w$}  {:<17}  {mark} {}",
+            tool.name,
+            tool.version.as_deref().unwrap_or("?"),
+            tool.confidence.as_str(),
+            tool.path,
+            name_w = name_w,
+            version_w = version_w
+        );
+    }
+
+    println!();
+    println!("共 {} 条记录。", summary.tools.len());
+
+    // 按来源与置信度各给一行计数 —— 这是"检测有多可信"的概览。
+    let by_source = summary
+        .count_by_source()
+        .into_iter()
+        .filter(|(_, count)| *count > 0)
+        .map(|(source, count)| format!("{} {}", source.as_str(), count))
+        .collect::<Vec<_>>()
+        .join(" · ");
+    println!("来源：{by_source}");
+
+    let by_confidence = summary
+        .count_by_confidence()
+        .into_iter()
+        .filter(|(_, count)| *count > 0)
+        .map(|(level, count)| format!("{} {}", level.as_str(), count))
+        .collect::<Vec<_>>()
+        .join(" · ");
+    println!("置信度：{by_confidence}");
+
+    // 值得单独点名的两类：它们最容易让人误判。
+    let ghosts = summary
+        .tools
+        .iter()
+        .filter(|t| t.confidence == tuoen_core::detect::Confidence::RegisteredMissing)
+        .count();
+    let aliases = summary
+        .tools
+        .iter()
+        .filter(|t| t.confidence == tuoen_core::detect::Confidence::AliasGhost)
+        .count();
+    if ghosts > 0 || aliases > 0 {
+        println!();
+        println!("注意：");
+        if ghosts > 0 {
+            println!("  · {ghosts} 条是**幽灵条目** —— 注册表声称已安装，但文件不存在。");
+            println!("    tuoen 只报告它们，不会去清理（那属于你的决定）。");
+        }
+        if aliases > 0 {
+            println!("  · {aliases} 条是**App Execution Alias** —— 0 字节，`Test-Path` 通过，");
+            println!("    但它不是文件。`Get-Command` 会成功，实际执行会打开应用商店。");
+        }
+    }
+
+    let not_reproducible = summary
+        .tools
+        .iter()
+        .filter(|t| !view::is_reproducible(t.confidence))
+        .count();
+    if not_reproducible > 0 {
+        println!();
+        println!("标 ✗ 的 {not_reproducible} 条**不能由 tuoen 自动重建**（它们是别人的安装、");
+        println!("只剩目录、或根本不存在）。其余条目是 `capture` 的捕获对象。");
+    }
+
+    if no_version {
+        println!();
+        println!("（本次没有探测版本 —— 加了 `--no-version`）");
+    }
+
+    println!();
+    println!("用 `tuoen detect --json` 拿机器可读的输出。");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

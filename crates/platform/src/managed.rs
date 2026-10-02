@@ -1,4 +1,4 @@
-//! tuoen 自己的安装记录 —— 六个置信度层里 `managed` 层的来源。
+//! tuoen 自己的安装记录 —— 七层置信度里 `managed` 层的来源。
 //!
 //! **现状：L0（安装引擎）还没落地，所以真实实现恒返回空表。**
 //! 这不是占位：`docs/specs/L1-dev-state.md` 的判据表里 `managed` 一栏写的就是
@@ -8,7 +8,7 @@
 //! **为什么现在就要把它做成 trait**：`managed` 是与另外五层并列的**判据**，
 //! 判据必须可测。把它做成可注入的 seam 之后：
 //! - 它在本票就有固定装置用例（`fixtures/detect/confidence-managed.toml`）；
-//! - L0 落地时只需要换掉 [`RealManagedStore`] 一个实现，检测引擎与六层判据不动。
+//! - L0 落地时只需要换掉 [`RealManagedStore`] 一个实现，检测引擎与七层判据不动。
 //!
 //! **记录格式故意不定**：L0 的 `docs/specs/L0-install-engine.md` 没有规定安装记录的落盘
 //! 位置与格式，而在这里发明一个（然后 L0 用另一个）会制造"两个真相"。
@@ -71,6 +71,9 @@ mod tests {
             store.installed().is_empty(),
             "L0 未落地时 managed 层必须为空 —— 编一条假记录会让真机输出不可信"
         );
-        assert_eq!(store.root, PathBuf::from(r"C:\Users\example\AppData\Roaming\tuoen"));
+        assert_eq!(
+            store.root,
+            PathBuf::from(r"C:\Users\example\AppData\Roaming\tuoen")
+        );
     }
 }

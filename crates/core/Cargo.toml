@@ -15,6 +15,9 @@ workspace = true
 serde.workspace = true
 toml.workspace = true
 thiserror.workspace = true
+# 检测引擎通过 trait 拿文件系统 / 注册表 / 进程执行器，所以它依赖 platform
+# 的类型定义 —— 但**不直接调用 Win32**。这条边界是 spec 里写明的。
+tuoen-platform = { path = "../platform" }
 
 [dev-dependencies]
 serde_json.workspace = true
