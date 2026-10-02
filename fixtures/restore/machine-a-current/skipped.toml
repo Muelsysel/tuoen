@@ -1,0 +1,18 @@
+schema_version = 1
+captured_at = "2026-11-15T14:05:00Z"
+
+# 1 条。**只有名字、位置与原因，没有任何材料**（files.rs 的硬规矩）。
+#
+# `kind = "credential-named"` 是真的从 `capture::secrets` 的判据长出来的：
+# `ARK_API_KEY` 按非字母数字切段 → [ARK, API, KEY] → 拼起来含 `APIKEY` →
+# 名字判据命中，兜底的名字是 `KEY`。所以 `reason` 里出现的就是 `KEY`。
+#
+# restore 靠**这一行**产出 `credential-reconfigure` 待办（决策 153）：
+# subject 是**标识**，detail 是稳定 slug，材料一个字节都不出现。
+
+[[skipped]]
+section = "env"
+scope = "user"
+name = "ARK_API_KEY"
+kind = "credential-named"
+reason = "变量名里有 `KEY`，且值够长、不像路径 —— 无法排除它是凭据，所以没有写进快照"

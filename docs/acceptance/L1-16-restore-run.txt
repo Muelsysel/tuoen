@@ -1,0 +1,191 @@
+# 票据 #16 `tuoen restore` 真机验收 —— 原始输出
+#
+# 生成方式（唯一一条命令）：
+#   pwsh -NoProfile -File scripts/acceptance-L1-16.ps1
+# 判据（最后一行）：SUMMARY checks_passed=125 checks_failed=0 checks_skipped=0 verdict=PASS
+#
+# 这一轮**不写任何东西**，只有 §9 例外：它用 `--only env --apply` 真写**一个新建的**
+# 用户级环境变量（`TUOEN_ACCEPTANCE_PROBE`），验证"计划 → 真的落盘 → 新终端看得到 →
+# 再跑一次是空的 → 删掉之后整个 HKCU\Environment 逐字回到原样"。
+# 票据禁止的是"在开发机上真的执行一次**完整** restore"，那一条没有做，也没有被绕过。
+#
+# 末尾附 `-SelfTest` 的结论：它必须 exit 1（证明这条脚本**会**报失败）。
+#
+# ---------------------------------------------------------------------------
+
+── 0 构建
+  [ok]   cargo build --release -p tuoen-cli 成功      Finished `release` profile [optimized] target(s) in 0.05s
+  [ok]   tuoen.exe 存在  C:\Work\EasyEnvForWin\target\release\tuoen.exe
+
+── 1 准备：本机自己的快照（只读）
+       子进程 PATH（新终端口径）= 1781 字符
+  [ok]   capture --out 退出 0  exit=0
+       快照文件：env.toml, path.toml, schema.toml, skipped.toml, tools.toml, wsl.toml
+       tools 27 行（可复现 15 / 不可复现 12；管理器 nvm4w+uv）· env 32 行（user 13 / machine 19）· path 49 行 · wsl 2 · skipped 1
+  [ok]   快照里有四个 section 文件（tools/env/path/wsl）  env.toml,path.toml,schema.toml,skipped.toml,tools.toml,wsl.toml
+  [ok]   快照里真的有一份"不可复现"的工具行（否则 unsupported 那条判据没有样本）  12 行
+  [ok]   快照里真的有第三方管理器（nvm4w / uv）  nvm4w,uv
+  [ok]   skipped.toml 里有被跳过的凭据命名变量（credential-reconfigure 的样本）  ARK_API_KEY
+
+── 2 `restore <dir> --json`（默认 = 只出计划）
+  [ok]   restore（不带 --apply）退出 0  exit=0
+  [ok]   --json 能解析出 data
+  [ok]   sections 恰好四个  4 个
+  [ok]   section 的 id 是 tools/path/env/wsl  tools,path,env,wsl
+  [ok]   四个 section 全是 no-change（票据："还原到本机应当产出接近空的 plan"）  no-change,no-change,no-change,no-change
+  [ok]   tools：installed = 快照里的工具行数（同名同版本都在本机）  产品 27 / 脚本 27
+  [ok]   tools：missing = 0  0
+  [ok]   tools：third-party 计数 = 快照里带 manager 的行数  0
+  [ok]   tools：没有 install 动作（本机什么都不缺）
+  [ok]   tools：needsNetwork = false  False
+  [ok]   path：本机自己的健康问题真的存在（fix > 0，否则下面那条"默认不选中"是空真）  fix=24
+  [ok]   交叉对照：`path diff` 与 `restore` 对同一份快照给出同一组分类数字（两条命令、两套装配）  path diff = keep=25 add=0 remove=0 move=0 fix=24 caseOnly=0 / restore = keep=25 add=0 remove=0 move=0 fix=24 caseOnly=0
+  [ok]   path：add/remove/move 都是 0（目标就是本机）  add=0 remove=0 move=0
+  [ok]   path：note = fix-not-selected（那 24 条是本机自己的病，默认不应用）  fix-not-selected
+  [ok]   path：effective 里没有任何要写的条目（决策 158 的第二个口径）  add= remove= move= fix=
+  [ok]   env：present = 快照里的变量行数  产品 32 / 脚本 32
+  [ok]   env：没有 set-user 动作（本机什么都不缺）
+  [ok]   env：被跳过的凭据变量只以 skipped-secret 出现（不是"要写"）  ARK_API_KEY=skipped-secret
+  [ok]   wsl：same = 快照里的发行版数  产品 2 / 脚本 2
+  [ok]   wsl：effective 恒空（只报告，决策 159 的 wsl 那一行）
+  [ok]   wsl：note = report-only（不自动导入 vhdx）  report-only
+  [ok]   --json 成功载荷是纯 ASCII（中文只进人类输出）
+  [ok]   --json 里没有 message 键
+  [ok]   --json 里没有时间戳
+  [ok]   决策 162：--json 的 snapshot 字段 = 用户给的那个目录原样  C:\Users\Muelsyse\AppData\Local\Temp\tuoen-acceptance-L1-16\real\tuoen.d
+  [ok]   两次 --json 逐字节相同（幂等的第一层证据）
+  [ok]   显式 --dry-run 与默认形态的 --json 逐字节相同（同一套代码路径）  exit=0
+
+── 3 manual_actions：凭据只写意图，绝不写材料
+  [ok]   人类输出退出 0  exit=0
+  [ok]   人类输出是中文
+  [ok]   人类输出说了"无变更"（本机就是快照的来源）
+  [ok]   人类输出说了"什么都没有写"
+  [ok]   人类输出里有"要人工做的事"这一段
+  [ok]   manualActions 非空（票据预期：至少有凭据重配的意图）  3 条
+  [ok]   每个 code 都是那五个之一  third-party-manager,third-party-manager,credential-reconfigure
+  [ok]   每条都带 subject / detail / remediation，且全是纯 ASCII  third-party-manager:nvm4w | third-party-manager:uv | credential-reconfigure:env:ARK_API_KEY
+  [ok]   凭据意图里有那个被跳过的变量名（ARK_API_KEY；subject 或 detail 命中都算）  env:ARK_API_KEY/credential-named
+  [ok]   第三方管理器按管理器去重后出现在待办里  nvm4w,uv
+  [ok]   凭据材料没有泄漏进任何输出（前 8 字符与全长都比过）  比较过 46 字符的前缀（值本身不打印）
+  [ok]   输出里没有 `glpat-` 形状的东西
+
+── 4 零副作用：注册表 / store / %APPDATA% 逐项相同
+  [ok]   HKCU Path 逐字未变  a12fc582e90513a3 → a12fc582e90513a3
+  [ok]   HKCU Path 类型未变  String → String
+  [ok]   HKLM Path 逐字未变
+  [ok]   %LOCALAPPDATA%\tuoen 清单逐项相同（含 store 两层 —— 没有偷偷装东西）
+  [ok]   %APPDATA%\tuoen 清单逐项相同
+  [ok]   nvm4w：NVM_HOME / NVM_SYMLINK 在两个作用域里的原文与类型逐字未变  user/NVM_HOME=ExpandString|C:\Users\Muelsyse\AppData\Local\nvm | user/NVM_SYMLINK=ExpandString|C:\nvm4w\nodejs | machine/NVM_HOME=ExpandString|C:\Users\Muelsyse\AppData\Local\nvm | machine/NVM_SYMLINK=ExpandString|C:\nvm4w\nodejs
+  [ok]   nvm4w：settings.txt 哈希未变（不碰它的配置）  02f3156cdf563d43 → 02f3156cdf563d43
+  [ok]   nvm4w：那个 junction 的指向未变（不碰它的符号链接）  C:\Users\Muelsyse\AppData\Local\nvm\v24.19.0 → C:\Users\Muelsyse\AppData\Local\nvm\v24.19.0
+
+── 5 幂等
+  [ok]   第二次退出 0  exit=0
+  [ok]   第二次 --json 与第一次逐字节相同
+  [ok]   第二次仍然没有 would-change
+  [ok]   第二次的 summary.wouldChange = 0  0
+  [ok]   第二次人类输出仍然说"无变更"
+  [ok]   第二次人类输出仍然说"什么都没有写"
+
+── 6 参数面与错误路径
+  [ok]   --apply 与 --dry-run 同时给 → 退出 2（clap 冲突）  exit=2
+  [ok]   --only 给了不认识的 section → 退出 2  exit=2
+  [ok]   --only path 退出 0  exit=0
+  [ok]   --only path：其余三个 section 是 skipped + note=not-selected  tools=skipped/not-selected env=skipped/not-selected wsl=skipped/not-selected
+  [ok]   --only path：tools 的 actions 为空（没选它就不许列它的动作）
+  [ok]   空快照 → 退出 1  exit=1
+  [ok]   空快照 → 错误码是 empty-snapshot（不许静默成功）  empty-snapshot
+  [ok]   快照目录不存在 → 退出 1 且错误码稳定  snapshot-io
+  [ok]   restore --help 里有 --only / --apply / --dry-run / --with-fix
+
+── 7 合成快照：四个 section 都能说出"会改什么"
+  [ok]   合成快照比真快照多了六行（tools 两条 + env/wsl/path 各一条）  tools 27→29 env 32→33 wsl 2→3 path 49→50
+  [ok]   合成快照：restore 退出 0  exit=0
+  [ok]   tools 说出会改（install）  status=needs-network actions=2
+  [ok]   tools 标了 needsNetwork（决策 157：网络需求是计划里的数据）  True
+  [ok]   决策 161：有 install 动作的 section，status 是 needs-network（不是笼统的 would-change）  needs-network
+  [ok]   env 说出会改（set-user）  status=would-change actions=2
+  [ok]   wsl 说出会改（missing-distro）  status=no-change note=report-only actions=1
+  [ok]   wsl 的 missing-distro 是"只报告的动作"：它**不进** effective（决策 159 的 report-only）
+  [ok]   path 说出会改（add 那条探针目录）  status=would-change effective.add=1
+  [ok]   summary.wouldChange = 2（tools 是 needs-network、wsl 只报告 → 都不进这一格）  2
+  [ok]   summary.needsNetwork = 1（决策 161：这一格真的会有人）  1
+  [ok]   summary 六个计数器是 status 直方图（相加 = 4 个 section）  noChange=1 wouldChange=2 requiresElevation=0 needsNetwork=1 unsupported=0 skipped=0
+  [ok]   --json 的 snapshot 字段 = 用户给的那个目录原样（决策 162）  C:\Users\Muelsyse\AppData\Local\Temp\tuoen-acceptance-L1-16\synthetic\tuoen.d
+  [ok]   合成快照的 --json 仍是纯 ASCII
+  [ok]   决策 160：不可再分发的制品被拒且原因具体（licence-blocked + 稳定 slug，不是"许可问题"）  oracle-jdk/oracle-jdk-redistribution-not-permitted/install-manually
+  [ok]   决策 160：那条不可复现的行**不许**出现 install 动作（被拒不是"换个方式装"）
+  [ok]   合成快照 + --only path：tools/env/wsl 是 skipped/not-selected（选择性真的生效）  tools=skipped path=would-change env=skipped wsl=skipped
+  [ok]   合成快照跑完之后 HKCU/HKLM 仍然逐字未变
+
+── 8 `--with-fix`：本机自身的健康问题只在明确要求时才被选中
+  [ok]   --only path --with-fix 退出 0  exit=0
+  [ok]   --with-fix：path 变成 requires-elevation（fix 里有机器级条目 → ④ 先于 ⑤）  status=requires-elevation requiresElevation=True
+  [ok]   --with-fix：effective.fix = rows.fix（同一个数，不是两个口径各说各话）  effective.fix=24 / rows.fix=24
+  [ok]   --with-fix：note 不再是 fix-not-selected  machine-scope-requires-elevation
+  [ok]   不给 --with-fix：path 是 no-change（负的那一半）  no-change
+  [ok]   --with-fix 的 dry-run 之后 HKCU/HKLM 仍然逐字未变
+
+── 9 真机真写：一个新建的用户级环境变量（可逆、可复现）
+  [ok]   跑之前：那个探针变量不存在（否则下面每一条都会是假的）
+  [ok]   跑之前：新终端口径里也看不到它  %TUOEN_ACCEPTANCE_PROBE%
+  [ok]   还原机制自检：写得进、删得掉、删完全环境块逐字回到原样  写入成功=True 删除后逐字相同=True
+  [ok]   探针快照里恰好多一条变量  33 = 32 + 1
+  [ok]   计划阶段：env 是 would-change 且 effective.set-user = 1  status=would-change effective.set-user=1
+  [ok]   计划阶段：`apply` 键**不存在**（没有 --apply 就没有结果对象，决策 164）
+  [ok]   计划阶段（没有 --apply）那个变量还没被写进去
+  [ok]   `--only env --apply` 退出 0  exit=0
+  [ok]   结果对象里有 apply，且 wrote = true（真的落了注册表）  True
+  [ok]   env 的 outcome = applied 且 wrote = true  outcome=applied wrote=True
+  [ok]   env 报了广播回执（这个键只在真的广播过之后才出现）  broadcastReplies=0
+  [ok]   `--only env` 只让 env 一节进入 apply（其余三节根本没被考虑，决策 155/164）
+  [ok]   结果里的 --json 仍是纯 ASCII
+  [ok]   从注册表不展开读回的值逐字 = 期望值  'restore-apply-probe'
+  [ok]   写出来的类型是 REG_SZ（值不含 `%`）  String
+  [ok]   一个全新终端（从注册表重建）里看得到它  restore-apply-probe
+  [ok]   `--only env` 没有碰 PATH（两个作用域都逐字未变）
+  [ok]   全环境块里那个变量恰好一条（没有写重）
+  [ok]   第二次 apply 退出 0  exit=0
+  [ok]   第二次 apply：wrote = false（已经在了 → 不写、也不广播）  False
+  [ok]   第二次 apply：apply.sections 为空（这一轮什么都没考虑过 → 什么都没碰）  sections=0
+  [ok]   第二次 apply：计划本身也已经是 no-change（第二次"为空"）  tools=skipped path=skipped env=no-change wsl=skipped
+  [ok]   第二次 apply：summary.wouldChange = 0  0
+  [ok]   第二次 apply 之后那个变量仍然恰好一条、值不变  TUOEN_ACCEPTANCE_PROBE|String|restore-apply-probe
+  [ok]   还原：删掉探针变量之后，整个 HKCU\Environment 与跑之前逐字相同  值名 14 个
+  [ok]   还原：新终端里又看不到它了
+
+── 10 收尾核对
+  [ok]   HKCU Path 与跑之前逐字相同  a12fc582e90513a3 → a12fc582e90513a3
+  [ok]   HKLM Path 与跑之前逐字相同
+  [ok]   %LOCALAPPDATA%\tuoen 清单逐项相同（含 store 两层）
+  [ok]   %APPDATA%\tuoen 清单逐项相同
+  [ok]   收尾：nvm4w 的环境变量 / settings.txt / junction 与跑之前逐字相同  settings=02f3156cdf563d43 junction=C:\Users\Muelsyse\AppData\Local\nvm\v24.19.0
+  [ok]   源码里没有带引号的 setx 字面量（硬约束：绝不 setx）
+
+SUMMARY checks_passed=125 checks_failed=0 checks_skipped=0 verdict=PASS version=0.1.0
+        snapshot_tools=27 env=32 path=49 wsl=2 skipped=1 managers=nvm4w+uv
+        path_user_chars=773 path_machine_chars=1007 user_sha_before=a12fc582e90513a3 user_sha_after=a12fc582e90513a3 untouched=True out_root=C:\Users\Muelsyse\AppData\Local\Temp\tuoen-acceptance-L1-16
+
+# ---------------------------------------------------------------------------
+# `-SelfTest -SkipBuild` 的结论（同一台机器、同一天）
+#
+# 它跑完整条脚本，只在最后故意加一条必然失败的检查，用来证明脚本会报失败：
+#   SUMMARY checks_passed=124 checks_failed=1 checks_skipped=1 verdict=FAIL
+#   失败项：自检：这一条必须失败（证明脚本会报失败）
+#   进程退出码 = 1
+#
+# 关键行（逐字）：
+  [ok]   HKLM Path 与跑之前逐字相同
+  [ok]   %LOCALAPPDATA%\tuoen 清单逐项相同（含 store 两层）
+  [ok]   %APPDATA%\tuoen 清单逐项相同
+  [ok]   收尾：nvm4w 的环境变量 / settings.txt / junction 与跑之前逐字相同  settings=02f3156cdf563d43 junction=C:\Users\Muelsyse\AppData\Local\nvm\v24.19.0
+  [ok]   源码里没有带引号的 setx 字面量（硬约束：绝不 setx）
+  [FAIL] 自检：这一条必须失败（证明脚本会报失败）
+
+SUMMARY checks_passed=124 checks_failed=1 checks_skipped=1 verdict=FAIL version=0.1.0
+        snapshot_tools=27 env=32 path=49 wsl=2 skipped=1 managers=nvm4w+uv
+        path_user_chars=773 path_machine_chars=1007 user_sha_before=a12fc582e90513a3 user_sha_after=a12fc582e90513a3 untouched=True out_root=C:\Users\Muelsyse\AppData\Local\Temp\tuoen-acceptance-L1-16
+失败项：
+  - 自检：这一条必须失败（证明脚本会报失败）
+

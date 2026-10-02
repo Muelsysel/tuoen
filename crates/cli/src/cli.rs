@@ -12,6 +12,7 @@ use crate::doctor::DoctorArgs;
 use crate::lock_cmd::LockArgs;
 use crate::manage::{InstallArgs, UninstallArgs, UseArgs};
 use crate::path::PathCommand;
+use crate::restore::RestoreArgs;
 use crate::shell::{AutoArgs, ShellArgs};
 use crate::shim::ShimCommand;
 use crate::trust_cmd::TrustArgs;
@@ -438,6 +439,48 @@ tuoen trust --revoke <PATH>  摘掉一条
 stdout 上没有第二个写者。"#
     )]
     Lock(LockArgs),
+
+    /// 照着另一台机器的 `tuoen.d/` 快照还原本机（默认只出计划）。
+    #[command(long_about = r#"照着另一台机器的 `tuoen.d/` 快照还原本机。
+
+**不带开关 = 只出计划，一个字节都不写。** `restore` 是本项目里后果最重的命令：
+它会装工具、写用户级环境变量、重建用户级 `PATH`，而它要动的恰恰是别的进程
+此刻正在读的那份环境。所以「动手」必须是明说的：
+
+  tuoen restore                    只出计划（默认）
+  tuoen restore --dry-run          同上，只是把「我只要计划」说出来
+  tuoen restore --apply            真的做
+
+`--apply` 与 `--dry-run` 同时给是矛盾，会在解析期被拒（退出码 2）。
+
+## 四节，各自独立
+
+  tools   缺失且**可复现**的工具走安装流（需要网络）
+  path    复用 `tuoen path diff` 的判据重建用户级 `PATH`
+  env     用户级环境变量的**整值写**（一次广播）
+  wsl     只报告（装发行版会改 Windows 功能并要重启，那不是顺手该做的事）
+
+`--only <section>` 可以重复。指向快照里没有的节、或被排除的节，都会在计划里
+记成 `skipped`，但**说明不同**（"快照里没有它" vs "你没选它"）。
+
+## 机器级与凭据：算出来，但不做
+
+机器级的改动（`HKLM` 下的环境变量、机器级 `PATH`）只算不写，逐条进
+`manualActions` —— **tuoen 不自动提权**（决策 136）。凭据同理：快照里记的是
+"需要哪个凭据"，材料从来不进快照（DPAPI 是用户+机器绑定的，搬过去会静默失败）。
+
+所以「无变更」**不等于**「你什么都不用做」：`manualActions` 与 `has_changes()`
+无关，永远照打。
+
+## 退出码
+
+  0  计划出来了 / `--apply` 全部做成（**包括"无变更"**）
+  1  跑不起来（快照读不了、空快照），或 `--apply` 里有节没做成
+  2  用法错误（`--apply` 与 `--dry-run` 同时给、`--only` 取值不认识）
+
+`--json` 的 `data` 就是计划那四个键（`snapshot` / `sections` / `manualActions` /
+`summary`），`--apply` 时多一个 `apply` 对象。`snapshot` 是**用户敲的那个路径原样**。"#)]
+    Restore(RestoreArgs),
 }
 
 /// `tuoen path` 的参数。

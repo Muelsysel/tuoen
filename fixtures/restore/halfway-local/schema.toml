@@ -1,0 +1,4 @@
+schema_version = 1
+captured_at = "2026-11-25T16:40:00Z"
+tuoen_version = "0.1.0"
+sections = ["env", "path", "tools", "wsl"]

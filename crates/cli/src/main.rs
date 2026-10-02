@@ -34,6 +34,9 @@ mod path_diff_cmd;
 mod path_diff_view;
 mod path_view;
 mod pin_view;
+mod restore;
+mod restore_cmd;
+mod restore_view;
 mod shell;
 mod shell_cmd;
 mod shim;
@@ -105,6 +108,9 @@ fn run() -> i32 {
         Command::Auto(args) => shell_cmd::run_auto(&args),
         Command::Trust(args) => trust_cmd::run(&args),
         Command::Lock(args) => lock_cmd::run(&args),
+        // `restore` 是唯一**会照着另一台机器改本机**的命令（票据 #16）。
+        // 默认只出计划；`--apply` 才动手，而且只碰用户级（决策 136/150）。
+        Command::Restore(args) => restore_cmd::run(&args),
     }
 }
 

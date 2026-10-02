@@ -1,0 +1,114 @@
+schema_version = 1
+captured_at = "2026-11-20T09:00:00Z"
+
+# 本机侧：5 条（进程注入 1 + 机器级 2 + 用户级 2）。与 machine-a 的 6 条对照，可数的量：
+# - 机器级两条与目标**逐字节相同** → `keep`
+# - 用户级第 0 条与目标逐字节相同 → `keep`（它的 `has_username = true`，但两边一样，
+#   所以不是 `fix`）
+# - 用户级第 1 条 `D:\Tools` 是**本机独有** → `remove`
+# - 目标里用户级第 1 条 `C:\nvm4w\nodejs` 本机没有 → `add`
+# - 目标里用户级第 2 条是目标侧自己的重复条目（`dup_index = 1`）→ `fix`（默认不选中）
+# - **注入项与 machine-a 故意不同**（这里多了一个 `wt.exe` 别名）：它不在任何注册表值里，
+#   所以它**不许**造成 add/remove/keep 中的任何一条。拿注入项去 diff 的实现会在这里红。
+#
+#   机器级 `C:\Windows;C:\Windows\System32`  = 10 + 1 + 19 = 30
+#   用户级 `…\.cargo\bin;D:\Tools`           = 23 + 1 + 8  = 32
+#   生效 = 注入项 + 机器级 + 用户级（顺序照 `[[effective]]`）
+
+[budget]
+raw_user_chars = 32
+raw_machine_chars = 30
+effective_chars = 63
+cliff = 8191
+remaining = 8128
+level = "ok"
+
+[[entry]]
+scope = "process-only"
+index = 0
+owner = "unknown"
+raw = 'C:\Users\dev\AppData\Local\Microsoft\WindowsApps\wt.exe'
+expanded = 'C:\Users\dev\AppData\Local\Microsoft\WindowsApps\wt.exe'
+quoted = false
+empty = false
+exists = "yes"
+reparse = "app-exec-alias"
+has_vars = false
+has_username = true
+dup_index = 0
+
+[[entry]]
+scope = "machine"
+index = 0
+owner = "system"
+raw = 'C:\Windows'
+expanded = 'C:\Windows'
+quoted = false
+empty = false
+reg_type = "sz"
+exists = "yes"
+reparse = "none"
+has_vars = false
+has_username = false
+dup_index = 0
+
+[[entry]]
+scope = "machine"
+index = 1
+owner = "system"
+raw = 'C:\Windows\System32'
+expanded = 'C:\Windows\System32'
+quoted = false
+empty = false
+reg_type = "sz"
+exists = "yes"
+reparse = "none"
+has_vars = false
+has_username = false
+dup_index = 0
+
+[[entry]]
+scope = "user"
+index = 0
+owner = "unknown"
+raw = 'C:\Users\dev\.cargo\bin'
+expanded = 'C:\Users\dev\.cargo\bin'
+quoted = false
+empty = false
+reg_type = "sz"
+exists = "yes"
+reparse = "none"
+has_vars = false
+has_username = true
+dup_index = 0
+
+[[entry]]
+scope = "user"
+index = 1
+owner = "unknown"
+raw = 'D:\Tools'
+expanded = 'D:\Tools'
+quoted = false
+empty = false
+reg_type = "sz"
+exists = "yes"
+reparse = "none"
+has_vars = false
+has_username = false
+dup_index = 0
+
+[[effective]]
+scope = "machine"
+index = 0
+
+[[effective]]
+scope = "machine"
+index = 1
+
+[[effective]]
+scope = "user"
+index = 0
+
+[[effective]]
+scope = "user"
+index = 1

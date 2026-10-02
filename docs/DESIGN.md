@@ -366,6 +366,143 @@ V1 全做，分四层：
 | 148 | **人类输出的"会写 / 不会写"用 `PathPlan::will_write()` 判据**（= `changes_value \|\| before_type != after_type`），CLI **不自己重算**；bool 只作为参数传给人类打印函数，**`--json` 一个键都不加** | `user_scope_label(plan_will_write)`；`--only fix` 那种真的会写的形态仍印 `**会写**`，no-op 形态印 `**不会写（计划与现状一致）**` | 复核期 C 自查出来的既有瑕疵：用户级那一节**恒印** `**会写**`，而 `applied` 为空、`wrote=false` 时那句话是**错的** —— 下面 `print_visibility` 那句"计划与现状一致"只是把它盖住了一半。这正是这张票从头到尾在防的那一类：**用户读的预览里写着一句与事实相反的话**。不自己重算是因为重算就是第二份事实（`will_write` 同时覆盖"条目变了"与"值含 `%` 要换 `EXPANDED_SZ`"两种真写） |
 | 149 | **会改用户系统状态的脚本，必须在写入之前先自证"还原路径"能用**：把当前值**原样写回一次**（同字节、同类型、走与还原完全相同的代码路径），断言哈希与类型逐字未变；还原之后再**当场**复核一次哈希，不一致就红字喊出来并指出备份在哪 | 验收脚本 §6 的"还原机制自检"；备份在 `%TEMP%\_l115_hkcu_backup_script.txt` / `.kind` | **这是本次验收最严重的一次事故换来的**：第一版的 `Set-PathValue` 用 `(Get-Item 'HKCU:\Environment').SetValue(...)`，而 PowerShell 的注册表 provider 返回**只读**句柄 → `Cannot write to the registry key.`。于是"`--only add` 真的写成功（808 字符、新终端里 `mvn` 找得到）**而还原抛异常**"这个最坏的组合真的发生过一次，`HKCU\Environment\Path` 被留在改动值上，直到按跑前手工备份用可写子键句柄写回。**"我们打算还原"和"还原真的能写"是两件事** —— 前者写在代码里，后者必须被证明；而**一条不能失败的还原不是还原**（与铁律 3"一条不能失败的测量不是测量"同源）。这条规矩现在属于 AGENTS.md 的"会改用户系统状态的代码" |
 
+### 1.19 L1-16 restore：plan 是纯数据、默认不写、`manual_actions` 是公开契约（决策 150–159）
+
+票据 #16 是招牌功能的出口：`tuoen restore <tuoen.d 目录>`。含糊的地方集中在"什么时候真的动手"、
+"plan 里到底写什么"、以及"那些做不到的事怎么告诉用户"。
+
+**设计的前提**（沿用 §1.17 的决策 126）：**两侧同一形状** —— 目标侧是读进来的 `tuoen.d/` 快照，
+本机侧是**现场 `capture` 出来的同一套 `Snapshot`**（在内存里）。于是 `restore::plan` 是一个
+**纯函数**：`plan(target: &Snapshot, local: &Snapshot, opts: &RestoreOptions) -> RestorePlan`，
+不碰网络、不碰注册表、不起进程。
+
+| # | 决策 | 结论 | 关键理由 |
+|---|---|---|---|
+| 150 | **默认只出计划，不写**：`tuoen restore <dir>`（不带开关）只打印计划并说"什么都没有写"；`--apply` 才真的动手；`--dry-run` 是默认行为的**显式别名**，与 `--apply` 同时给 → clap 冲突退出 2 | `--apply` 与 `--dry-run` 互斥（`conflicts_with`） | `restore` 会**装工具、写环境变量**，是本项目里后果最重的命令。一个"跑起来就改机器"的默认值违背规矩 3（先出计划再落盘）；`path apply` 的先例是"没有明确选择就拒绝"（决策 135）。票据要求"用户确认后才 apply"—— 在 CLI 里"确认"就是那个 `--apply` |
+| 151 | **path section 的默认选择 = 差异类（`add`/`remove`/`move`/`case-only`），不含 `fix`**；`--with-fix` 才把本机自身的健康问题（重复/失效/空条目）一起应用 | `RestoreOptions{ with_fix }`；计划里仍然**报告** `fix` 的条数并说明"未选中" | 票据的验收说"还原到本机应当产出**接近空的 plan**"。本机 `PATH` 真有 24 条健康问题（§1.18 的真机数字），而它们是**本机自己的病**、不是"与快照的差异"——把它们默认应用等于"你没要求却顺手清理了幽灵条目"，与本仓库"绝不自动清理幽灵条目"（决策 50/67）冲突 |
+| 152 | **`manual_actions` 五类的 `code` 是稳定字符串**（`requires-elevation` / `credential-reconfigure` / `licence-blocked` / `third-party-manager` / `unsupported`），每条带 `subject`（**数据**，纯 ASCII）+ `detail`（**稳定的 slug**，如 `nvm4w`、`oracle-jdk-redistribution-not-permitted`、`scope=machine var=Path`）+ `remediation`（如 `run-as-administrator` / `install-manually` / `reconfigure-manually` / `use-the-manager` / `not-supported-in-this-version`） | 中文散文**只进人类输出**；`--json` 里只有 code/subject/detail/remediation | 与 `doctor` 的"evidence 是数据、message 是散文"同一条（§1.14 规矩 2）。票据把条目类型定为公开契约，那么**契约必须是机器可读的稳定字符串**，而"具体原因"（licence-blocked 不许写"许可问题"这种废话）落在 `detail` 的 slug 上。GUI（L3）靠 code+detail 本地化 |
+| 153 | **`credential-reconfigure` 只写意图**：`subject` 是凭据的**标识**（协议 + host + 路径，如 `git:https://git.seawayos.com:8443`），**绝不含任何材料** | 契约测试断言输出里**不含**任何 token 片段（前缀 `glpat-` 与长度 ≥ 8 的子串） | 本机 `~/.m2/settings.xml` 里有明文 PAT，`capture` 已经把它归进 `skipped.toml`（`credential-named`）。DPAPI/凭据管理器 blob 是**用户+机器绑定**的，迁移后会**静默失败** —— 失败模式是困惑而不是被盗，但**材料本身绝不能进 plan**（plan 会被贴进 issue、会被 GUI 展示） |
+| 154 | **不接管第三方版本管理器**：由 nvm4w 这类管理器管的工具产出 `third-party-manager` 待办，**不碰**它的符号链接 / 环境变量 / `settings.txt` | 判据来自本机 capture 的 `owner` 字段 | 本机活证据：`NVM_HOME`/`NVM_SYMLINK` **同时存在于 HKCU 与 HKLM**（真实的双重管理腐坏）。接管意味着改写它那个**需要管理员才能重建**的符号链接，且两个管理器会争抢同一个 reparse point（ADR-0001） |
+| 155 | **幂等靠"幂等重跑"，不做 `--resume` 状态文件** | 每个 section 的 apply 必须自身幂等；plan 为空 → 不写、不广播、退出 0 并打印"无变更" | 状态文件会腐坏，而本仓库已经为"锁文件与现状不一致"付过一次代价（§1.16）。"重跑即可继续"没有状态可腐坏，且**天然满足**票据的"能从失败点继续" |
+| 156 | **每个 section 的 apply 原子**：`tools` 复用 L0 的 staging + 提交/回滚；`env` 是**一次 `RegSetValueExW` 整值写 + 一次广播**（本身就是原子的）；`path` 复用 L0 的 `apply`（整值写） | 中途失败**不留**半个目录、半套环境变量 | 票据的"部分失败时不留下半成品"。整值写是这一票唯一可用的原子原语 —— 这也正是决策 3/决策 137 选它的原因 |
+| 157 | **`plan` 永远不需要网络**；需要网络的步骤在 section 上标 `needsNetwork`，并在 summary 里列出。`--apply` 时传输层失败 → **只跳过那些步骤**，其余 section 照做，退出码 1 并说清哪些没做 | section 的 `status` 取值：`no-change` / `would-change` / `requires-elevation` / `needs-network` / `unsupported` / `skipped` | 票据要求"至少完成元数据部分（plan、path/env 的重建）"并"明确告诉我哪些步骤需要网络"。把网络需求做成**计划里的数据**，而不是运行时的意外，才能做到这一点 |
+| 158 | **`counts` 必须分两个口径**：`rows`（分类行数）与 `effective`（**真会写的条数**） | 真机实测：目标侧重复两条 → `add 2` 但重建的输出不变量只让 1 条落地（`applied` 里第二条记成 `fix`） | 这是 §1.17 遗留的一个"报告会说反话"的口子：分类是**行**的口径，写下去是**列表**的口径。同一份计划里两个数都印出来，用户才不会以为"要加两条一样的目录" |
+| 159 | **`--only <section>` 的取值表由代码生成**（`SectionId::ALL`），不认识的取值 → clap 退出 2；`--only` 指向快照里**不存在**的 section → 该 section 记 `skipped` 并说明原因，**不是**静默成功 | `SectionId::{Tools,Path,Env,Wsl}` 的 `as_str()`/`parse()`；**每个 section 恰好一个 `note`，两个判据同时成立时"没被选中"赢**（`--only tools` 而快照没有 `env.toml` → `env` 记 `not-selected`，只有 `tools` 才可能记 `section-not-in-snapshot`） | 与 `path apply --only` 同一条（决策 135/143）：取值表只有一处定义，CLI 不另抄一份。优先级这样定是因为**用户问的是"我要还原的那一节"**：对着一个他明确没选的 section 报告"快照里没有它"是噪声，而"你没选它"才是他要知道的事 |
+| 160 | **`licence-blocked` 的判据是"名字在一张已知表里"**：缺失 + `reproducible == false` + `name` 命中 `LICENCE_BLOCKED`（当前只有一项：`oracle-jdk` → `detail = "oracle-jdk-redistribution-not-permitted"`）→ tools 出 `unsupported` 动作（**不装**）+ `manual_actions` 出 `licence-blocked`（`subject = "oracle-jdk"`，`remediation = "install-manually"`）；其余缺失且不可复现的行 → `unsupported` 待办（`detail = "not-reproducible"`） | 顺序固定：① 缺失 + 有 `manager` → `third-party-managed`（决策 154，**先于**下面两条）；② 缺失 + `reproducible` → `install`；③ 缺失 + 不可复现 + 命中表 → `licence-blocked`；④ 其余 → `unsupported` | 票据把 `licence-blocked` 与 `unsupported` 都定为公开契约，并点名"构造一个不可再分发的制品（如 Oracle JDK 8）→ 断言被拒**且原因具体**"，而**快照里没有许可字段**（`ToolRow` 只有 `reproducible`）—— "这一行为什么不给装"这个信息只能来自我们自己的已知表。表里不放任何推断出来的名字：**名字不在表里就是"本版本不支持"，不是"许可被拒"** —— 把"不知道"写成"许可问题"正是票据点名禁止的那种无用信息（"必须给出具体原因，不是'许可问题'这种无用信息"）。`detail` 是稳定 slug、原因落在它上面（决策 152） |
+| 161 | **`status` 是一节里"最需要用户注意的那一件事"，取值顺序固定**：① 没被选中 → `skipped`；② 有 `unsupported` 动作且**没有任何会写的动作** → `unsupported`；③ 有任何 `install` 动作 → `needs-network`；④ 有任何机器级写动作 → `requires-elevation`；⑤ 有任何会写的动作 → `would-change`；⑥ 否则 → `no-change`。`SectionPlan.needs_network` / `requires_elevation` 两个 bool 与 `status` **正交**（可以同时为真）。`has_changes()` = 任一 section 的 status ∈ {`would-change`, `requires-elevation`, `needs-network`} | `summary.needs_network` 与其余计数器一样是 status 直方图（六个数相加 = `sections`）；`unsupported` / `no-change` / `skipped` **不算"有变更"**（什么都不会被写），但 CLI 必须**无条件**打印 `manual_actions` 那一段。**"只报告的动作"不算会写**：`wsl` 的 `missing-distro` / `extra-distro` / `path-differs` 一个字节都不会落盘（决策 159 的 `report-only`），所以那一节是 `no-change` + `note = report-only` —— 与 `path` 的 `fix-not-selected` **同一个形状**：有差异、什么都不写、note 说清楚 | 两个"看起来对"的读法在这里分岔，而错的那个会**说反话**：若 `needs-network` 不可达（只留 bool），`summary.needs_network` 恒 0、CLI 会对着"要装 3 个工具"的计划打印"无变更"；若 `has_changes()` 不含它，同一份计划也走"无变更"分支（决策 155 那条路）。而"条件优先于笼统的会变更"有先例：机器级变量那条在设计里就是 `requires-elevation` 而不是 `would-change`。反过来，`unsupported` 不算变更的理由是它**不会写任何东西** —— 那件事由 `manual_actions` 那一段回答（用户真正的问句是"我要做什么"，而不是"你写不写"）。真机验收里"四个 section 全 `no-change` 而 `manual_actions` 有 3 条"正是这个口径的实例 |
+| 162 | **`RestorePlan.snapshot` 是"用户给的那个快照目录，原样"**（相对就相对），由 `RestoreBundle` 自己记住来源：`RestoreBundle` 加一个 `source: Option<String>` 字段，`load(dir, fs)` 填它、`from_capture()` 留 `None`，`plan()` 取 `target.source`，缺失时退到目标快照的 `captured_at`（五个文件里第一个非空的），再缺失才用字面量 `"unknown"`（CLI 走不到这一步：它总是从目录 load）。**不做"core 出占位、CLI 再覆盖"** | 与 §1.17 的 `snapshot` 语义同一条（决策 126 的补充裁决）：给出去的路径就是用户敲的那个。因此**没有** `with_snapshot` 这类"CLI 必须记得覆盖"的接口 | "core 出一个看起来很像样的占位（`captured_at` 是个合法的时间戳字符串）、CLI 忘了覆盖"这种错**不会红**：JSON 里那个字段永远有值、永远像真的。把它变成"不可能忘记"（来源在 `load()` 里就定死）比"记得覆盖"强 —— 这与本仓库对"计划与现状一致时不写也不广播"的处理同源：**别让正确性依赖调用方的记性** |
+| 163 | **`third-party-manager` 的判据是"目标快照里有这个管理器管的工具"，与本机有没有装它无关**（本机已有也照样报，**按管理器去重**）；`counts.rows` 仍按"本机有没有"分类（`third-party` 数的是**缺的**那些行） | 收集 `managers` 的循环与"缺失"判断**分开**：先扫目标侧所有带 `manager` 的行，再判本机有没有 | 本机实测 `nvm4w` 与 `uv` 都在，而它们正是**迁移时最需要人工处理**的东西：`restore` 不接管第三方管理器（决策 154），所以"这台机器上有 nvm4w 管的 Node"这件事**不会因为本机已经装了它就消失** —— 新机器上仍要用户自己去装。反过来（只在缺失时报）会让"还原到本机"的真机输出**恰好漏掉**票据要求的那条待办：本机什么工具都不缺，于是两条 `third-party-manager` 一条都不出现 |
+| 164 | **`--apply` 的载荷 = 计划的四个键原样 + 一个 `apply` 对象**（`skip_serializing_if = "Option::is_none"`，所以只出计划的形态与 `--dry-run` 逐字节相同）：`apply{wrote: bool, sections:[{id, outcome, wrote, broadcastReplies?, error?}], failures?:[{code, detail}]}`；`outcome` 取值 `applied` / `no-change` / `skipped` / `report-only` / `requires-elevation` / `needs-network` / `failed`；`error` / `failures` 全是 `{code, detail}` 且**全 ASCII**。**`apply.sections` 只列"这一轮真的考虑过"的节**（= `sections_to_apply(plan)` 的结论），所以计划全 `no-change` 时它是**空数组** | `data` 是 core 的 `RestorePlan` 用 `#[serde(flatten)]` **原样铺开**（CLI 不重拼 `snapshot`），`apply` 是 CLI 加的**唯一**一个键 | core 的冻结接口里没有 apply 的结果类型（apply 编排整个在 CLI 层，决策 150/156），而"这一节到底写没写、广播拿到几个回执"是 GUI（L3）与验收脚本都要读的东西 —— 它必须是**数据**而不是人类输出里的一句话。把它限定在 `--apply` 才出现，是为了让"默认形态 ≡ `--dry-run`"这条逐字节断言（票据："`--dry-run` 与真实执行走同一套代码路径"）继续成立。"只列考虑过的节"是**空计划不碰任何东西**（决策 155）在报告里的投影：真机验收里第二次 `--only env --apply` 的 `apply.sections` 就是空的，而那正是票据要的"连跑两次，**第二次为空**" |
+
+#### 冻结接口 v1（实现期不得擅自改名；要改先改这一节）
+
+**两侧同一形状**：复用 `capture` 已有的类型，**不另造一套文件格式**。
+
+```rust
+// crates/core/src/restore.rs + restore/{bundle,plan,sections,manual,test_support}.rs
+pub struct RestoreBundle {            // 与 `capture::CaptureBundle` 一一对应
+    pub tools: Option<ToolsFile>, pub path: Option<PathFile>,
+    pub env: Option<EnvFile>,     pub wsl: Option<WslFile>,
+    pub skipped: Option<SkippedFile>,
+    pub source: Option<String>,       // 决策 162：`load()` 填"用户给的目录原样"，`from_capture()` 是 None
+}
+impl RestoreBundle {
+    pub fn from_capture(b: &CaptureBundle) -> Self;                        // 本机侧（内存里）
+    pub fn load(dir: &Path, fs: &impl FileSystem) -> Result<Self, RestoreError>;  // 目标侧（文件）
+    pub fn sections_present(&self) -> Vec<SectionId>;
+}
+
+pub enum SectionId { Tools, Path, Env, Wsl }        // ALL / as_str / parse（kebab-case）
+pub enum SectionStatus { NoChange, WouldChange, RequiresElevation, NeedsNetwork, Unsupported, Skipped }
+pub enum ManualActionCode { RequiresElevation, CredentialReconfigure, LicenceBlocked,
+                            ThirdPartyManager, Unsupported }            // as_str → kebab-case
+
+pub struct RestoreOptions { pub sections: Vec<SectionId>, pub with_fix: bool,
+                            pub current_username: Option<String> }
+
+pub struct PlannedAction { pub id: String, pub kind: String,
+                           pub subject: String, pub detail: String }    // 全 ASCII
+pub struct SectionCounts { pub rows: BTreeMap<String, u64>,             // 键是稳定 slug
+                           pub effective: BTreeMap<String, u64> }       // 决策 158：两个口径
+pub struct SectionPlan { pub id: SectionId, pub status: SectionStatus, pub counts: SectionCounts,
+                         pub actions: Vec<PlannedAction>, pub needs_network: bool,
+                         pub requires_elevation: bool, pub note: Option<String> }
+pub struct ManualAction { pub code: ManualActionCode, pub subject: String,
+                          pub detail: String, pub remediation: String }
+pub struct RestoreSummary { pub sections: u64, pub no_change: u64, pub would_change: u64,
+                            pub requires_elevation: u64, pub needs_network: u64,
+                            pub unsupported: u64, pub skipped: u64, pub manual_actions: u64 }
+pub struct RestorePlan { pub snapshot: String, pub sections: Vec<SectionPlan>,
+                         pub manual_actions: Vec<ManualAction>, pub summary: RestoreSummary }
+impl RestorePlan { pub fn has_changes(&self) -> bool; }   // 决策 161：任一 section 是 WouldChange/
+                                                          // RequiresElevation/NeedsNetwork（Unsupported 不算）
+
+pub fn plan(target: &RestoreBundle, local: &RestoreBundle,
+            opts: &RestoreOptions) -> RestorePlan;        // **纯函数**：不碰网络/注册表/进程
+
+pub enum RestoreError { ... }  // code() → 稳定字符串：`empty-snapshot` / `snapshot-io` /
+                               // `snapshot-toml` / `snapshot-section-missing`
+```
+
+**section 的 `kind` / `note` / `detail` 取值（稳定 slug）**：
+
+- `tools`：**先比 (name, version)，只对"本机还缺的"行产生 action** —— 本机已有同名同版本（目标行没版本时同名即可）
+  → 只计数（`installed`），**不进 `actions`**（所以**没有** `already-installed` 这种动作 kind：它在文档里
+  存在过，而代码永远不会产出它）；缺的且可复现 → action `install`（`needs_network = true`）；
+  缺的但 `manager` 有值 → action `third-party-managed`（**不碰它的符号链接/环境变量/settings.txt**）；
+  缺的且 `reproducible == false` → action `unsupported`。
+  版本比较是"trim + 忽略大小写 + 去前导 `v`"，**不做前缀匹配**（`24.19.0` 与 `v24.19` 算不同 → 会多一条
+  `install`）；目标行**没有版本**时同名即算已有（→ 会漏掉真实的版本差异）。两个方向都是判断：
+  "装错比不装糟、报错比漏报糟"在版本这件事上没有票据依据，取的是**宁可多装一次**。
+  `counts.rows` 键 `installed`/`missing`/`third-party`/`unsupported`/`extra`（`extra` = 本机有、目标没有，
+  restore 从不卸载），`counts.effective` 键 `install`。
+  **`manual_actions` 里 `third-party-manager` 按管理器去重**（本机实测 `nvm4w` + `uv` → 2 条，
+  不是每个工具行一条）；`unsupported` / `licence-blocked` **只在"这一行真的需要动作"时才报**
+  （否则本机自己那份快照会产出 12 条 `unsupported` 噪声，而票据要的是"接近空的 plan"）。
+- `path`：`kind` 就是六类之一（`add`/`remove`/`move`/`fix`/`case-only`/`keep`，`keep` 不进 `actions`）；
+  `id` 复用 §1.17 的 `{scope}:{index}` / `{scope}:+{index}`；`detail` 形如 `toIndex=16`；
+  `counts.rows` 用 `keep/add/remove/move/fix/caseOnly`，`counts.effective` 用同一批键（决策 158）。
+  **`note` 只有一个槽**：`fix-not-selected` 优先于 `machine-scope-requires-elevation`（两者同时成立时
+  只出前者 —— 提权那件事没丢，它在 `requires_elevation` 这个 bool 与 `manual_actions` 里）。
+- `env`：`set-user` / `set-machine` / `skipped-secret`（**没有** `already-present`：已存在的变量只计数、
+  不进 `actions`）；`detail` 形如 `scope=user`；`counts.rows` 键 `present`/`missing-user`/`missing-machine`/`secret-skipped`。
+  **"已存在"只按 (name, scope) 判，不比较值** —— 绝不覆盖用户现值；`credential-named` 与 `credential`
+  两种跳过 kind **都**算凭据意图（只认前者会让"值像凭据"静默消失）；`EnvScope::ProcessOnly` 的行
+  既不计数也不写（进程环境不是可还原的东西，也不是"本机缺的"）。
+- `wsl`：`missing-distro` / `extra-distro` / `path-differs`；`counts.rows` 键
+  `same`/`missing`/`extra`/`path-differs`；`effective` 恒空（只报告）；比较只比 `base_path`
+  （忽略大小写与尾分隔符），**不比** guid / vhdx / state。
+
+**`note` 的取值**：`fix-not-selected`（决策 151）/ `not-selected`（被 `--only` 排除）/
+`section-not-in-snapshot`（决策 159）/ `machine-scope-requires-elevation` / `report-only`。
+**没有 `needs-network` 这个 note**：网络需求由 `SectionPlan.needs_network` 这个 bool 承担，
+CLI 把它渲染成一句话；再挂一个 note 会把同一件事印两遍（决策 161 的"bool 与 status 正交"）。
+
+**`--json` 信封**：`{schemaVersion, command:"restore.plan"|"restore.apply", ok, data:{snapshot,
+sections, manualActions, summary}}`（`--apply` 时多一个 `apply`，决策 164）；失败时
+`{…, ok:false, error:{code, …}}`。字段一律 camelCase、
+枚举一律 kebab-case、`Option` 一律 `skip_serializing_if`（与 §1.17 同一条序列化契约）。
+**成功载荷必须纯 ASCII**，中文只进人类输出。
+
+**这一票的自我推翻清单**（真机验收文档：`docs/acceptance/L1-16-restore.md`）：这一票最值得记的
+不是产品算错了什么，而是**我自己先写错、被实现者与真机推回来的那几条**：
+
+- **`licence-blocked` 这个 code 在原设计里没有任何地方会产生它**（五类都定为公开契约，而
+  `ToolRow` 里根本没有许可字段）→ 决策 160 补上"名字在已知表里"这条判据，并把"名字不在表里
+  就是本版本不支持，不是许可被拒"写成规矩。
+- **我给的接口里有一个 `with_snapshot`**（core 出占位、CLI 覆盖）→ 实现者指出"占位符是个合法
+  的时间戳字符串、CLI 忘了覆盖永远不会红" → 改成 `RestoreBundle.source`，**把正确性从调用方的
+  记性里拿出来**（决策 162）。
+- **文档里有三个 slug 代码永远不会产出**（tools 的 `already-installed`、env 的 `already-present`、
+  note 的 `needs-network`）与一处自相矛盾的举例（`oracle-jdk8-…` vs `oracle-jdk-…`）→ 改文档，
+  不改代码（"文档是第二份事实"这句话在这里第一次真的踩到）。
+- **决策 161 漏了"只报告的动作不算会写"**：真机验收里 `wsl` 报了 `missing-distro` 却是
+  `no-change`，我的脚本期望 `would-change` —— **错的是期望**。补进 161。
+- **决策 164 漏了"`apply.sections` 只列这一轮真的考虑过的节"**：第二次 apply 是空数组，
+  我的脚本又期望它有四条 —— **错的是期望**。补进 164。
+- **`scope=machine var=PATH`**（文档）vs `var=Path`（代码用的 `PATH_NAME`）→ 改文档：
+  判据只有一处定义比举例好看重要。
+
 ---
 
 ## 2. 平台硬约束（来自本机实测，非推断）

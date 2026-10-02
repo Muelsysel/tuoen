@@ -1,0 +1,132 @@
+schema_version = 1
+captured_at = "2026-10-02T10:00:00Z"
+
+# 一份**部分快照**：`sections = ["path"]`，所以 `tools.toml` / `env.toml` /
+# `wsl.toml` / `skipped.toml` 都不存在。这是决策 159 的形状：
+# `--only tools` 指向一个**快照里根本没有**的 section → `Skipped` +
+# `note = "section-not-in-snapshot"`，**不是** "一切正常"。
+#
+# 条目与 machine-a 完全一致（含那条重复条目），所以
+# `plan(machine-a, path-only, sections = [Path])` 的 path 侧应当接近空。
+
+[budget]
+raw_user_chars = 63
+raw_machine_chars = 30
+effective_chars = 152
+cliff = 8191
+remaining = 8039
+level = "ok"
+
+[[entry]]
+scope = "process-only"
+index = 0
+owner = "unknown"
+raw = 'C:\Users\dev\AppData\Local\Microsoft\WindowsApps\pwsh.exe'
+expanded = 'C:\Users\dev\AppData\Local\Microsoft\WindowsApps\pwsh.exe'
+quoted = false
+empty = false
+exists = "yes"
+reparse = "app-exec-alias"
+has_vars = false
+has_username = true
+dup_index = 0
+
+[[entry]]
+scope = "machine"
+index = 0
+owner = "system"
+raw = 'C:\Windows'
+expanded = 'C:\Windows'
+quoted = false
+empty = false
+reg_type = "sz"
+exists = "yes"
+reparse = "none"
+has_vars = false
+has_username = false
+dup_index = 0
+
+[[entry]]
+scope = "machine"
+index = 1
+owner = "system"
+raw = 'C:\Windows\System32'
+expanded = 'C:\Windows\System32'
+quoted = false
+empty = false
+reg_type = "sz"
+exists = "yes"
+reparse = "none"
+has_vars = false
+has_username = false
+dup_index = 0
+
+[[entry]]
+scope = "user"
+index = 0
+owner = "unknown"
+raw = 'C:\Users\dev\.cargo\bin'
+expanded = 'C:\Users\dev\.cargo\bin'
+quoted = false
+empty = false
+reg_type = "sz"
+exists = "yes"
+reparse = "none"
+has_vars = false
+has_username = true
+dup_index = 0
+
+[[entry]]
+scope = "user"
+index = 1
+owner = "third-party"
+raw = 'C:\nvm4w\nodejs'
+expanded = 'C:\nvm4w\nodejs'
+quoted = false
+empty = false
+reg_type = "sz"
+exists = "yes"
+reparse = "junction"
+link_target = 'C:\Users\dev\AppData\Roaming\nvm\v24.19.0'
+has_vars = false
+has_username = false
+dup_index = 0
+
+[[entry]]
+scope = "user"
+index = 2
+owner = "unknown"
+raw = 'C:\Users\dev\.cargo\bin'
+expanded = 'C:\Users\dev\.cargo\bin'
+quoted = false
+empty = false
+reg_type = "sz"
+exists = "yes"
+reparse = "none"
+has_vars = false
+has_username = true
+dup_index = 1
+
+[[effective]]
+scope = "process-only"
+index = 0
+
+[[effective]]
+scope = "machine"
+index = 0
+
+[[effective]]
+scope = "machine"
+index = 1
+
+[[effective]]
+scope = "user"
+index = 0
+
+[[effective]]
+scope = "user"
+index = 1
+
+[[effective]]
+scope = "user"
+index = 2

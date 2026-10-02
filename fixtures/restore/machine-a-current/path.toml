@@ -1,0 +1,150 @@
+schema_version = 1
+captured_at = "2026-11-15T14:05:00Z"
+
+# 6 条：进程注入 1 + 机器级 2 + 用户级 3。
+#
+# **进程注入项（`scope = "process-only"`）是故意的**：启动器注入的条目不在任何
+# 注册表值里，所以**它不是任何一方能改写的东西**（`reg_type` 因此为 `None`）。
+# 它只能出现在 `[[effective]]` 里、只能被计数，**不许**进 path 的差异与动作 ——
+# 下面 `machine-b-current` 的注入项与这里**故意不同**，就是为了把"拿注入项去 diff"
+# 这个 bug 钉出来。
+#
+# 可数的量：
+# - 条数 = 6；`scope = "process-only"` 1 条、`scope = "machine"` 2 条、`scope = "user"` 3 条
+# - `dup_index > 0` 的条数 = 1（用户级第 2 条重复了第 0 条）← 决策 151 的 `fix` 类
+# - `has_username = true` 的条数 = 3（用户级两条 `C:\Users\dev\…` + 注入项那一条，
+#   注入项的路径也在 `C:\Users\dev\` 底下）
+# - `reparse = "junction"` 的条数 = 1（`C:\nvm4w\nodejs`，第三方版本切换器）；
+#   `reparse = "app-exec-alias"` 的条数 = 1（注入项）
+#
+# `[budget]` 是**自己算出来的**，集成测试会拿条目的原文重新数一遍字符数来验它：
+#   机器级 `C:\Windows;C:\Windows\System32`            = 10 + 1 + 19 = 30
+#   用户级 `…\.cargo\bin;C:\nvm4w\nodejs;…\.cargo\bin` = 23 + 1 + 15 + 1 + 23 = 63
+#   生效（顺序照 `[[effective]]`：注入项在前）
+#     `…WindowsApps\pwsh.exe` + 机器级 + 用户级        = 57 + 1 + 30 + 1 + 63 = 152
+#
+# 路径用 TOML 的**字面字符串**（单引号）：反斜杠不是转义字符，所以
+# `C:\nvm4w` 不会因为漏写一个反斜杠而静默变成换行 + `vm4w`。
+# 解析出来的值与 `"C:\\Windows"` 完全一样。
+
+[budget]
+raw_user_chars = 63
+raw_machine_chars = 30
+effective_chars = 152
+cliff = 8191
+remaining = 8039
+level = "ok"
+
+[[entry]]
+scope = "process-only"
+index = 0
+owner = "unknown"
+raw = 'C:\Users\dev\AppData\Local\Microsoft\WindowsApps\pwsh.exe'
+expanded = 'C:\Users\dev\AppData\Local\Microsoft\WindowsApps\pwsh.exe'
+quoted = false
+empty = false
+exists = "yes"
+reparse = "app-exec-alias"
+has_vars = false
+has_username = true
+dup_index = 0
+
+[[entry]]
+scope = "machine"
+index = 0
+owner = "system"
+raw = 'C:\Windows'
+expanded = 'C:\Windows'
+quoted = false
+empty = false
+reg_type = "sz"
+exists = "yes"
+reparse = "none"
+has_vars = false
+has_username = false
+dup_index = 0
+
+[[entry]]
+scope = "machine"
+index = 1
+owner = "system"
+raw = 'C:\Windows\System32'
+expanded = 'C:\Windows\System32'
+quoted = false
+empty = false
+reg_type = "sz"
+exists = "yes"
+reparse = "none"
+has_vars = false
+has_username = false
+dup_index = 0
+
+[[entry]]
+scope = "user"
+index = 0
+owner = "unknown"
+raw = 'C:\Users\dev\.cargo\bin'
+expanded = 'C:\Users\dev\.cargo\bin'
+quoted = false
+empty = false
+reg_type = "sz"
+exists = "yes"
+reparse = "none"
+has_vars = false
+has_username = true
+dup_index = 0
+
+[[entry]]
+scope = "user"
+index = 1
+owner = "third-party"
+raw = 'C:\nvm4w\nodejs'
+expanded = 'C:\nvm4w\nodejs'
+quoted = false
+empty = false
+reg_type = "sz"
+exists = "yes"
+reparse = "junction"
+link_target = 'C:\Users\dev\AppData\Roaming\nvm\v24.19.0'
+has_vars = false
+has_username = false
+dup_index = 0
+
+[[entry]]
+scope = "user"
+index = 2
+owner = "unknown"
+raw = 'C:\Users\dev\.cargo\bin'
+expanded = 'C:\Users\dev\.cargo\bin'
+quoted = false
+empty = false
+reg_type = "sz"
+exists = "yes"
+reparse = "none"
+has_vars = false
+has_username = true
+dup_index = 1
+
+[[effective]]
+scope = "process-only"
+index = 0
+
+[[effective]]
+scope = "machine"
+index = 0
+
+[[effective]]
+scope = "machine"
+index = 1
+
+[[effective]]
+scope = "user"
+index = 0
+
+[[effective]]
+scope = "user"
+index = 1
+
+[[effective]]
+scope = "user"
+index = 2

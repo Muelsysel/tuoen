@@ -1,0 +1,12 @@
+schema_version = 1
+captured_at = "2026-11-20T09:00:00Z"
+
+# 与目标侧同样是 1 条凭据命名的环境变量：两台机器都有这个变量，
+# 而它**在两份快照里都没有值** —— 所以 restore 只能产出"请自己重配"的待办。
+
+[[skipped]]
+section = "env"
+scope = "user"
+name = "ARK_API_KEY"
+kind = "credential-named"
+reason = "变量名里有 `KEY`，且值够长、不像路径 —— 无法排除它是凭据，所以没有写进快照"

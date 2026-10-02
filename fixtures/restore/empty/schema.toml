@@ -1,0 +1,10 @@
+schema_version = 1
+captured_at = "2026-10-03T11:00:00Z"
+tuoen_version = "0.1.0"
+
+# 一个 section 文件都没有。`sections = []` 就是它的诚实表示 ——
+# `capture` 一个 section 都没跑成功时写出来的就是这个。
+#
+# git 不跟踪空目录，所以"真正空的目录"在仓库里表示不出来；集成测试里用
+# `TempDir` 另外造一个真的空目录，两种形状都断言 `empty-snapshot`。
+sections = []

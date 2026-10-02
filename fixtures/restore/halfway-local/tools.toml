@@ -1,0 +1,44 @@
+schema_version = 1
+captured_at = "2026-11-25T16:40:00Z"
+
+# **"上一次 apply 做到一半"的现场**（票据 #16 点名的"中途失败 → 不留半成品、可重入"）。
+#
+# 与 machine-a 对照：path / env / wsl 三个 section 已经**逐字节落地**（见同目录的
+# path.toml / env.toml / wsl.toml，它们与 machine-a 只差 `captured_at`），
+# 工具则装了一半：
+# - 已装好 = cargo 1.99.0、git 2.51.0、node 22.11.0（与目标同名同版本 → 只计数）
+# - 还缺   = node 24.19.0（nvm4w 管）、uv 0.5.0（uv 管）、oracle-jdk 8u401、python 3.11.9
+#
+# 于是"重跑一次 `restore plan`"必须**只列出剩下那 4 件**，而不是从头再来一遍 ——
+# 决策 155：没有 `--resume`、没有状态文件，"重跑就是继续"。这个形状就是那条决策的判据：
+# 计划是从**两侧快照的差异**算出来的，所以它天然幂等。
+#
+# 可数的量：行数 = 3；与目标同名同版本的 = 3；本机独有 = 0。
+
+[[tool]]
+name = "cargo"
+version = "1.99.0"
+path = 'C:\Users\dev\.cargo\bin\cargo.exe'
+source = "path-resolution"
+confidence = "executable"
+evidence = "PATH 第 1 条（process-only）里有 cargo.exe"
+reproducible = true
+
+[[tool]]
+name = "git"
+version = "2.51.0"
+path = 'C:\Program Files\Git\cmd\git.exe'
+source = "registry-arp"
+confidence = "registered"
+evidence = "卸载键报告已安装，安装目录真的存在但不在 PATH 上"
+reproducible = true
+
+[[tool]]
+name = "node"
+version = "22.11.0"
+path = 'C:\nvm4w\nodejs\node.exe'
+source = "manager"
+confidence = "manager-owned"
+manager = "nvm4w"
+evidence = "nvm4w 管着它，tuoen 只读采纳"
+reproducible = false

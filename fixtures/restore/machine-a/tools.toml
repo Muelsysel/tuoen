@@ -1,0 +1,80 @@
+schema_version = 1
+captured_at = "2026-10-01T08:30:00Z"
+
+# 7 行。刻意造出来的形态见 fixtures/restore/README.md。
+#
+# 可数的量（集成测试自己从这份文件里数，不抄产品输出）：
+# - 行数 = 7
+# - `manager` 非空的行 = 3（node 22.11.0 / node 24.19.0 / uv）
+# - **不同的** manager = 2（`nvm4w`、`uv`）← 决策 154 的去重口径
+# - `reproducible = false` 的行 = 5（两行 node、oracle-jdk、python、uv）
+# - `confidence = "registered-missing"` 的行 = 1（python，占位符路径）
+#
+# 中文只出现在 `evidence` 里（真机就是这个形状），它**不许**进 plan ——
+# 决策 152：`subject` / `detail` 是数据，中文只进人类输出。
+
+[[tool]]
+name = "cargo"
+version = "1.99.0"
+path = 'C:\Users\dev\.cargo\bin\cargo.exe'
+source = "path-resolution"
+confidence = "executable"
+evidence = "PATH 第 1 条（process-only）里有 cargo.exe"
+reproducible = true
+
+[[tool]]
+name = "git"
+version = "2.51.0"
+path = 'C:\Program Files\Git\cmd\git.exe'
+source = "registry-arp"
+confidence = "registered"
+evidence = "卸载键报告已安装，安装目录真的存在但不在 PATH 上"
+reproducible = true
+
+[[tool]]
+name = "node"
+version = "22.11.0"
+path = 'C:\nvm4w\nodejs\node.exe'
+source = "manager"
+confidence = "manager-owned"
+manager = "nvm4w"
+evidence = "nvm4w 管着它，tuoen 只读采纳"
+reproducible = false
+
+[[tool]]
+name = "node"
+version = "24.19.0"
+path = 'C:\nvm4w\nodejs\node.exe'
+source = "manager"
+confidence = "manager-owned"
+manager = "nvm4w"
+evidence = "nvm4w 管着它，tuoen 只读采纳"
+reproducible = false
+
+[[tool]]
+name = "oracle-jdk"
+version = "8u401"
+path = 'C:\Program Files\Java\jre1.8.0_491\bin\java.exe'
+source = "registry-arp"
+confidence = "registered"
+evidence = "卸载键报告已安装，安装目录真的存在但不在 PATH 上"
+reproducible = false
+
+[[tool]]
+name = "python"
+version = "3.11.9"
+path = "<无 InstallLocation，卸载键 {665A0435-D5D5-4A49-9DE0-FBC23C5425ED}>"
+source = "registry-arp"
+confidence = "registered-missing"
+evidence = "9 个卸载键都报告已安装，而安装目录不存在"
+reproducible = false
+
+[[tool]]
+name = "uv"
+version = "0.5.0"
+path = 'C:\Users\dev\.local\bin\uv.exe'
+source = "manager"
+confidence = "manager-owned"
+manager = "uv"
+evidence = "uv 管着它，tuoen 只读采纳"
+reproducible = false

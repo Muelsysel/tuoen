@@ -1,0 +1,38 @@
+schema_version = 1
+captured_at = "2026-11-20T09:00:00Z"
+
+# 本机侧（缺东西、也多东西）。与 machine-a 对照，可数的量：
+# - 行数 = 3
+# - 与目标**同名同版本**的行 = 2（cargo 1.99.0、node 22.11.0）→ 只计数，不进 actions
+# - 本机独有（目标没有）的行 = 1（dotnet）→ `extra`，restore 从不卸载
+# - 目标里有、本机这里没有的 = git / node 24.19.0 / oracle-jdk / python / uv
+#     → 分三路：git = install；node 24.19.0 与 uv（有 manager）= third-party-managed；
+#       oracle-jdk（`reproducible = false`）与 python（`registered-missing`）= unsupported
+
+[[tool]]
+name = "cargo"
+version = "1.99.0"
+path = 'C:\Users\dev\.cargo\bin\cargo.exe'
+source = "path-resolution"
+confidence = "executable"
+evidence = "PATH 第 1 条（process-only）里有 cargo.exe"
+reproducible = true
+
+[[tool]]
+name = "dotnet"
+version = "9.0.100"
+path = 'C:\Program Files\dotnet\dotnet.exe'
+source = "app-paths"
+confidence = "executable"
+evidence = "App Paths 里有 dotnet.exe"
+reproducible = true
+
+[[tool]]
+name = "node"
+version = "22.11.0"
+path = 'C:\nvm4w\nodejs\node.exe'
+source = "manager"
+confidence = "manager-owned"
+manager = "nvm4w"
+evidence = "nvm4w 管着它，tuoen 只读采纳"
+reproducible = false

@@ -12,6 +12,7 @@ pub mod doctor;
 pub mod list;
 pub mod pathdiff;
 pub mod pin;
+pub mod restore;
 pub mod shim;
 
 pub use capture::{
@@ -32,5 +33,10 @@ pub use pin::{
     LOCK_FILE_NAME, LockFile, MAX_SHELL_DEPTH, PIN_FILE_NAME, PinError, PinFile, Resolution,
     ResolveContext, ResolvedTool, SHELL_DEPTH_VAR, ShellKind, ShellPlan, TRUST_FILE_NAME,
     TrustFile, TrustState, VersionSpec, resolve,
+};
+pub use restore::{
+    ManualAction, ManualActionCode, PlannedAction, RestoreBundle, RestoreError, RestoreOptions,
+    RestorePlan, RestoreSummary, SectionCounts, SectionId, SectionPlan, SectionStatus, ascii_token,
+    plan,
 };
 pub use shim::{ShimCommand, command_names, shim_commands, tool_for_command};

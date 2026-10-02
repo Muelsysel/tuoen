@@ -42,7 +42,9 @@
 
 use std::path::PathBuf;
 
-use tuoen_core::capture::{CaptureOptions, PathFile, Section, capture};
+use tuoen_core::capture::{
+    CaptureBundle, CaptureError, CaptureOptions, PathFile, Section, capture,
+};
 use tuoen_core::detect::DetectContext;
 use tuoen_core::pathdiff::{
     PathDiff, PathDiffError, PathDiffOptions, Rebuild, Selection, current_username_from_env,
@@ -280,7 +282,10 @@ fn unmatched_picks(result: &PathDiff, selection: &Selection) -> Vec<String> {
 
 /// 广播闭包。**只在真的写了之后被调用** —— `apply` 保证这一点
 /// （它不写的时候直接返回 `wrote: false`，一次广播都不发）。
-fn broadcast() -> usize {
+///
+/// `pub(crate)` 是为了让 `restore` 的 `env` 段用**同一个**广播函数：广播是全局副作用
+/// （打到每一个顶层窗口），它只能有一处定义。
+pub(crate) fn broadcast() -> usize {
     tuoen_platform::sys::broadcast_environment_change()
 }
 
@@ -290,27 +295,39 @@ fn broadcast() -> usize {
 
 /// 本机侧：**在内存里**跑一次 `capture`（决策 126），一个字节都不落盘。
 ///
-/// `out_dir` 传空路径：它只被 `write_bundle` 用到，而这一票一次都不落盘。
+/// `out_dir` 传空路径：它只被 `write_bundle` 用到，而这一族一次都不落盘。
 /// 时间戳照样要给（`CaptureOptions` 要求它），但它只活在内存里。
 ///
 /// 我们自己的两个根（存储根 + shim 目录）必须给：它们是 `owner = "tuoen"` 的**唯一**
-/// 判据，而 `owner` 会逐条进 `--json` 的 `local` / `target`。
+/// 判据，而 `owner` 会逐条进 `--json`。
+///
+/// `sections` 是**调用方**给的：`path diff` / `path apply` 只要 `Section::Path`，
+/// 而 `restore` 要四段（它比的是整份 `tuoen.d/`）。抽成一个函数是为了让"怎么装六个
+/// 后端 + 怎么给两个根"只有一处 —— 第二份装配会让两份事实慢慢漂移。
+pub(crate) fn capture_local(
+    backends: &Backends,
+    ctx: &DetectContext<'_>,
+    sections: Vec<Section>,
+) -> Result<CaptureBundle, CaptureError> {
+    let opts = CaptureOptions::only(PathBuf::new(), &tuoen_store::now_rfc3339(), sections)
+        .with_tuoen_root(backends.store_root())
+        .with_tuoen_root(backends.shim_dir());
+
+    // 错误**原样**返回：文案由调用方按自己的口径写（`path` 那一族说的是 "PATH"，
+    // `restore` 说的是"整机状态"）—— 把文案烤进共用件就是让两个命令说同一句话。
+    capture(ctx, &opts)
+}
+
+/// 本机侧的 `PATH` 那一段（`path diff` / `path apply` 要的形状）。
 fn capture_local_path(
     backends: &Backends,
     ctx: &DetectContext<'_>,
 ) -> Result<PathFile, PathCliError> {
-    let opts = CaptureOptions::only(
-        PathBuf::new(),
-        &tuoen_store::now_rfc3339(),
-        vec![Section::Path],
-    )
-    .with_tuoen_root(backends.store_root())
-    .with_tuoen_root(backends.shim_dir());
-
-    let bundle = capture(ctx, &opts).map_err(|error| PathCliError {
-        code: error.code(),
-        message: format!("采集本机 PATH 失败：{error}"),
-    })?;
+    let bundle =
+        capture_local(backends, ctx, vec![Section::Path]).map_err(|error| PathCliError {
+            code: error.code(),
+            message: format!("采集本机 PATH 失败：{error}"),
+        })?;
     bundle.path.ok_or_else(|| PathCliError {
         code: CAPTURE_MISSING_PATH,
         message: "采集本机 PATH 失败：捕获器没有产出 `path` 段（这是一个 bug，请报告）。"
@@ -328,12 +345,14 @@ fn capture_local_path(
 /// 用户级注册表块是退路。真机实测 `HKCU\Environment` 里**既没有** `USERPROFILE`
 /// 也没有 `USERNAME` —— 只读注册表块的实现会得到 `None`，于是**一条都不重写**，
 /// 而报告看起来完全正常。
-struct Username {
-    value: Option<String>,
-    source: &'static str,
+pub(crate) struct Username {
+    pub(crate) value: Option<String>,
+    pub(crate) source: &'static str,
 }
 
-fn username(backends: &Backends) -> Username {
+/// 当前用户名 + **它的来源** —— `restore` 的 path 段复用同一个函数（决策 145 的判据
+/// 只能有一处）。
+pub(crate) fn username(backends: &Backends) -> Username {
     if let Some(value) = current_username_from_process(backends.process_env()) {
         return Username {
             value: Some(value),
@@ -378,7 +397,7 @@ fn has_last_segment(value: &str) -> bool {
 }
 
 /// 用户给的那个路径，**原样**（相对路径就还是相对路径）。
-fn snapshot_text(path: &std::path::Path) -> String {
+pub(crate) fn snapshot_text(path: &std::path::Path) -> String {
     path.display().to_string()
 }
 
@@ -591,7 +610,7 @@ fn report_too_long(
 /// 用户级重建后的条目列表 —— **只写用户级**（决策 136）。
 ///
 /// 机器级的改动在 `rebuild` 里照常算出来（`afterRaw` 完整给出），只是不落盘。
-fn user_after(rebuilt: &Rebuild) -> Vec<String> {
+pub(crate) fn user_after(rebuilt: &Rebuild) -> Vec<String> {
     rebuilt
         .scopes
         .iter()
