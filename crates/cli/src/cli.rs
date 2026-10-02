@@ -7,6 +7,7 @@ use clap::{Args, Parser, Subcommand};
 
 use crate::catalog::CatalogCommand;
 use crate::detect::DetectArgs;
+use crate::manage::{InstallArgs, UninstallArgs, UseArgs};
 
 /// 拓境 — 让你的 Windows 开发环境可搬运、可复现。
 #[derive(Debug, Parser)]
@@ -62,6 +63,51 @@ pub enum Command {
 本机的 Java 就是「PATH 上 java 来自 Oracle 1.8.0_491，而 javac 来自 Amazon 1.8.0_492」
 —— 这是真实的分裂，不是重复。`#` 列就是用来一眼看出这件事的。"#)]
     Detect(DetectArgs),
+
+    /// 下载并安装一个工具的某个版本到 tuoen 的存储里。
+    #[command(long_about = r#"下载并安装一个工具的某个版本到 tuoen 的存储里。
+
+**装完不等于生效。** 这个命令只把版本放进存储，**当前生效的版本一动不动** ——
+要生效请再敲一次 `tuoen use`，或者这次就加 `--use`。
+
+为什么刻意不顺手激活：本项目的招牌是**多版本共存**。
+顺手激活意味着"装一个旧版本去做兼容性排查"会**静默改变正在生效的环境**，
+而已经开着的终端、IDE、构建脚本都不会知道
+（Windows 的环境块是进程创建时复制的，改不进去已经跑着的进程）。
+
+哈希**来自内置目录，不来自下载源**：从你正在下载的那台服务器上取哈希
+等于没有校验 —— 能改制品的人也能改哈希。
+
+用法：
+  tuoen install node              装最新可安装的版本
+  tuoen install node@24.19.0      装指定版本
+  tuoen install node@24 --use     装完立刻激活
+  tuoen install node --dry-run    只说会做什么，什么都不下载"#)]
+    Install(InstallArgs),
+
+    /// 让某个**已经装过**的版本生效（原子翻转 `current`）。
+    #[command(long_about = r#"让某个已经装过的版本生效。
+
+实现方式是把存储里的 `current` 联接**就地重指**到那个版本目录 ——
+一次 IOCTL，**没有"先删再建"的空窗**，所以任何时刻 `current` 都是可解析的
+（`docs/DESIGN.md` 决策 46）。
+
+**这个命令不改 `PATH`，也不改任何 shim。** 它只翻转一个链接；
+`PATH` 上要放什么、shim 怎么发，是另外两件事。"#)]
+    Use(UseArgs),
+
+    /// 从 tuoen 的存储里删掉一个版本。
+    #[command(long_about = r#"从 tuoen 的存储里删掉一个版本。
+
+删的正好是当前激活版本时，**默认拒绝执行**，并告诉你怎么做：
+先 `tuoen use` 到别的版本，或者加 `--force`（会先摘掉 `current` 再删）。
+
+拒绝是因为"`current` 指向一个已经没了的目录"会让之后每一个 shim
+都报一个与真实原因无关的错误 —— 那种错误最难查。
+
+这个命令**只删 tuoen 自己装的东西**。别人装的（winget / Scoop / nvm…）
+不在存储里，也不归我们管。"#)]
+    Uninstall(UninstallArgs),
 }
 
 #[derive(Debug, Args)]
@@ -112,5 +158,18 @@ mod tests {
         let cli = Cli::try_parse_from(["tuoen", "detect"]).expect("parse");
         assert!(matches!(cli.command, Command::Detect(_)));
         assert!(Cli::try_parse_from(["tuoen", "catalog", "detect"]).is_err());
+    }
+
+    #[test]
+    fn the_manage_family_is_top_level() {
+        // `install` / `use` / `uninstall` 动磁盘，`catalog` 只读目录 ——
+        // 把动磁盘的命令藏进只读的那一族会让"看一眼"和"改一台机器"看起来一样危险。
+        assert!(matches!(
+            Cli::try_parse_from(["tuoen", "install", "node"])
+                .expect("parse")
+                .command,
+            Command::Install(_)
+        ));
+        assert!(Cli::try_parse_from(["tuoen", "catalog", "install", "node"]).is_err());
     }
 }

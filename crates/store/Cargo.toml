@@ -1,0 +1,23 @@
+[package]
+name = "tuoen-store"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "tuoen 的安装存储层：版本目录布局、名字安全、junction 激活与卸载（目录是事实来源）"
+publish = false
+
+[dependencies]
+tuoen-platform = { workspace = true }
+tuoen-manifest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+# `test-support` 给出临时目录与 `make_junction` —— 本层的每条断言都必须在**真实文件系统**上跑，
+# 因为"目录是事实来源"与"绝不穿透链接"这两条设计只有在真磁盘上才能验证。
+tuoen-platform = { workspace = true, features = ["test-support"] }
+
+[lints]
+workspace = true

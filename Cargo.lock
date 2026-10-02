@@ -458,9 +458,12 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
+ "tuoen-archive",
  "tuoen-core",
+ "tuoen-download",
  "tuoen-manifest",
  "tuoen-platform",
+ "tuoen-store",
 ]
 
 [[package]]
@@ -472,6 +475,7 @@ dependencies = [
  "thiserror",
  "toml",
  "tuoen-platform",
+ "tuoen-store",
 ]
 
 [[package]]
@@ -514,6 +518,17 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
+]
+
+[[package]]
+name = "tuoen-store"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tuoen-manifest",
+ "tuoen-platform",
 ]
 
 [[package]]

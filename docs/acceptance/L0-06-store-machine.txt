@@ -1,0 +1,451 @@
+$ cargo build -p tuoen-cli
+  二进制：C:\Work\EasyEnvForWin\target\debug\tuoen.exe
+
+──────────────────────────────────────────────────────────────────────────────
+§0 这台机器上的真实位置（不隔离 —— 这正是"端到端"的意思）
+──────────────────────────────────────────────────────────────────────────────
+os            : Microsoft Windows NT 10.0.26200.0
+LOCALAPPDATA  : C:\Users\Muelsyse\AppData\Local
+APPDATA       : C:\Users\Muelsyse\AppData\Roaming
+存储根        : C:\Users\Muelsyse\AppData\Local\tuoen\store
+缓存根        : C:\Users\Muelsyse\AppData\Roaming\tuoen\cache
+存储根现在存在: True
+
+注意：这个脚本**会真的往存储根里装东西**。它开头会清掉上次的残留，所以可重复跑。
+
+──────────────────────────────────────────────────────────────────────────────
+§1 起点：清掉上次的残留（这一步本身就是 `uninstall --force` 的证据）
+──────────────────────────────────────────────────────────────────────────────
+\$ tuoen uninstall node 24.19.0 --force
+  已删除 node 24.19.0。
+  释放 1989 个文件、106112876 字节。
+  
+  注意：删掉的正是当时生效的版本，`current` 已经先摘掉了 —— 现在这个工具没有生效版本。
+  要选一个：`tuoen list` 看还剩哪些，然后 `tuoen use node <版本>`。
+  → 退出码 0
+\$ tuoen uninstall node 24.21.0 --force
+  tuoen: `node` 没有已安装的版本 24.21.0（可以 `tuoen list node` 看有哪些）
+  → 退出码 1
+\$ tuoen uninstall node 24.20.0 --force
+  tuoen: `node` 没有已安装的版本 24.20.0（可以 `tuoen list node` 看有哪些）
+  → 退出码 1
+
+清理之后：
+\$ tuoen list
+  （tuoen 还没有管理任何工具）
+  
+  装一个试试：`tuoen install node` 然后 `tuoen use node <版本>`。
+  
+  注意：这个命令只列出**由 tuoen 自己装**的工具。
+        要看这台机器上装了什么（包括别人装的、只剩目录的、不存在的），
+        用 `tuoen detect`。
+  → 退出码 0
+
+  ✓ 清理之后 `current` 不存在
+
+──────────────────────────────────────────────────────────────────────────────
+§2 `install --dry-run`：只说要做什么，什么都不下载、什么都不写
+──────────────────────────────────────────────────────────────────────────────
+  （演练 —— 什么都没有下载、什么都没有写）
+  
+  Node.js 24.19.0
+  平台：windows-x64
+  许可证：MIT —— allowed
+  
+  上游地址：https://nodejs.org/dist/v24.19.0/node-v24.19.0-win-x64.zip
+  sha256：57f71ab3652e797d84acddc79c81cc9ff1c6ddb2a1974cdb83f00fee9bff4c73
+  归档：zip
+  装到：C:\Users\Muelsyse\AppData\Local\tuoen\store\node\versions\24.19.0
+  解压：剥 1 层顶层目录
+  命令：corepack, node, npm, npx
+  当前版本链接：C:\Users\Muelsyse\AppData\Local\tuoen\store\node\current
+  
+  演练结束。真装之后要生效还得敲：tuoen use node 24.19.0
+  → 退出码 0
+
+演练前存储根存在: True
+演练后存储根存在: True
+  ✓ 演练退出码是 0
+  ✓ 演练没有在磁盘上留下存储根（`--dry-run` 的验收判据）
+  ✓ 演练输出里给出了下一步命令（决策 49 的代价）
+
+──────────────────────────────────────────────────────────────────────────────
+§2b `--dry-run --json`：机器可读的计划
+──────────────────────────────────────────────────────────────────────────────
+\$ tuoen install node@24.19.0 --dry-run --json
+  {"schemaVersion":1,"command":"install","ok":true,"data":{"dryRun":true,"plan":{"activateAfter":false,"alreadyInstalled":false,"archive":"zip","currentLink":"C:\\Users\\Muelsyse\\AppData\\Local\\tuoen\\store\\node\\current","displayName":"Node.js","installedTo":"C:\\Users\\Muelsyse\\AppData\\Local\\tuoen\\store\\node\\versions\\24.19.0","layout":{"bin":{"corepack":"corepack.cmd","node":"node.exe","npm":"npm.cmd","npx":"npx.cmd"},"home":null,"stripComponents":1},"licenceName":"MIT","nextCommand":"tuoen use node 24.19.0","platform":"windows-x64","redistribution":"allowed","sha256":"57f71ab3652e797d84acddc79c81cc9ff1c6ddb2a1974cdb83f00fee9bff4c73","tool":"node","url":"https://nodejs.org/dist/v24.19.0/node-v24.19.0-win-x64.zip","version":"24.19.0"},"result":null}}
+  → 退出码 0
+  ✓ dryRun 是 true
+  ✓ result 是 null（同一套形状，只有结果为空）
+  ✓ sha256 来自内置目录
+  ✓ nextCommand 是下一步命令
+
+注意：这里显示的是**官方** URL，而真下载会走镜像（见 §3）——
+因为候选源的顺序是"用户模板 → 内置镜像 → 官方兜底"。
+
+──────────────────────────────────────────────────────────────────────────────
+§3 真的装 node 24.19.0（下载 35 MB 的 .zip，SHA256 来自内置目录）
+──────────────────────────────────────────────────────────────────────────────
+  Node.js 24.19.0
+  平台：windows-x64
+  许可证：MIT —— allowed
+  
+  上游地址：https://nodejs.org/dist/v24.19.0/node-v24.19.0-win-x64.zip
+  sha256：57f71ab3652e797d84acddc79c81cc9ff1c6ddb2a1974cdb83f00fee9bff4c73
+  归档：zip
+  装到：C:\Users\Muelsyse\AppData\Local\tuoen\store\node\versions\24.19.0
+  解压：剥 1 层顶层目录
+  命令：corepack, node, npm, npx
+  当前版本链接：C:\Users\Muelsyse\AppData\Local\tuoen\store\node\current
+  
+  实际下载：https://cdn.npmmirror.com/binaries/node/v24.19.0/node-v24.19.0-win-x64.zip（37304352 字节，源 `cn-npmmirror`）
+            来自缓存（没有产生网络流量）
+            缓存命中，所以这次一个源都没碰。
+  解压：归档内 2454 个条目 → 落盘 1989 个文件、106112876 字节
+  装到：C:\Users\Muelsyse\AppData\Local\tuoen\store\node\versions\24.19.0
+  
+  **装好了，但还没生效。**
+  让它生效：tuoen use node 24.19.0
+  → 退出码 0
+  ✓ 安装退出码是 0
+  ✓ 输出里说清了实际服务的是哪个源
+  ✓ 输出里说清了"装完不等于生效"
+
+──────────────────────────────────────────────────────────────────────────────
+§3b 真的装 node 24.21.0（多版本共存）
+──────────────────────────────────────────────────────────────────────────────
+\$ tuoen install node@24.21.0
+  Node.js 24.21.0
+  平台：windows-x64
+  许可证：MIT —— allowed
+  
+  上游地址：https://nodejs.org/dist/v24.21.0/node-v24.21.0-win-x64.zip
+  sha256：158f7685b44de51f6c0df1d153526cbcd3e1bc739a8dfc607721cef75de9e541
+  归档：zip
+  装到：C:\Users\Muelsyse\AppData\Local\tuoen\store\node\versions\24.21.0
+  解压：剥 1 层顶层目录
+  命令：corepack, node, npm, npx
+  当前版本链接：C:\Users\Muelsyse\AppData\Local\tuoen\store\node\current
+  
+  实际下载：https://cdn.npmmirror.com/binaries/node/v24.21.0/node-v24.21.0-win-x64.zip（37618919 字节，源 `cn-npmmirror`）
+            来自缓存（没有产生网络流量）
+            缓存命中，所以这次一个源都没碰。
+  解压：归档内 2459 个条目 → 落盘 1994 个文件、106986507 字节
+  装到：C:\Users\Muelsyse\AppData\Local\tuoen\store\node\versions\24.21.0
+  
+  **装好了，但还没生效。**
+  让它生效：tuoen use node 24.21.0
+  → 退出码 0
+
+──────────────────────────────────────────────────────────────────────────────
+§3c 装完**没有**生效版本 —— 这是决策 49 的直接后果
+──────────────────────────────────────────────────────────────────────────────
+\$ tuoen list
+  工具    生效版本  存储里的版本
+  node  -  24.21.0 24.19.0
+  
+  1 个工具装了版本但**没有生效版本**（生效版本那一列是 `-`）。
+  选一个：`tuoen use <工具> <版本>`。
+  
+  带 `*` 的是当前生效的那个。切版本用 `tuoen use`，删版本用 `tuoen uninstall`。
+  看这台机器上**全部**工具（含别人装的）用 `tuoen detect`。
+  → 退出码 0
+  ✓ 装了两个版本但**没有**生效版本
+  ✓ 两个版本都列出来了
+  ✓ 版本降序（最新的在最前，自然比较而非字符串比较）
+
+──────────────────────────────────────────────────────────────────────────────
+§4 `tuoen use node 24.19.0` —— 第一次激活（应当是 created）
+──────────────────────────────────────────────────────────────────────────────
+\$ tuoen use node 24.19.0 --json
+  {"schemaVersion":1,"command":"use","ok":true,"data":{"link":"C:\\Users\\Muelsyse\\AppData\\Local\\tuoen\\store\\node\\current","previous":null,"repoint":{"degradedReason":null,"outcome":"created"},"target":"C:\\Users\\Muelsyse\\AppData\\Local\\tuoen\\store\\node\\versions\\24.19.0","tool":"node","version":"24.19.0"}}
+  → 退出码 0
+  ✓ 激活退出码是 0
+  ✓ 第一次激活报 created
+  ✓ 此前没有生效版本
+  ✓ 没有降级（是真的原子路径）
+
+──────────────────────────────────────────────────────────────────────────────
+§4b **通过链接真的执行 node.exe** —— 这是"链接真的通了"的唯一判据
+──────────────────────────────────────────────────────────────────────────────
+\$ "C:\Users\Muelsyse\AppData\Local\tuoen\store\node\current\node.exe" --version
+  v24.19.0
+  → 退出码 0
+  ✓ 通过链接执行 node.exe 报 v24.19.0（实际：v24.19.0）
+\$ "C:\Users\Muelsyse\AppData\Local\tuoen\store\node\current\node.exe" -e console.log(process.execPath)
+  C:\Users\Muelsyse\AppData\Local\tuoen\store\node\current\node.exe
+  → 退出码 0
+
+期望：execPath 是**链接那条路径**（说明进程真的是从 `current` 下启动的），
+      而 `--version` 报的是**目标版本**（说明链接指向了正确的版本目录）。
+  ✓ execPath 落在 current 下（实际：C:\Users\Muelsyse\AppData\Local\tuoen\store\node\current\node.exe）
+
+──────────────────────────────────────────────────────────────────────────────
+§4c 链接在磁盘上到底是什么（fsutil 的原始输出）
+──────────────────────────────────────────────────────────────────────────────
+  Reparse Tag Value : 0xa0000003
+  Tag value: Microsoft
+  Tag value: Name Surrogate
+  Tag value: Mount Point
+  Substitue Name offset: 0
+  Substitue Name length: 138
+  Print Name offset:     140
+  Print Name Length:     130
+  Substitute Name:       \??\C:\Users\Muelsyse\AppData\Local\tuoen\store\node\versions\24.19.0
+  Print Name:            C:\Users\Muelsyse\AppData\Local\tuoen\store\node\versions\24.19.0
+  
+  Reparse Data Length: 0x118     
+  Reparse Data:
+  0000:  00 00 8a 00 8c 00 82 00  5c 00 3f 00 3f 00 5c 00  ........\.?.?.\.
+
+目录项（注意 `current` 的 LinkType 是 Junction）：
+  Attributes : Directory, ReparsePoint
+  LinkType   : Junction
+  Target     : C:\Users\Muelsyse\AppData\Local\tuoen\store\node\versions\24.19.0
+  ✓ `current` 是一个 Junction（不是 symlink、不是被复制出来的普通目录）
+  ✓ 它指向 24.19.0 的版本目录
+
+──────────────────────────────────────────────────────────────────────────────
+§5 `tuoen use node 24.21.0` —— 重指（应当是 replaced，不是 created）
+──────────────────────────────────────────────────────────────────────────────
+\$ tuoen use node 24.21.0 --json
+  {"schemaVersion":1,"command":"use","ok":true,"data":{"link":"C:\\Users\\Muelsyse\\AppData\\Local\\tuoen\\store\\node\\current","previous":"24.19.0","repoint":{"degradedReason":null,"outcome":"replaced"},"target":"C:\\Users\\Muelsyse\\AppData\\Local\\tuoen\\store\\node\\versions\\24.21.0","tool":"node","version":"24.21.0"}}
+  → 退出码 0
+  ✓ 重指报 replaced（不是 created 也不是 degraded）
+  ✓ 说清了从哪个版本切过来
+
+**`replaced` 就是原子性的证据**：`FSCTL_SET_REPARSE_POINT` 在标签相同时
+是"就地替换重解析数据"，所以没有"先删再建"的空窗（决策 46）。
+注意它同时也说明：两次 `use` 的输出**本来就该不同** —— 把 created 与 replaced
+混在一起比"逐字节稳定"是比错了东西。
+
+──────────────────────────────────────────────────────────────────────────────
+§5b 通过同一个链接再执行一次 —— 现在必须是 v24.21.0
+──────────────────────────────────────────────────────────────────────────────
+\$ "C:\Users\Muelsyse\AppData\Local\tuoen\store\node\current\node.exe" --version
+  v24.21.0
+  → 退出码 0
+  ✓ 同一个链接现在报 v24.21.0（实际：v24.21.0）
+
+──────────────────────────────────────────────────────────────────────────────
+§5c `use --json`（同一状态跑两次，逐字节稳定）
+──────────────────────────────────────────────────────────────────────────────
+$ tuoen use node 24.21.0 --json  （第一次）
+  {"schemaVersion":1,"command":"use","ok":true,"data":{"link":"C:\\Users\\Muelsyse\\AppData\\Local\\tuoen\\store\\node\\current","previous":"24.21.0","repoint":{"degradedReason":null,"outcome":"replaced"},"target":"C:\\Users\\Muelsyse\\AppData\\Local\\tuoen\\store\\node\\versions\\24.21.0","tool":"node","version":"24.21.0"}}
+  ✓ 同一状态下的两次 use 逐字节相同
+
+──────────────────────────────────────────────────────────────────────────────
+§6 `uninstall node 24.21.0`（删的正是生效版本）—— 必须被拒
+──────────────────────────────────────────────────────────────────────────────
+\$ tuoen uninstall node 24.21.0 --json
+  {"schemaVersion":1,"command":"uninstall","ok":false,"error":{"code":"active-version","message":"`node` 的 24.21.0 是当前激活的版本，删掉它 `current` 就悬空了：先 `tuoen use` 到别的版本，或加 `--force`（它会先摘掉 `current` 再删这份载荷）"}}
+  → 退出码 1
+  ✓ 被拒（ok 是 false）
+  ✓ 错误码是 active-version
+  ✓ 给出了"先切到别的版本"这条出路
+  ✓ 给出了 --force 这条出路
+
+被拒之后必须**一点副作用都没有**：载荷、链接、以及通过链接读到的内容都还在。
+  载荷目录存在: True
+  链接存在    : True
+  ✓ 被拒之后载荷还在
+  ✓ 被拒之后链接还在
+\$ "C:\Users\Muelsyse\AppData\Local\tuoen\store\node\current\node.exe" --version
+  v24.21.0
+  → 退出码 0
+  ✓ 被拒之后通过链接仍然能执行（退出码 0 且版本没变）
+
+──────────────────────────────────────────────────────────────────────────────
+§6b `uninstall node 24.21.0 --force` —— 先摘 current，再删载荷
+──────────────────────────────────────────────────────────────────────────────
+  已删除 node 24.21.0。
+  释放 1994 个文件、106986507 字节。
+  
+  注意：删掉的正是当时生效的版本，`current` 已经先摘掉了 —— 现在这个工具没有生效版本。
+  要选一个：`tuoen list` 看还剩哪些，然后 `tuoen use node <版本>`。
+  → 退出码 0
+  ✓ 强制删退出码是 0
+
+  载荷目录存在: False
+  链接存在    : False   ← 必须是 False，否则 current 会指向一个不存在的目录
+  另一个版本在: True
+  ✓ 载荷真的删掉了
+  ✓ `current` 已经摘掉（不留下悬空链接）
+  ✓ 另一个版本没受影响
+
+列表：剩下的那个版本应当**没有生效版本**（而不是悄悄把 24.19.0 报成生效的）：
+\$ tuoen list --json
+  {"schemaVersion":1,"command":"list","ok":true,"data":{"tools":[{"installedVersions":["24.19.0"],"name":"node","path":"C:\\Users\\Muelsyse\\AppData\\Local\\tuoen\\store\\node","source":"tuoen","version":null}]}}
+  → 退出码 0
+  ✓ 剩下的版本没有被悄悄报成生效的
+  ✓ 只剩一个版本
+
+──────────────────────────────────────────────────────────────────────────────
+§6c 切回另一个版本 —— 证明 --force 没有连累别的版本
+──────────────────────────────────────────────────────────────────────────────
+\$ tuoen use node 24.19.0
+  node 24.19.0 已激活
+  链接：C:\Users\Muelsyse\AppData\Local\tuoen\store\node\current
+  指向：C:\Users\Muelsyse\AppData\Local\tuoen\store\node\versions\24.19.0
+  方式：新建（这个工具此前没有生效版本）
+  
+  注意：这条命令**没有改 PATH，也没有改任何 shim** —— 它只翻转了一个链接。
+  → 退出码 0
+\$ "C:\Users\Muelsyse\AppData\Local\tuoen\store\node\current\node.exe" --version
+  v24.19.0
+  → 退出码 0
+  ✓ 切回去之后通过链接执行报 v24.19.0
+
+──────────────────────────────────────────────────────────────────────────────
+§7 拒绝路径（每一条都必须是"能读懂的中文 + 稳定的错误码"）
+──────────────────────────────────────────────────────────────────────────────
+§7a 重复安装同一个版本：
+\$ tuoen install node@24.19.0 --json
+  {"schemaVersion":1,"command":"install","ok":false,"error":{"code":"already-installed","message":"Node.js 24.19.0 已经装过了（C:\\Users\\Muelsyse\\AppData\\Local\\tuoen\\store\\node\\versions\\24.19.0）。\n想让它生效：`tuoen use node 24.19.0`\n想重装：先 `tuoen uninstall node 24.19.0`"}}
+  → 退出码 1
+  ✓ 重复安装报 already-installed
+  ✓ 给出了重装的办法
+
+§7b 不可再分发的工具（门禁必须在解析 recipe 之前跑）：
+\$ tuoen install oracle-jdk@8 --json
+  {"schemaVersion":1,"command":"install","ok":false,"error":{"code":"licence-prohibited","message":"Oracle JDK（不可再分发） 不可再分发，tuoen 不会下载或安装它。\n原因：Oracle JDK 8 / 11 / 17 的许可不允许再分发；只有 21+ 的 NFTC 允许（且前提是不收费）。请从 Oracle 官网自行获取。"}}
+  → 退出码 1
+  ✓ 许可证拒绝报 licence-prohibited（而不是"没有适用的 recipe"）
+  ✓ 拒绝时不给出任何下载地址
+
+§7c 不认识的工具：
+\$ tuoen install definitely-not-a-tool --json
+  {"schemaVersion":1,"command":"install","ok":false,"error":{"code":"unknown-tool","message":"目录里没有工具 `definitely-not-a-tool`；已知：node, temurin, oracle-jdk, msvc"}}
+  → 退出码 1
+  ✓ 不认识的工具报 unknown-tool
+  ✓ 列出了我们认识哪些工具
+
+§7d `node@`（写了 @ 但忘了版本）：
+\$ tuoen install node@ --json
+  {"schemaVersion":1,"command":"install","ok":false,"error":{"code":"empty-version","message":"`node@` 后面没有版本号。想去掉 `@` 装最新版，或者补上版本：`node@24`。"}}
+  → 退出码 1
+  ✓ `node@` 报 empty-version
+
+§7e 切一个没装过的版本：
+\$ tuoen use node 99.99.99 --json
+  {"schemaVersion":1,"command":"use","ok":false,"error":{"code":"not-installed","message":"`node` 没有装过版本 `99.99.99`。已安装的版本：24.19.0"}}
+  → 退出码 1
+  ✓ 切没装过的版本报 not-installed
+  ✓ 列出了真正装过的版本
+
+§7f 删一个没装过的版本：
+\$ tuoen uninstall node 99.99.99 --json
+  {"schemaVersion":1,"command":"uninstall","ok":false,"error":{"code":"not-installed","message":"`node` 没有已安装的版本 99.99.99（可以 `tuoen list node` 看有哪些）"}}
+  → 退出码 1
+  ✓ 删没装过的版本报 not-installed
+
+──────────────────────────────────────────────────────────────────────────────
+§8 `tuoen detect` —— `managed` 层（七层置信度的第一层）现在应当有数据
+──────────────────────────────────────────────────────────────────────────────
+  （退出码 0；下面只摘出相关的几行，完整输出太长）
+  总条目数       : 29
+  managed 条目数 : 1
+    node  24.19.0  managed  C:\Users\Muelsyse\AppData\Local\tuoen\store\node\versions\24.19.0
+      evidence: 由 tuoen 自己安装（存在我们的安装记录）
+  ✓ 存储里有一个版本目录，所以 managed 层至少有 1 条
+  ✓ managed 那条报的版本是 24.19.0（生效版本）
+  ✓ 路径指向版本目录
+
+  置信度分布（`managed` 必须在里面，且计数与存储里的版本数一致）：
+    managed: 1
+    executable: 12
+    registered: 4
+    manager-owned: 2
+    directory-only: 2
+    registered-missing: 6
+    alias-ghost: 2
+
+  注意 `node` 会同时出现在 `executable` / `manager-owned` / `managed` 三行里 ——
+  那是**真实的分裂**（PATH 上的 node 来自 nvm，而我们管的那份在存储里），
+  不是重复（决策 37）。
+
+──────────────────────────────────────────────────────────────────────────────
+§9 磁盘上真实留下了什么（存储根的目录树）
+──────────────────────────────────────────────────────────────────────────────
+  [D] .incoming
+  [D] node
+  [D] .incoming\node
+  [D] node\current
+  [D] node\versions
+  [D] node\versions\24.19.0
+      node\versions\24.19.0.json   (602 字节)
+
+  ✓ `.incoming` 里没有留下解压残骸（搬进存储之后就该没了）
+
+──────────────────────────────────────────────────────────────────────────────
+§9b 安装记录的内容（版本目录旁边的那份 JSON）
+──────────────────────────────────────────────────────────────────────────────
+  {
+    "schema_version": 1,
+    "tool": "node",
+    "version": "24.19.0",
+    "display_name": "Node.js",
+    "source_id": "cn-npmmirror",
+    "url": "https://cdn.npmmirror.com/binaries/node/v24.19.0/node-v24.19.0-win-x64.zip",
+    "sha256": "57f71ab3652e797d84acddc79c81cc9ff1c6ddb2a1974cdb83f00fee9bff4c73",
+    "archive": "zip",
+    "installed_at": "2026-10-02T14:12:36Z",
+    "payload_files": 1989,
+    "payload_bytes": 106112876,
+    "layout": {
+      "strip_components": 1,
+      "bin": {
+        "corepack": "corepack.cmd",
+        "node": "node.exe",
+        "npm": "npm.cmd",
+        "npx": "npx.cmd"
+      },
+      "home": null
+    }
+  }
+
+──────────────────────────────────────────────────────────────────────────────
+§9c 载荷目录里**不该有我们自己放的文件**（决策 48 的第 ① 条）
+──────────────────────────────────────────────────────────────────────────────
+  ✓ 载荷目录里没有我们自己放的文件（记录是 `<version>.json` 而不是 `<version>/tuoen.json`）
+  载荷里的顶层条目数: 15
+
+──────────────────────────────────────────────────────────────────────────────
+§9d 通过链接**真的跑一次 npm** —— 证明附带命令也通
+──────────────────────────────────────────────────────────────────────────────
+  \$ "C:\Users\Muelsyse\AppData\Local\tuoen\store\node\current\npm.cmd" --version
+  11.17.0
+  → 退出码 0
+  ✓ 通过链接跑 npm.cmd 成功
+  ✓ npm 报出了一个版本号
+
+──────────────────────────────────────────────────────────────────────────────
+§10 收尾状态
+──────────────────────────────────────────────────────────────────────────────
+\$ tuoen list
+  工具    生效版本     存储里的版本
+  node  24.19.0  24.19.0*
+  
+  带 `*` 的是当前生效的那个。切版本用 `tuoen use`，删版本用 `tuoen uninstall`。
+  看这台机器上**全部**工具（含别人装的）用 `tuoen detect`。
+  → 退出码 0
+
+\$ tuoen list --json
+  {"schemaVersion":1,"command":"list","ok":true,"data":{"tools":[{"installedVersions":["24.19.0"],"name":"node","path":"C:\\Users\\Muelsyse\\AppData\\Local\\tuoen\\store\\node","source":"tuoen","version":"24.19.0"}]}}
+  → 退出码 0
+
+通过链接执行 node：
+\$ "C:\Users\Muelsyse\AppData\Local\tuoen\store\node\current\node.exe" --version
+  v24.19.0
+  → 退出码 0
+
+──────────────────────────────────────────────────────────────────────────────
+§11 结论
+──────────────────────────────────────────────────────────────────────────────
+存储根        : C:\Users\Muelsyse\AppData\Local\tuoen\store
+node 版本     : 24.19.0
+当前生效      : C:\Users\Muelsyse\AppData\Local\tuoen\store\node\versions\24.19.0
+
+**全部断言通过。**
+
+这份记录里的每一行都是这台机器上真实跑出来的输出，没有一行是手写的。

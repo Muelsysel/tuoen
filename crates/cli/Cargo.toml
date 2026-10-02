@@ -19,6 +19,9 @@ workspace = true
 tuoen-core.workspace = true
 tuoen-platform.workspace = true
 tuoen-manifest.workspace = true
+tuoen-download.workspace = true
+tuoen-archive.workspace = true
+tuoen-store.workspace = true
 clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -27,3 +30,5 @@ thiserror.workspace = true
 [dev-dependencies]
 assert_cmd = "2"
 predicates = "3"
+# `test-support` 给出 `TempDir` —— 进程边界测试要一个能清理的隔离家目录。
+tuoen-platform = { workspace = true, features = ["test-support"] }

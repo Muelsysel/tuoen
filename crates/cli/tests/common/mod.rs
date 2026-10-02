@@ -41,6 +41,70 @@ where
         .expect("运行 tuoen 应当成功（失败说明二进制没被构建出来）")
 }
 
+/// 一个**隔离的**家目录：`tuoen` 的存储与缓存会被指到这里面的子目录。
+///
+/// ## 为什么从票据 #6 起每个会写磁盘的测试都必须用它
+///
+/// `tuoen install` 的默认存储根是 `%LOCALAPPDATA%\tuoen\store`（决策 48）。
+/// 不隔离的话，一次 `cargo test` 会往**开发者真实的** `%LOCALAPPDATA%` 里装东西 ——
+/// 这正是本仓库最容易造成真实伤害的地方（`tests/common/mod.rs` 开头的硬性约束）。
+///
+/// ## 为什么能做到
+///
+/// 因为 `Store::at_default_location()` 读的是**环境变量**而不是 Win32 的
+/// `SHGetKnownFolderPath`。这个选择不是随手做的：读环境变量让"存储位置"
+/// 成为一个可注入的输入，于是最高层的那条 seam（进程边界）在测试里也可用。
+#[derive(Debug)]
+pub struct IsolatedHome {
+    dir: TempDir,
+}
+
+impl IsolatedHome {
+    #[must_use]
+    pub fn new(label: &str) -> Self {
+        Self {
+            dir: TempDir::new(&format!("home-{label}")),
+        }
+    }
+
+    /// `tuoen` 会看到的 `%LOCALAPPDATA%`（存储在这里面）。
+    #[must_use]
+    pub fn local_app_data(&self) -> PathBuf {
+        self.dir.path().join("LocalAppData")
+    }
+
+    /// `tuoen` 会看到的 `%APPDATA%`（下载缓存在这里面）。
+    #[must_use]
+    pub fn roaming_app_data(&self) -> PathBuf {
+        self.dir.path().join("AppData")
+    }
+
+    /// 存储根：`<LOCALAPPDATA>\tuoen\store`。
+    ///
+    /// **在这里自己拼出来是刻意的**：测试要知道"东西应该落在哪"才能断言
+    /// 磁盘副作用，而向生产代码问路径等于让测试跟着实现走。
+    #[must_use]
+    pub fn store_root(&self) -> PathBuf {
+        self.local_app_data().join("tuoen").join("store")
+    }
+
+    /// 跑一次 `tuoen`，环境指向这个隔离的家目录。
+    pub fn run<I, S>(&self, args: I) -> Output
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        tuoen()
+            .args(args)
+            .env("LOCALAPPDATA", self.local_app_data())
+            .env("APPDATA", self.roaming_app_data())
+            // 不改 HOME/USERPROFILE：它们被 `catalog`/`detect` 用到，
+            // 而那两个命令读机器事实是**对的**。只隔离我们自己会写的那两个根。
+            .output()
+            .expect("运行 tuoen 应当成功")
+    }
+}
+
 /// 以 UTF-8 解码 stdout。
 ///
 /// 中文优先意味着输出里有 CJK —— 解码失败本身就是 bug，所以要 `expect` 而不是 `from_utf8_lossy`。

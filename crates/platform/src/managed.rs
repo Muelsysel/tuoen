@@ -1,18 +1,15 @@
 //! tuoen 自己的安装记录 —— 七层置信度里 `managed` 层的来源。
 //!
-//! **现状：L0（安装引擎）还没落地，所以真实实现恒返回空表。**
-//! 这不是占位：`docs/specs/L1-dev-state.md` 的判据表里 `managed` 一栏写的就是
-//! "由 `tuoen` 自己安装（存在我们的安装记录）"，括号里那句"（L0 完成后才有）"
-//! 指的是**记录的产生者**，不是这一层的存在性。
+//! **它只定义读接口的数据形状，不定义文件格式。**
+//! 那是有意的：L0 的 `docs/specs/L0-install-engine.md` 才是规定"记录落在哪、长什么样"
+//! 的地方，在这里发明一个（然后 L0 用另一个）会制造"两个真相"。
+//! 现实中的结果就是决策 48 定下的存储布局，而**真实实现**见
+//! `crates/cli/src/managed.rs` 的 `StoreManagedStore`（依赖方向的原因见下）。
 //!
-//! **为什么现在就要把它做成 trait**：`managed` 是与另外五层并列的**判据**，
-//! 判据必须可测。把它做成可注入的 seam 之后：
-//! - 它在本票就有固定装置用例（`fixtures/detect/confidence-managed.toml`）；
-//! - L0 落地时只需要换掉 [`RealManagedStore`] 一个实现，检测引擎与七层判据不动。
-//!
-//! **记录格式故意不定**：L0 的 `docs/specs/L0-install-engine.md` 没有规定安装记录的落盘
-//! 位置与格式，而在这里发明一个（然后 L0 用另一个）会制造"两个真相"。
-//! 所以本文件只定义**读接口的数据形状**，不定义文件格式。
+//! **为什么这一层非存在不可**：`managed` 是与另外六层并列的**判据**，
+//! 判据必须可测。它在本票就有固定装置用例
+//! （`fixtures/detect/confidence-managed.toml`），而 trait 让真实实现与固定装置
+//! 可以互换 —— 检测引擎与七层判据一行都不用动。
 
 use std::path::PathBuf;
 
@@ -37,16 +34,33 @@ pub trait ManagedStore {
     fn installed(&self) -> Vec<ManagedTool>;
 }
 
-/// 真实实现。**L0 落地前恒为空**。
+/// **空实现**：一个什么都不报的 `ManagedStore`。
+///
+/// ## 它现在为什么还是空的（而不是"还没做完"）
+///
+/// L0 已经落地了，但**真实实现没有放在这里**，而是放在 `tuoen-store` 的
+/// 调用方（`crates/cli/src/managed.rs` 的 `StoreManagedStore`）。原因是依赖方向：
+/// 存储布局（`<tool>/versions/<version>`、`<version>.json`、`current` 联接）
+/// 的知识属于 `tuoen-store`，而 `tuoen-platform` **不能**依赖它 ——
+/// 那会成环（`store` 依赖 `platform`）。
+///
+/// 把布局在这里再实现一遍是**能编译的**，但会让同一份布局同时存在于两个 crate，
+/// 而它们的偏差只有在"`tuoen detect` 的结果与 `tuoen list` 不一致"时才暴露 ——
+/// 那是最难归因的一类 bug。所以这里明确留空。
+///
+/// 它仍然有真实用途：**固定装置与"故意什么都不报"的测试**。
 #[derive(Debug, Default, Clone)]
 pub struct RealManagedStore {
-    /// `%APPDATA%\tuoen` —— L0 的安装记录将落在这里（决策 33 的命名一致性）。
-    /// 现在只被读来定位，不做任何解释。
+    /// 保留的定位字段（决策 33 的命名一致性）。
+    ///
+    /// **注意**：`tuoen` 真实的存储根是 `%LOCALAPPDATA%\tuoen\store`
+    /// （决策 48）。这里是 `%APPDATA%\tuoen`，是 L0 之前定下的旧位置，
+    /// **不再是真实位置** —— 留着只因为它是这个空实现的构造参数。
     pub root: PathBuf,
 }
 
 impl RealManagedStore {
-    /// 默认位置：`%APPDATA%\tuoen`。
+    /// 用给定的根目录构造（这个根目录**不会被读**，见本类型的文档）。
     #[must_use]
     pub fn new(root: impl Into<PathBuf>) -> Self {
         Self { root: root.into() }
@@ -55,7 +69,7 @@ impl RealManagedStore {
 
 impl ManagedStore for RealManagedStore {
     fn installed(&self) -> Vec<ManagedTool> {
-        // **有意为空**：见本文件头部注释。L0 落地后换掉这一个函数体即可。
+        // **有意为空**：真实实现在 `tuoen-store` 的调用方。
         Vec::new()
     }
 }
@@ -65,11 +79,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_real_store_is_empty_until_l0_lands_and_that_is_deliberate() {
+    fn the_empty_implementation_stays_empty_and_that_is_deliberate() {
+        // 它**故意**恒为空：真实实现住在 `tuoen-store` 的调用方（见类型文档）。
+        // 如果哪天有人"顺手把它填上"，存储布局就会有两个真相 —— 这条测试拦的就是那一步。
         let store = RealManagedStore::new(r"C:\Users\example\AppData\Roaming\tuoen");
         assert!(
             store.installed().is_empty(),
-            "L0 未落地时 managed 层必须为空 —— 编一条假记录会让真机输出不可信"
+            "这个空实现必须恒为空：真实实现是 crates/cli/src/managed.rs 的 StoreManagedStore"
         );
         assert_eq!(
             store.root,

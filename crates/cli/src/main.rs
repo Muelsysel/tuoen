@@ -16,6 +16,10 @@ mod cli;
 mod detect;
 mod envelope;
 mod exit;
+mod manage;
+mod manage_cmd;
+mod manage_view;
+mod managed;
 mod view;
 
 use clap::Parser;
@@ -37,7 +41,8 @@ fn run() -> i32 {
 
     match cli.command {
         Command::List(args) => {
-            let result = tuoen_core::list::list();
+            // 读的是**我们自己的存储**，不是这台机器 —— 见 `tuoen_core::list` 的模块文档。
+            let result = tuoen_core::list::list(&tuoen_store::Store::at_default_location());
             if args.json {
                 print_json(&Envelope::ok("list", &result));
             } else {
@@ -51,6 +56,9 @@ fn run() -> i32 {
             CatalogCommand::Check(args) => run_catalog_check(&args),
         },
         Command::Detect(args) => run_detect(&args),
+        Command::Install(args) => manage_cmd::run_install(&args),
+        Command::Use(args) => manage_cmd::run_use(&args),
+        Command::Uninstall(args) => manage_cmd::run_uninstall(&args),
     }
 }
 
@@ -69,7 +77,9 @@ fn run_detect(args: &detect::DetectArgs) -> i32 {
     let env = tuoen_platform::RealEnvBlock::new(registry, fs);
     let process_env = tuoen_platform::RealProcessEnv::new();
     let runner = tuoen_platform::SystemProcessRunner;
-    let managed = tuoen_platform::RealManagedStore::default();
+    // **真实实现**：从 tuoen 自己的存储里读（`crates/cli/src/managed.rs`）。
+    // 为什么适配器在这里而不在 `tuoen-platform` 里 —— 见那个文件的模块文档。
+    let managed = managed::StoreManagedStore::at_default_location();
     let scan_roots = tuoen_core::detect::engine::default_scan_roots(&process_env);
 
     let ctx = tuoen_core::detect::DetectContext {
@@ -460,7 +470,7 @@ fn report_unknown_tool(tool: &str, json: bool, catalog: &tuoen_manifest::Catalog
     exit::RUNTIME_ERROR
 }
 
-fn print_json(envelope: &Envelope) {
+pub(crate) fn print_json(envelope: &Envelope) {
     // 唯一的输出路径：所有 `--json` 输出都经过这里，所以形状不可能漂移。
     match serde_json::to_string(envelope) {
         Ok(json) => println!("{json}"),
@@ -475,10 +485,13 @@ fn print_json(envelope: &Envelope) {
 fn print_human_list(result: &tuoen_core::ListResult) {
     if result.tools.is_empty() {
         // 空列表必须说得清楚，否则用户会怀疑工具坏了。
-        println!("（没有已管理的工具）");
+        println!("（tuoen 还没有管理任何工具）");
         println!();
-        println!("提示：`tuoen list` 目前只列出由 tuoen 自己管理的工具。");
-        println!("      检测整机已安装的工具是 `tuoen detect`，整机状态快照是 `tuoen capture`。");
+        println!("装一个试试：`tuoen install node` 然后 `tuoen use node <版本>`。");
+        println!();
+        println!("注意：这个命令只列出**由 tuoen 自己装**的工具。");
+        println!("      要看这台机器上装了什么（包括别人装的、只剩目录的、不存在的），");
+        println!("      用 `tuoen detect`。");
         return;
     }
 
@@ -497,22 +510,54 @@ fn print_human_list(result: &tuoen_core::ListResult) {
         .unwrap_or(0);
 
     println!(
-        "{:<name_w$}  {:<version_w$}  来源",
+        "{:<name_w$}  {:<version_w$}  存储里的版本",
         "工具",
-        "版本",
+        "生效版本",
         name_w = name_w,
         version_w = version_w
     );
     for tool in &result.tools {
+        // 生效的那个加 `*`：一眼看出"切过去的是哪个"，
+        // 而不是要读者自己去两个列之间做字符串比对。
+        let versions = tool
+            .installed_versions
+            .iter()
+            .map(|v| {
+                if tool.version.as_deref() == Some(v.as_str()) {
+                    format!("{v}*")
+                } else {
+                    v.clone()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
         println!(
             "{:<name_w$}  {:<version_w$}  {}",
             tool.name,
             tool.version.as_deref().unwrap_or("-"),
-            tool.source.as_str(),
+            if versions.is_empty() {
+                "（没有版本）".to_owned()
+            } else {
+                versions
+            },
             name_w = name_w,
             version_w = version_w
         );
     }
+
+    println!();
+    let inactive = result
+        .tools
+        .iter()
+        .filter(|t| t.version.is_none() && !t.installed_versions.is_empty())
+        .count();
+    if inactive > 0 {
+        println!("{inactive} 个工具装了版本但**没有生效版本**（生效版本那一列是 `-`）。");
+        println!("选一个：`tuoen use <工具> <版本>`。");
+        println!();
+    }
+    println!("带 `*` 的是当前生效的那个。切版本用 `tuoen use`，删版本用 `tuoen uninstall`。");
+    println!("看这台机器上**全部**工具（含别人装的）用 `tuoen detect`。");
 }
 
 /// 粗略的显示宽度：CJK 字符占两列。
