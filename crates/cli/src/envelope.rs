@@ -73,6 +73,34 @@ impl Envelope {
             }),
         }
     }
+
+    /// 构造一个**部分成功**的失败信封：既有错误，也有已经发生的事实。
+    ///
+    /// 存在的理由：`tuoen shim add` / `shim remove` 是**逐条**落盘的 —— 一条失败
+    /// 不回滚前面成功的那几条（`crates/cli/src/shim_cmd.rs` 的模块文档里有理由）。
+    /// 把它报成纯失败会让消费者看不到已经生成了什么，而报成 `ok: true` 又会让
+    /// `ok` 与退出码互相矛盾 —— 脚本会以为一切正常。
+    ///
+    /// 形状上它是 `err` 加上 `data`：**错误码仍然是稳定的机器可读字符串**，
+    /// `data` 里是逐条的结果。`ok` 仍然是 `false`，因为"有东西没做成"。
+    #[must_use]
+    pub fn partial<T: Serialize>(
+        command: &'static str,
+        code: &'static str,
+        message: impl Into<String>,
+        data: &T,
+    ) -> Self {
+        Self {
+            schema_version: SCHEMA_VERSION,
+            command,
+            ok: false,
+            data: serde_json::to_value(data).ok(),
+            error: Some(ErrorBody {
+                code,
+                message: message.into(),
+            }),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -106,5 +134,23 @@ mod tests {
     fn schema_version_is_pinned() {
         // 改这个数字是破坏性变更，必须是有意为之。
         assert_eq!(SCHEMA_VERSION, 1);
+    }
+
+    #[test]
+    fn a_partial_envelope_carries_both_the_error_and_the_facts() {
+        // **`ok: false` 是刻意的**：有东西没做成，脚本不该以为一切正常。
+        // 但 `data` 必须还在 —— 消费者要能看见"已经生成了什么"，否则它只能
+        // 去解析中文消息，而那正是这套信封要消灭的东西。
+        let json = serde_json::to_string(&Envelope::partial(
+            "shim.add",
+            "target-unreadable",
+            "4 条里 1 条没生成出来。",
+            &serde_json::json!({ "failed": 1 }),
+        ))
+        .expect("serialise");
+        assert_eq!(
+            json,
+            r#"{"schemaVersion":1,"command":"shim.add","ok":false,"data":{"failed":1},"error":{"code":"target-unreadable","message":"4 条里 1 条没生成出来。"}}"#
+        );
     }
 }

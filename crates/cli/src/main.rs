@@ -20,6 +20,9 @@ mod manage;
 mod manage_cmd;
 mod manage_view;
 mod managed;
+mod shim;
+mod shim_cmd;
+mod shim_view;
 mod view;
 
 use clap::Parser;
@@ -28,6 +31,7 @@ use tuoen_manifest::{GateVerdict, Redistribution, ResolvedRecipe};
 use catalog::{CatalogCommand, CheckArgs, JsonFlag, ShowArgs};
 use cli::{Cli, Command};
 use envelope::Envelope;
+use shim::ShimCommand;
 use view::{CatalogListView, CheckView, DetectView, ToolDetailView};
 
 fn main() {
@@ -59,6 +63,12 @@ fn run() -> i32 {
         Command::Install(args) => manage_cmd::run_install(&args),
         Command::Use(args) => manage_cmd::run_use(&args),
         Command::Uninstall(args) => manage_cmd::run_uninstall(&args),
+        Command::Shim(command) => match command {
+            ShimCommand::Add(args) => shim_cmd::run_add(&args),
+            ShimCommand::Remove(args) => shim_cmd::run_remove(&args),
+            ShimCommand::List(args) => shim_cmd::run_list(&args),
+            ShimCommand::Path(args) => shim_cmd::run_path(&args),
+        },
     }
 }
 
@@ -563,7 +573,10 @@ fn print_human_list(result: &tuoen_core::ListResult) {
 /// 粗略的显示宽度：CJK 字符占两列。
 ///
 /// 只用于对齐，不用于任何逻辑判断 —— 所以不需要完整的 Unicode 宽度表。
-fn display_width(s: &str) -> usize {
+///
+/// `pub(crate)` 是因为 `shim list` 也要用它：**表宽只能有一份定义**，
+/// 两处各写一份的结果是某一天某张表歪了，而没人知道为什么。
+pub(crate) fn display_width(s: &str) -> usize {
     s.chars()
         .map(|c| {
             let cp = u32::from(c);

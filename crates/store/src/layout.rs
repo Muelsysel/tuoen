@@ -177,6 +177,20 @@ impl Store {
         &self.root
     }
 
+    /// tuoen 的**家目录**：存储根的父目录（默认 `%LOCALAPPDATA%\tuoen`）。
+    ///
+    /// 存在的理由：`store/` 不是家目录下唯一的东西。shim 目录与它**并列**
+    /// （`<home>/shims`），因为 `store/<tool>/versions/<version>` 是载荷，
+    /// 而 shim 是面向用户的产物 —— 把 shim 塞进 `store/` 会让"清空存储"
+    /// 顺手删掉用户 `PATH` 上的命令。
+    ///
+    /// 存储根没有父目录时退回存储根本身：`Store::new("store")` 这类相对根
+    /// 也能算出一个确定的位置，而不是 panic 或给出空路径。
+    #[must_use]
+    pub fn home(&self) -> &Path {
+        self.root.parent().unwrap_or(&self.root)
+    }
+
     /// `root/<tool>`
     #[must_use]
     pub fn tool_dir(&self, tool: &str) -> PathBuf {

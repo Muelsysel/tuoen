@@ -5,19 +5,36 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "tuoen 的 shim：一个真 .exe 转发器。启动开销是关键路径约束。"
+description = "tuoen 的 shim：一个真 .exe 转发器，目标路径在生成时烘进二进制。"
 publish = false
+
+[lib]
+name = "tuoen_shim"
+path = "src/lib.rs"
 
 [[bin]]
 name = "tuoen-shim"
 path = "src/main.rs"
 
-[lints]
-workspace = true
-
-[dependencies]
-serde.workspace = true
-thiserror.workspace = true
+# **依赖图必须只有 windows-sys 一项。** shim 是每次敲 `node` 都要跑的程序，
+# 往它的启动路径上加任何东西都是往关键路径上加钱。
+# 这里刻意**不用 thiserror / serde**：错误类型手写 Display，边车格式已经取消
+# （目标路径烘进二进制，运行时不再读任何文件）。
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    # `CreateProcessW` 的形参里有 `*const SECURITY_ATTRIBUTES`，
+    # 所以**要拿到这个符号就必须开 `Win32_Security`**（票据 #6 实测）。
+    "Win32_Security",
+    "Win32_System_Console",
+    "Win32_System_Environment",
+    "Win32_System_Threading",
+] }
 
 [dev-dependencies]
 serde_json.workspace = true
+# 临时目录。**只在 dev 里**：它进不了发布产物的依赖图（shim 的运行时依赖只有 windows-sys）。
+tuoen-platform = { workspace = true, features = ["test-support"] }
+
+[lints]
+workspace = true

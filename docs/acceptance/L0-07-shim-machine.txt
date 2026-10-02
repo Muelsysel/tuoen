@@ -1,0 +1,232 @@
+tuoen · 票据 #7（shim）真机验收
+时间：2026-10-02 23:55:50 +08:00
+工作目录：C:\Work\EasyEnvForWin
+
+=== 0. 预检（跑之前先确认地面是干净的） ===
+  [通过] 没有任何验收探针的残留进程
+
+=== 1. 构建 release 产物 ===
+    Finished `release` profile [optimized] target(s) in 0.11s
+
+  [通过] cargo build --release --examples -p tuoen-shim 成功
+  [通过] 模板存在
+  模板大小：287744 字节
+
+=== 2. 模板里的槽位结构 ===
+===== target\release\tuoen-shim.exe（287744 字节）=====
+PE32+=True  节数=11  SectionAlignment=0x1000  FileAlignment=0x200
+SizeOfImage=0x4E000  SizeOfHeaders=0x400
+
+节名         VirtualSize   VirtAddr    RawSize     RawPtr     RVA-Raw差
+.text           36CF0       1000      36E00        400          C00
+.data             A70      38000        C00      37200          E00
+.rdata           8A08      39000       8C00      37E00         1200
+.eh_fram            4      42000        200      40A00         1600
+.pdata           12F0      43000       1400      40C00         2400
+.xdata           25F8      45000       2600      42000         3000
+.bss              240      48000          0          0        48000
+.idata           133C      49000       1400      44600         4A00
+.tls               10      4B000        200      45A00         5600
+.rsrc             2B0      4C000        400      45C00         6400
+.reloc            288      4D000        400      46000         7000
+
+魔数出现 1 次：237408
+  文件偏移 0x39F60  节 .rdata  映射到的 RVA 0x3B160  槽位末端 0x3A77C
+     该节 raw data 窗口: 0x37E00 .. 0x40A00（差 25220 字节）→ 整个槽位都在 raw data 里 = True
+     是「未烘过」的槽位 = True
+
+SUMMARY sections=11 magic_hits=1 pristine=1 slots_inside_raw=1
+  [通过] PE 转储给出了 SUMMARY 契约行
+  节数=11 魔数出现=1 未烘过的槽位=1 整段落在 raw data 内=1
+  [通过] 模板里有一处「未烘过」的槽位（否则无槽可烘）
+  [通过] 每一处魔数都整段落在一个节的 raw data 窗口内
+
+=== 3. 启动开销实测（验收标准 ⑦） ===
+  真实工具：C:\nvm4w\nodejs\node.exe
+=== shim 启动开销实测 ===
+模板：C:\Work\EasyEnvForWin\target\release\tuoen-shim.exe
+模板大小：287744 字节
+轮数：每例 40 轮，前 6 轮预热不计；单位毫秒
+release profile：lto=true codegen-units=1 strip=true panic=abort（根 Cargo.toml）
+
+生成的 shim：287744 字节（改写槽位 1 处）
+
+--- 一、纯转发增量（目标是一个什么都不做的小程序）---
+  argdump --noop 直接跑                           最小    4.0  中位    4.5  p90    6.2  最大    6.3  (ms)
+  argdump --noop 经过 shim                       最小   10.7  中位   12.6  p90   14.9  最大   16.3  (ms)
+
+--- 一·自检：转发器真的在转发、真的在等吗 ---
+  shim → argdump --sleep 400 用了 423ms：**确实在等**
+  shim 转发的 stdout 与直接跑**逐字节一致**（ARGV ["C:\\Work\\EasyEnvForWin\\target\\release\\examples\\argdump.exe","-a","b c"]）
+
+--- 二、转发器要真的转发参数 ---
+  argdump -a -b 直接跑                            最小    4.6  中位    5.0  p90    6.7  最大   15.4  (ms)
+  argdump -a -b 经过 shim                        最小   11.2  中位   12.4  p90   15.3  最大   26.7  (ms)
+
+--- 三、真实工具：C:\nvm4w\nodejs\node.exe ---
+  自检：两条路径都给出 "v24.19.0"
+  node.exe --version 直接跑                       最小   18.2  中位   21.0  p90   22.8  最大   29.4  (ms)
+  node.exe --version 经过 shim                   最小   25.6  中位   31.2  p90   39.7  最大   46.1  (ms)
+  → 增量：中位 10.2ms（21.0 → 31.2），即 49%
+
+（Scoop 的原生 shim 报 33–36ms；那是**总量**口径，不是增量。）
+
+=== 结束 ===
+
+  [通过] 启动开销探针正常结束
+  [通过] 器材自检：转发器确实在等子进程
+  [通过] 器材自检：stdout 与直接跑逐字节一致
+  [通过] 量到了转发增量
+
+=== 4. Ctrl-C 对照实验（验收标准 ⑥） ===
+=== shim 的 Ctrl-C 对照实验 ===
+被测 shim：C:\Users\Muelsyse\AppData\Local\Temp\tuoen-platform-shim-ctrlc-223428-0\probe-shim.exe
+
+=== Ctrl-C 对照实验（在私有控制台里跑）===
+
+私有控制台窗口句柄：0xb2446（0 表示没有控制台，实验无效）
+
+── 反例：少写一行的转发器
+   被测：C:\Work\EasyEnvForWin\target\release\examples\naive_forwarder.exe
+   交给它的参数：["C:\\Work\\EasyEnvForWin\\target\\release\\examples\\argdump.exe", "--ignore-ctrlc", "1500"]
+   已起 pid=105060，等 400ms 让它到达「正在睡」的状态
+   GenerateConsoleCtrlEvent(CTRL_C_EVENT, 0) = 1，GetLastError=0
+   它在信号之后 2ms 结束，退出码 0xC000013A
+   子进程名义上还要睡 1500ms
+   判决：**转发器先死了**（0xC000013A = STATUS_CONTROL_C_EXIT）。调用者现在拿回提示符了，而子进程还在后台跑 —— 这正是要避免的
+
+── 我们的 shim
+   被测：C:\Users\Muelsyse\AppData\Local\Temp\tuoen-platform-shim-ctrlc-223428-0\probe-shim.exe
+   交给它的参数：["--ignore-ctrlc", "1500"]
+   已起 pid=275152，等 400ms 让它到达「正在睡」的状态
+   GenerateConsoleCtrlEvent(CTRL_C_EVENT, 0) = 1，GetLastError=0
+   它在信号之后 1112ms 结束，退出码 0x00000007
+   子进程名义上还要睡 1500ms
+   判决：**转发器活到了最后**，等完了子进程，并把它的退出码（7）交了出来 —— 这就是要的行为
+
+执行者退出码：0
+
+  [通过] Ctrl-C 实验在 90 秒内结束
+  [通过] Ctrl-C 实验退出码 0
+  [通过] 实验确实跑在私有控制台上
+  [通过] 反例（少写一行的转发器）**先死了**
+  [通过] 反例的退出码是 STATUS_CONTROL_C_EXIT(0xC000013A)
+  [通过] 我们的 shim **活到了最后**
+  [通过] 我们的 shim 交出了子进程的退出码 7
+  [通过] 实验没有留下任何残留进程
+
+=== 5. 工作区门禁 ===
+test result: ok. 53 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 26 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.28s
+test result: ok. 69 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.25s
+test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.16s
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.80s
+test result: ok. 25 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.80s
+test result: ok. 62 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 47 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.12s
+test result: ok. 65 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 54 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.74s
+test result: ok. 24 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.12s
+test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+  合计：558 passed / 0 failed
+  [通过] cargo test --workspace 退出码 0
+  [通过] cargo test --workspace 零失败
+  [通过] cargo test --workspace 至少跑了 500 条
+    Finished `release` profile [optimized] target(s) in 0.05s
+     Running unittests src\lib.rs (target\release\deps\tuoen_shim-cafefa3fad6054fe.exe)
+
+running 24 tests
+test tests::a_baked_slot_round_trips ... ok
+test tests::a_corrupted_slot_is_rejected_rather_than_guessed ... ok
+test tests::a_script_target_is_refused_with_the_measured_reason ... ok
+test tests::relative_and_odd_targets_are_refused ... ok
+test tests::arguments_that_need_quotes_get_them ... ok
+test tests::a_prefix_that_does_not_fit_is_refused_before_anything_is_written ... ok
+test tests::embedded_quotes_and_trailing_backslashes_follow_the_crt_rules ... ok
+test tests::plain_arguments_are_not_quoted ... ok
+test tests::error_kinds_are_stable_lowercase_slugs_and_unique ... ok
+test tests::prefix_target_unquotes_the_path_we_wrote ... ok
+test tests::render_prefix_quotes_the_target_and_every_prefix_argument ... ok
+test tests::split_handles_a_bare_program_name ... ok
+test tests::split_handles_a_quoted_program_name ... ok
+test tests::split_handles_an_unquoted_full_path_without_spaces ... ok
+test tests::split_preserves_the_rest_byte_for_byte ... ok
+test tests::split_skips_leading_whitespace ... ok
+test tests::the_refusal_message_names_the_mechanism_not_just_the_rule ... ok
+test tests::the_slot_size_is_what_the_documented_layout_says ... ok
+test tests::unsafe_shim_names_are_refused ... ok
+test tests::the_template_slot_is_not_decodable ... ok
+test tests::a_missing_template_lists_every_place_it_looked ... ok
+test tests::same_file_sees_through_dots_case_and_the_file_name_itself ... ok
+test tests::a_template_beside_the_exe_is_found ... ok
+test tests::the_env_var_wins_and_a_broken_one_says_so ... ok
+
+test result: ok. 24 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running unittests src\main.rs (target\release\deps\tuoen_shim-5e0d3eacc5e1aa87.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests\shim_contract.rs (target\release\deps\shim_contract-fe20f60a81577473.exe)
+
+running 19 tests
+test refusals_are_specific_and_happen_before_anything_is_written ... ok
+test a_foreign_file_in_the_shim_directory_is_not_overwritten ... ok
+test the_script_refusal_explains_the_mechanism ... ok
+test the_template_contains_the_slot_magic ... ok
+test every_slot_in_the_template_gets_baked ... ok
+test the_generated_shim_carries_its_target_in_its_own_bytes ... ok
+test a_self_referencing_shim_cannot_be_generated ... ok
+test a_foreign_file_is_not_accepted_as_a_template ... ok
+test the_raw_template_refuses_to_run_and_says_what_it_is ... ok
+test exception_codes_are_forwarded_bit_for_bit ... ok
+test stdio_pipes_work_through_the_shim ... ok
+test baked_prefix_arguments_come_first_and_exactly ... ok
+test the_empty_argument_case_survives_because_we_never_requote ... ok
+test a_self_referencing_shim_is_also_stopped_at_runtime ... ok
+test a_shim_for_a_vanished_target_fails_loudly_instead_of_pretending ... ok
+test regenerating_replaces_the_shim_and_the_new_one_runs ... ok
+test exit_codes_are_forwarded_including_the_all_ones_code ... ok
+test raw_command_lines_are_sliced_like_the_crt_would ... ok
+test arguments_reach_the_target_verbatim ... ok
+
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.97s
+
+   Doc-tests tuoen_shim
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+  [通过] cargo test --release -p tuoen-shim 退出码 0（常量折叠只在 release 下出现）
+    Finished `dev` profile [optimized + debuginfo] target(s) in 0.16s
+
+  [通过] cargo clippy -D warnings 退出码 0
+
+  [通过] cargo fmt --all --check 退出码 0
+
+=== 6. 验收没有碰真实机器 ===
+  [通过] 真实的 %LOCALAPPDATA%\tuoen\shims 不存在
+  真实家目录顶层：store
+
+=== 结论 ===
+检查 25 项，失败 0 项
+全部通过。

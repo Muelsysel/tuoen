@@ -22,6 +22,11 @@ tuoen-manifest.workspace = true
 tuoen-download.workspace = true
 tuoen-archive.workspace = true
 tuoen-store.workspace = true
+# shim 生成器。CLI 是**唯一**会写 shim 的地方：`crates/shim` 只提供
+# 「给定模板与规格、把槽位烘进副本」这一个动作，目录布局与命令映射都在 CLI 侧。
+# 反过来说，`crates/shim` 的依赖图里只有 `windows-sys` —— 因为 shim 二进制的
+# 启动开销直接落在用户敲的每一条命令上（实测增量约 9ms）。
+tuoen-shim.workspace = true
 clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true

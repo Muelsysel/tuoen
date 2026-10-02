@@ -463,6 +463,7 @@ dependencies = [
  "tuoen-download",
  "tuoen-manifest",
  "tuoen-platform",
+ "tuoen-shim",
  "tuoen-store",
 ]
 
@@ -515,9 +516,9 @@ dependencies = [
 name = "tuoen-shim"
 version = "0.1.0"
 dependencies = [
- "serde",
  "serde_json",
- "thiserror",
+ "tuoen-platform",
+ "windows-sys",
 ]
 
 [[package]]

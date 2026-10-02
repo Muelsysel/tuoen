@@ -30,6 +30,7 @@ tuoen-manifest = { path = "crates/manifest" }
 tuoen-download = { path = "crates/download" }
 tuoen-archive = { path = "crates/archive" }
 tuoen-store = { path = "crates/store" }
+tuoen-shim = { path = "crates/shim" }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -8,6 +8,7 @@ use clap::{Args, Parser, Subcommand};
 use crate::catalog::CatalogCommand;
 use crate::detect::DetectArgs;
 use crate::manage::{InstallArgs, UninstallArgs, UseArgs};
+use crate::shim::ShimCommand;
 
 /// 拓境 — 让你的 Windows 开发环境可搬运、可复现。
 #[derive(Debug, Parser)]
@@ -108,6 +109,28 @@ pub enum Command {
 这个命令**只删 tuoen 自己装的东西**。别人装的（winget / Scoop / nvm…）
 不在存储里，也不归我们管。"#)]
     Uninstall(UninstallArgs),
+
+    /// 把工具的命令以真 `.exe` 的形式放到 `PATH` 上（shim）。
+    #[command(
+        subcommand,
+        long_about = r#"把工具的命令以**真 `.exe`** 的形式放到 `PATH` 上。
+
+为什么必须是自己发 `.exe`：进程的 `PATH` 是「机器条目在前、用户条目在后」，
+所以用户级工具**永远输掉名字冲突**，只能靠一个真的可执行文件抢回名字（决策 10）；
+而 `.cmd` / `.ps1` 在 Node ≥18.20.2 之后**无法被 spawn**（CVE-2024-27980），
+参数还要再过一遍 cmd 的解析器。
+
+shim 把目标路径**烘进二进制**，运行时一个文件都不读。它指向
+`<存储>/<工具>/current`（一个链接），**不是**某个具体版本目录 ——
+所以切版本（`tuoen use`）**不必重新生成 shim**（决策 11）。
+
+shim 目录与存储**并列**（`<家目录>/shims`），不在 `store/` 里面：
+`store/` 可以被清空重来，而 `PATH` 上那批文件是用户环境的一部分。
+
+**这一族不改 `PATH`。** 它只把文件放进 shim 目录；要让它生效，
+把这个目录加进 `PATH`（`tuoen shim path` 给你它的绝对路径）。"#
+    )]
+    Shim(ShimCommand),
 }
 
 #[derive(Debug, Args)]
@@ -171,5 +194,18 @@ mod tests {
             Command::Install(_)
         ));
         assert!(Cli::try_parse_from(["tuoen", "catalog", "install", "node"]).is_err());
+    }
+
+    #[test]
+    fn the_shim_family_is_top_level() {
+        // shim 会**往 PATH 上放可执行文件**（以及删掉它们）—— 与 `catalog` 那种
+        // 只读目录的命令不是一类，藏进 catalog 会让"看一眼"和"改 PATH"看起来一样。
+        assert!(matches!(
+            Cli::try_parse_from(["tuoen", "shim", "list"])
+                .expect("parse")
+                .command,
+            Command::Shim(_)
+        ));
+        assert!(Cli::try_parse_from(["tuoen", "catalog", "shim", "list"]).is_err());
     }
 }

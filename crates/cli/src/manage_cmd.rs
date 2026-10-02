@@ -339,7 +339,11 @@ fn newest_installable(catalog: &Catalog, tool: &str, platform: &str) -> Option<S
     installable.into_iter().next()
 }
 
-fn load_catalog() -> Result<Catalog, ManageError> {
+/// 加载种子目录。失败时把**全部**校验问题打出来并返回一条运行期错误。
+///
+/// `pub(crate)` 是因为 `shim_cmd` 也要用它：**"内置目录无效是一个 bug"这句话
+/// 只该有一份**，而两个模块各写一遍的结果是某一天其中一个开始说别的话。
+pub(crate) fn load_catalog() -> Result<Catalog, ManageError> {
     tuoen_manifest::load_seed().map_err(|err| {
         ManageError::new(
             "seed-catalog-invalid",
