@@ -213,7 +213,7 @@ fn the_json_shape_is_frozen_and_an_empty_root_is_still_listed() {
     let envelope = json(&output);
     assert!(envelope.ok, "{:?}", envelope.error);
     assert_eq!(envelope.command, "globals.list");
-    assert_eq!(envelope.schema_version, 1);
+    assert_eq!(envelope.schema_version, 2);
     let data = envelope.data.expect("成功载荷有 data");
 
     // ---- roots：两个根，而且**还没有**的那两个也在 ----
@@ -484,7 +484,10 @@ fn capture_reports_the_source_of_every_globals_row() {
     let first = fixture.run(&["capture", "--only", "globals", "--out", &out_dir, "--json"]);
     assert_eq!(first.status.code(), Some(0), "{}", stderr(&first));
     let envelope = json(&first);
-    assert_eq!(envelope.schema_version, 1, "加法变更**不**递增格式版本");
+    assert_eq!(
+        envelope.schema_version, 2,
+        "加法变更**不**递增格式版本（2 来自决策 189 的那次删除）"
+    );
     let globals = envelope.data.expect("data")["globals"].clone();
     let by_tool = globals["byTool"].as_array().expect("byTool");
     assert_eq!(

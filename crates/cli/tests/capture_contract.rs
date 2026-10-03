@@ -600,7 +600,7 @@ fn json_is_stable_and_agrees_with_the_files_on_disk() {
     let output = run_capture(&home, &args);
     assert_eq!(output.status.code(), Some(0), "{}", describe(&output));
     let envelope = json(&output);
-    assert_eq!(envelope.schema_version, 1);
+    assert_eq!(envelope.schema_version, 2);
     assert_eq!(envelope.command, "capture");
     assert!(envelope.ok, "{:?}", envelope.error);
     assert!(envelope.error.is_none());

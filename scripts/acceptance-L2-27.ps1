@@ -574,6 +574,15 @@ $gj = Get-Payload $gl
 Check '--json 有 data 信封' ($null -ne $gj) "keys=$(PropNames $gj)"
 Check '--json 里没有 CJK（稳定不本地化）' (Test-NoCjk $gl.Stdout) ''
 
+# 信封自己那一层（**不是** `data`）：决策 189 删掉了 `shim.remove` 的 `not-found` 状态与
+# 错误码、决策 208 改掉了 `--apply` 失败时的 `ok` ⇒ 按 `envelope.rs` 自己的规则递增到 2。
+# 这是脚本里**唯一**一处断言信封版本，钉的就是"这一版是 2"。
+$glEnv = $gl.Stdout | ConvertFrom-Json
+Check '信封的 schemaVersion = 2（决策 189 的删除 + 决策 208 的 ok 语义）' `
+    ((Prop $glEnv 'schemaVersion') -eq 2) "schemaVersion=$(Prop $glEnv 'schemaVersion')"
+Check '信封的 ok = true（成功载荷）' ((Prop $glEnv 'ok') -eq $true) "ok=$(Prop $glEnv 'ok')"
+Check '信封里没有 error 键（成功载荷不出它）' ((PropNames $glEnv) -notcontains 'error') "keys=$(PropNames $glEnv)"
+
 $roots = @(Arr $gj 'roots')
 Check 'roots 里两个工具都在（空的根也要出）' ($roots.Count -eq 2) "count=$($roots.Count)"
 foreach ($t in @('npm', 'pip')) {

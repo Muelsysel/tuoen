@@ -261,7 +261,7 @@ fn shell_dry_run_json_has_the_frozen_shape() {
     );
 
     let envelope = json(&output);
-    assert_eq!(envelope.schema_version, 1, "{}", describe(&output));
+    assert_eq!(envelope.schema_version, 2, "{}", describe(&output));
     assert_eq!(envelope.command, "shell");
     assert!(envelope.ok, "{}", describe(&output));
     let data = envelope.data.expect("成功必须有 data");

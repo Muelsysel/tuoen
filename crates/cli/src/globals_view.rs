@@ -3,7 +3,7 @@
 //! # `--json` 的形状是**冻结**的
 //!
 //! ```jsonc
-//! { "schemaVersion": 1, "command": "globals.list", "ok": true, "data": {
+//! { "schemaVersion": 2, "command": "globals.list", "ok": true, "data": {
 //!     "roots":    [ { "tool": "npm", "root": "C:\\…\\globals\\npm\\v24.19.0", "source": "tuoen" } ],
 //!     "packages": [ { "tool": "npm", "name": "pnpm", "version": "11.21.0", "source": "machine",
 //!                     "binNames": ["pn", "pnpm", "pnpx", "pnx"] } ] } }

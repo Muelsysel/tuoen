@@ -100,7 +100,7 @@ fn detect_json_envelope_has_the_expected_shape() {
     assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
 
     let envelope = json(&output);
-    assert_eq!(envelope.schema_version, 1);
+    assert_eq!(envelope.schema_version, 2);
     assert_eq!(envelope.command, "detect");
     assert!(envelope.ok);
     assert!(envelope.error.is_none());

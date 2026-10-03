@@ -6,17 +6,23 @@
 //! 形状固定为：
 //!
 //! ```json
-//! {"schemaVersion":1,"command":"list","ok":true,"data":{"tools":[]}}
-//! {"schemaVersion":1,"command":"list","ok":false,"error":{"code":"io","message":"…"}}
+//! {"schemaVersion":2,"command":"list","ok":true,"data":{"tools":[]}}
+//! {"schemaVersion":2,"command":"list","ok":false,"error":{"code":"io","message":"…"}}
 //! ```
 //!
 //! **`schemaVersion` 是破坏性变更的哨兵**：键名、命令名、错误码的改动都要递增它。
 //! 错误码是**稳定的机器可读字符串**，与中文消息分开 —— 中文消息可以改，错误码不能。
+//!
+//! **v2**：删掉 `shim.remove` 的 `not-found` 状态与错误码（"本来就不在"改成幂等成功），
+//! 并且 `restore --apply` 有失败时不再报 `ok: true`。两者都是"按旧契约切换"的消费者会踩到的改动。
+//!
+//! **同一个载荷里可能还有第二个 `schemaVersion`** —— `capture` 那个是 `tuoen.d/` 的**磁盘**格式
+//! （`tuoen_core::capture::SCHEMA_VERSION`），`detect` 那个是它自己载荷的形状版本。它们**不是**这个常量。
 
 use serde::Serialize;
 
 /// 当前的 JSON schema 版本。改动键名 / 命令名 / 错误码时**必须**递增。
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Serialize)]
 pub struct Envelope {
@@ -114,7 +120,7 @@ mod tests {
                 .expect("serialise");
         assert_eq!(
             json,
-            r#"{"schemaVersion":1,"command":"list","ok":true,"data":{"tools":[]}}"#
+            r#"{"schemaVersion":2,"command":"list","ok":true,"data":{"tools":[]}}"#
         );
         assert!(!json.contains("error"), "{json}");
     }
@@ -125,7 +131,7 @@ mod tests {
             serde_json::to_string(&Envelope::err("list", "io", "读不到文件")).expect("serialise");
         assert_eq!(
             json,
-            r#"{"schemaVersion":1,"command":"list","ok":false,"error":{"code":"io","message":"读不到文件"}}"#
+            r#"{"schemaVersion":2,"command":"list","ok":false,"error":{"code":"io","message":"读不到文件"}}"#
         );
         assert!(!json.contains("\"data\""), "{json}");
     }
@@ -133,7 +139,7 @@ mod tests {
     #[test]
     fn schema_version_is_pinned() {
         // 改这个数字是破坏性变更，必须是有意为之。
-        assert_eq!(SCHEMA_VERSION, 1);
+        assert_eq!(SCHEMA_VERSION, 2);
     }
 
     #[test]
@@ -150,7 +156,7 @@ mod tests {
         .expect("serialise");
         assert_eq!(
             json,
-            r#"{"schemaVersion":1,"command":"shim.add","ok":false,"data":{"failed":1},"error":{"code":"target-unreadable","message":"4 条里 1 条没生成出来。"}}"#
+            r#"{"schemaVersion":2,"command":"shim.add","ok":false,"data":{"failed":1},"error":{"code":"target-unreadable","message":"4 条里 1 条没生成出来。"}}"#
         );
     }
 }

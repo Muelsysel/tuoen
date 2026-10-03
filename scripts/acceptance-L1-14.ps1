@@ -291,7 +291,7 @@ function Invoke-InProject {
 $dry = Invoke-InProject -Dir $proj -Arguments @('shell', '--dry-run', '--json') -Name 'shell-dry'
 Check 'shell --dry-run --json 退出码 0' ($dry.Exit -eq 0) ("exit=$($dry.Exit) stderr=$($dry.Stderr)")
 $dj = Get-Json $dry
-Check '载荷结构：schemaVersion/command/ok/data' ($null -ne $dj -and $dj.schemaVersion -eq 1 -and $dj.command -eq 'shell' -and $dj.ok -eq $true)
+Check '载荷结构：schemaVersion/command/ok/data' ($null -ne $dj -and $dj.schemaVersion -eq 2 -and $dj.command -eq 'shell' -and $dj.ok -eq $true)
 Check '成功载荷无 CJK 且无 message 键' ((Test-NoCjk $dry.Stdout) -and (-not [bool]($dry.Stdout -match '"message"')))
 $data = $dj.data
 Check 'shell 是 cmd' ($data.shell -eq 'cmd') $data.shell

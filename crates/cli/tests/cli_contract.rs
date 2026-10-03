@@ -27,7 +27,7 @@ fn list_json_output_is_parseable_and_has_the_contract_shape() {
     );
 
     let envelope = json(&output);
-    assert_eq!(envelope.schema_version, 1, "schema 版本是破坏性变更的哨兵");
+    assert_eq!(envelope.schema_version, 2, "schema 版本是破坏性变更的哨兵");
     assert_eq!(envelope.command, "list");
     assert!(envelope.ok, "成功时 ok 必须为 true");
     assert!(
@@ -53,7 +53,7 @@ fn list_json_is_byte_stable() {
     let second = stdout(&home.run(["list", "--json"]));
     assert_eq!(first, second, "--json 输出必须逐字节稳定");
 
-    let expected = r#"{"schemaVersion":1,"command":"list","ok":true,"data":{"tools":[]}}"#;
+    let expected = r#"{"schemaVersion":2,"command":"list","ok":true,"data":{"tools":[]}}"#;
     assert_eq!(first.trim(), expected);
 }
 

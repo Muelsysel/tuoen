@@ -403,7 +403,7 @@ Check 'doctor --json 退出码 0（有 error 也退 0 —— 票据的规矩）'
 Check 'stderr 为空' ($r1.Stderr.Length -eq 0) $r1.Stderr
 $script:Json = $r1.Stdout | ConvertFrom-Json
 Check 'ok=true 且没有 error 键' ($script:Json.ok -eq $true -and -not ($script:Json.PSObject.Properties.Name -contains 'error'))
-Check 'schemaVersion=1 / command=doctor' ($script:Json.schemaVersion -eq 1 -and $script:Json.command -eq 'doctor')
+Check 'schemaVersion=1 / command=doctor' ($script:Json.schemaVersion -eq 2 -and $script:Json.command -eq 'doctor')
 
 $script:Findings = @($script:Json.data.findings)
 function Findings-Of {

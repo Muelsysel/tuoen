@@ -1087,6 +1087,29 @@ L3 的安全评审要重新看它（已记进 §5 待定项）。
 
 **已知的固定装置瑕疵（如实记）**：`crates/cli/tests/globals_restore_contract.rs` 的固定装置派生出的那一段 npm 版本号是一句 Windows 错误文本（`The system cannot find message text for message number 0x2350 in the message file for Application.`）。测试仍然有效（它比的是自己那一份），但"真实形态是 `v24.19.0`"这件事在那一层没有被覆盖 —— 真机验收覆盖了它。
 
+### 1.28 L2 信封 v2：决策 189 的执行，以及"同一个载荷里的第二个 `schemaVersion`"（决策 210）
+
+**决策 210：信封版本升到 2，而"载荷自己的 `schemaVersion`"一个都不动。**
+
+按决策 189（`shim.remove` 删掉了 `not-found` 状态与错误码 ⇒ 按决策 166 递增）与决策 208（`--apply` 有失败时 `ok` 从 `true` 改成 `false`），把**信封**的 `crates/cli/src/envelope.rs:19` 的 `SCHEMA_VERSION` 从 1 升到 2。逐处清单（17 处）：
+
+- `envelope.rs`：常量本身 + 模块文档里两行 `json` 例子 + 成功/失败/部分成功三条测试字面量 + `fn schema_version_is_pinned()` 里那句 `assert_eq!`（并加了一段 **v2 的说明**：这一版改了什么、为什么）
+- `crates/cli/src/globals_view.rs:6` 的模块文档例子（它画的是信封）
+- 六个契约测试里的信封断言：`cli_contract.rs`（两处，其中一处是**逐字节**字面量）、`capture_contract.rs`、`detect_contract.rs`、`globals_contract.rs`（两处，第二处的消息改成"加法变更**不**递增格式版本（2 来自决策 189 的那次删除）"）、`pin_contract.rs`
+- 两个验收脚本：`scripts/acceptance-L1-13.ps1` 与 `scripts/acceptance-L1-14.ps1`（它们断言的是信封版本）
+- 我自己给 `scripts/acceptance-L2-27.ps1` 加的一条：信封 `schemaVersion == 2` + `ok == true` + 成功载荷里**没有** `error` 键
+
+**陷阱（写在这里，因为它是这一票最容易搞错的地方）**：有的 `--json` 载荷里**同时有两个 `schemaVersion`** —— 顶层那个是**信封**的，`data` 里那个是**载荷自己**的，而且它们**不是同一个契约**：
+
+- `capture` 的 `data.schemaVersion` = `tuoen_core::capture::SCHEMA_VERSION`，是 `tuoen.d/` 的**磁盘**格式版本（`crates/cli/src/capture_cmd.rs:135` 的注释就是这么写的）；
+- `detect` 的 `data.schemaVersion` 是它自己载荷的形状版本（`crates/cli/src/view.rs:317` 里一个字面量）。
+
+两者**都保持 1**。同理不动的还有：`RECORD_SCHEMA_VERSION`（store 的安装记录）、`LOCK_SCHEMA_VERSION`（`crates/core/src/pin/lock.rs:31`）、`TRUST_SCHEMA_VERSION`（`pin/trust.rs:37`）、`SUPPORTED_SCHEMA_VERSION`（`crates/manifest/src/validate.rs:16`）—— 一共**七个**同名或近名的常量，只有第一个是信封。
+
+**门禁**：`cargo fmt --all --check` 0 · `cargo check --workspace --all-targets` 0 · `cargo test --workspace --no-fail-fast` **38 target / 1411 passed / 0 failed** · `clippy -D warnings` 0。
+
+**过程中的一次自伤（记下来，免得再犯）**：改 `envelope.rs` 的文档时，我把注释文本拼进了 PowerShell **双引号**字符串里 —— 里面的反引号被当成转义符吃掉了（`` `not-found `` 里的 `` `n `` 变成换行、`` `restore `` 里的 `` `r `` 变成回车），于是**裸 CR 进了文档注释**，编译报 `bare CR not allowed in doc-comment` 与 `unknown start of token`。教训与 #17 那条是同一族的两个方向：**在 PowerShell 里拼带反引号的文本，一律用单引号字符串或写成文件再拼**。
+
 ---
 ## 2. 平台硬约束（来自本机实测，非推断）
 
