@@ -720,6 +720,23 @@ Check '当前这个 shell 自己也没被污染' ([string]::IsNullOrEmpty($env:N
 
 Section '5. 非空计划：把 pnpm 装进 tuoen 的根（离线）'
 
+# **可重复性**：上一轮验收可能已经把这个包装进了 tuoen 的根，那这一轮的计划就会是
+# `no-change`（"真的装一次"这条断言永远不成立）。所以这里先把**那一个包目录**删掉。
+# 删之前先断言解析出来的路径确实在 tuoen 自己的根下面 —— 绝不删别的东西。
+$pkgDir = Join-Path $script:NpmTree 'node_modules\pnpm'
+if (Test-Path -LiteralPath $pkgDir) {
+    $resolvedPkg = (Resolve-Path -LiteralPath $pkgDir).Path
+    $resolvedBase = (Resolve-Path -LiteralPath $script:TuoenGlobals).Path
+    if ($resolvedPkg.StartsWith($resolvedBase, [System.StringComparison]::OrdinalIgnoreCase)) {
+        Remove-Item -LiteralPath $resolvedPkg -Recurse -Force
+        Note "删掉了上一轮留下的 $resolvedPkg（只删这一个包，好让这一轮真的装一次）"
+    } else {
+        Check '要删的包目录确实在 tuoen 的根下面（绝不动别处）' $false "pkg=$resolvedPkg base=$resolvedBase"
+    }
+} else {
+    Note "tuoen 的根里还没有 pnpm —— 这一轮会是第一次装"
+}
+
 # 快照 = §3 那份真机 capture，但 `globals.toml` 只留 **pnpm 那一行** ——
 # 这样"真的做了什么"是一个能逐项核对的有限动作，而不是"把机器上七个包都装一遍"。
 $snap = Join-Path $root 'snap-1'
@@ -739,6 +756,20 @@ if ($sec1) {
     Note "globals 那一节的键：$((PropNames $sec1) -join ',')"
 }
 Note "计划载荷的键：$((PropNames $p1) -join ',')"
+
+# 票据 #24 §4 的**必需部分**（不是可选项）：快照里的 prefix 不是我们装进去的地方，
+# 所以计划里必须有一条 `globals-prefix-moved` 的意图（只写意图，不写材料）。
+$maCodes = @(Arr $p1 'manualActions' | ForEach-Object { Prop $_ 'code' })
+Check '计划里有一条 globals-prefix-moved 的意图' `
+    ($maCodes -contains 'globals-prefix-moved') "codes=$($maCodes -join ',')"
+
+# 人类输出必须逐字说出来：装进的是 tuoen 的根，**不是**机器自己的那个 prefix。
+# 期望值用 §1 自己量出来的 `npm config get prefix`（不是抄产品的话）。
+$plan1Human = Invoke-Tuoen @('restore', $snap, '--only', 'globals') 'restore plan globals 人类输出'
+Check '人类输出（计划）退出 0' ($plan1Human.Exit -eq 0) "exit=$($plan1Human.Exit)"
+Check '人类输出逐字说出"不在机器自己的 prefix"' `
+    (($plan1Human.Stdout -match '不在') -and ($plan1Human.Stdout -match [regex]::Escape($script:MachinePrefix))) `
+    ("含前缀=$(($plan1Human.Stdout -match [regex]::Escape($script:MachinePrefix))) 含不在=$(($plan1Human.Stdout -match '不在'))")
 
 $apply1 = Invoke-Tuoen @('restore', $snap, '--only', 'globals', '--apply', '--offline', '--json') 'restore apply globals'
 Check 'restore --apply --offline 退出 0' ($apply1.Exit -eq 0) "exit=$($apply1.Exit)"
@@ -806,6 +837,34 @@ if (Test-Path -LiteralPath $shimDir) {
     Note "shim 目录里有 $($all.Count) 个文件：$(@($all | ForEach-Object { $_.Name }) -join ',')"
 } else {
     Note "shim 目录还不存在：$shimDir"
+}
+
+# #25 的核心承诺（票据 §1/§4）：**装好的包要敲得出来** —— pnpm 的每一个 bin 名都要有
+# `.exe` shim，而且 shim 跑出来的东西必须与"真身"逐字相同。
+# 期望的**名字**从装进去的那个包**自己的 `package.json`** 读（不是抄产品的话，也不是写死）。
+$installedPkgJson = Join-Path (Join-Path $script:NpmTree 'node_modules\pnpm') 'package.json'
+$expectBins = @()
+if (Test-Path -LiteralPath $installedPkgJson) {
+    $binField = (Get-Content -LiteralPath $installedPkgJson -Raw | ConvertFrom-Json).bin
+    $expectBins = if ($binField -is [System.Management.Automation.PSCustomObject]) {
+        @($binField.PSObject.Properties | ForEach-Object { $_.Name })
+    } else {
+        @('pnpm')
+    }
+}
+Check '从装进去的 package.json 读到了 pnpm 的 bin 名（票据实测 4 个）' ($expectBins.Count -eq 4) "bins=$($expectBins -join ',')"
+foreach ($b in $expectBins) {
+    Check "shim 目录里有 $b.exe（包的 bin → .exe shim）" (Test-Path -LiteralPath (Join-Path $shimDir "$b.exe")) ''
+}
+$shimPnpm = Join-Path $shimDir 'pnpm.exe'
+if (Test-Path -LiteralPath $shimPnpm) {
+    $viaShim = (Invoke-Program $shimPnpm @('--version')).Stdout.Trim()
+    # "真身" = 机器自己的 pnpm（本机在 `C:\nvm4w\nodejs\pnpm.cmd`，它是个 `.cmd`，
+    # 所以走 cmd.exe /c —— 我们自己的 shim 绝不发 `.cmd`，但**调用**别人的 `.cmd` 是另一回事）。
+    $realCmd = Join-Path $script:MachinePrefix 'pnpm.cmd'
+    $viaReal = if (Test-Path -LiteralPath $realCmd) { (& cmd.exe /d /c "`"$realCmd`" --version" 2>&1 | Out-String).Trim() } else { '' }
+    Check 'shim 的 `pnpm --version` 与真身逐字相同' (($viaShim.Length -gt 0) -and ($viaShim -eq $viaReal)) "shim=$viaShim real=$viaReal"
+    Check 'shim 报的版本就是快照里那个精确版本 11.21.0' ($viaShim -eq '11.21.0') "shim=$viaShim"
 }
 
 if ($WithNetwork) {
