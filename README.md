@@ -6,7 +6,12 @@
 
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#许可证)
 
-**状态：设计阶段（design phase）。尚无可用代码。** 完整设计见 [`docs/DESIGN.md`](docs/DESIGN.md)。
+**状态：L0（安装引擎）与 L1（整机 dev-state 捕获与还原 + 项目级 pin + 环境体检）已完成，
+并在作者本机上通过真机验收；L2（全局包管理）正在实现。** 完整设计见 [`docs/DESIGN.md`](docs/DESIGN.md)。
+
+- **1307 个测试**全绿 · `cargo clippy --workspace --all-targets -- -D warnings` 干净 · `cargo fmt --all --check` 干净
+- L1 真机验收：[`docs/acceptance/L1-18-l1-real-machine.md`](docs/acceptance/L1-18-l1-real-machine.md) —— 六步走完、83 条检查、**诚实结论与未覆盖清单**
+- 设计决策已累积到 **188 条**（`docs/DESIGN.md` §1）
 
 ---
 
@@ -23,7 +28,11 @@
 `tuoen` 的目标是**把一台 Windows 机器的开发状态变成机器可读、可审查、可重建的东西**：
 先 `plan`，再 `diff`，你确认后才 `apply`。
 
-## 核心能力（规划中）
+## 核心能力
+
+**已完成**（L0 / L1，均有真机验收证据）：整机状态捕获与还原、受管的 `PATH`、多版本共存与项目级 pin、
+环境体检诊断、镜像加速。
+**正在实现**（L2）：全局包管理。**计划中**（L3）：离线 bundle、GUI。
 
 | 能力 | 说明 |
 |---|---|
@@ -57,15 +66,32 @@
 
 ## 构建
 
-> 尚未可用 —— 仓库当前处于设计阶段，代码骨架待建。
+```powershell
+cargo build --release      # 产物在 target\x86_64-pc-windows-gnu\release\
+cargo test --workspace     # 1307 个测试
+```
 
-计划中的构建前置条件：Rust 工具链、MSVC Build Tools（GUI 需要）、Node.js（仅 GUI 前端需要）。
+本仓库钉住了工具链（`rust-toolchain.toml`）。**作者机器上的三个实测约束**，别人不必照抄，
+但踩到时的答案在这里：
+
+1. **没有 MSVC Build Tools 时只能走 `x86_64-pc-windows-gnu`**，而 `rust-toolchain.toml` 必须写**完整的 host 三元组**——
+   只写 `"stable"` 会按默认 host（msvc）解析，host 侧的构建脚本与 proc-macro 会
+   `error: linker link.exe not found`。
+2. **rustup 的 `rust-mingw` 组件不提供可用的 `dlltool`**（`windows-sys` 在 GNU target 上需要它生成 import library）。
+   装一份用户级 MinGW-w64 并把它的 `bin` 放进 `PATH` —— **rustc 在 GNU target 下不认 `DLLTOOL_<target>`，
+   它就在 `PATH` 上找 `dlltool.exe`**。
+3. GUI（L3）用 Tauri v2，`src-tauri/` 作为 workspace 成员与 CLI 共用类型；运行需要 WebView2 运行时。
 
 ## 文档
 
 | 文件 | 内容 |
 |---|---|
-| [`docs/DESIGN.md`](docs/DESIGN.md) | 完整设计规格：35 条决策及其理由、平台硬约束、许可与再分发规则 |
+| [`docs/DESIGN.md`](docs/DESIGN.md) | 完整设计规格：**188 条决策**及其理由、平台硬约束、许可与再分发规则 |
+| [`docs/specs/L0-install-engine.md`](docs/specs/L0-install-engine.md) | L0 spec：manifest + 下载校验解压 + 原子安装 + junction 翻转 + shim |
+| [`docs/specs/L1-dev-state.md`](docs/specs/L1-dev-state.md) | L1 spec：捕获 / 体检 / 还原 / 项目级 pin |
+| [`docs/specs/L2-global-packages.md`](docs/specs/L2-global-packages.md) | L2 spec：全局包管理（两个来源 + 按运行时版本隔离） |
+| [`docs/specs/L3-offline-bundle-gui.md`](docs/specs/L3-offline-bundle-gui.md) | L3 spec：离线 bundle + Tauri v2 GUI |
+| [`docs/acceptance/`](docs/acceptance/) | **真机验收**的逐字证据（L0 各票 + L1-12…L1-18） |
 | [`docs/CODE_SIGNING.md`](docs/CODE_SIGNING.md) | 代码签名政策（SignPath Foundation 申请所需） |
 | [`docs/UNSIGNED_BUILD.md`](docs/UNSIGNED_BUILD.md) | **当前版本未签名，运行时 Windows 会警告 —— 先读这个** |
 
@@ -96,6 +122,8 @@ Plan the change, review the diff, then apply. Managed `PATH`, multi-version coex
 per-project pinning, planned elevation, mirror acceleration, offline bundles, and npm/pip global
 package capture.
 
-**Status: design phase — no working code yet.** See [`docs/DESIGN.md`](docs/DESIGN.md).
+**Status: L0 (install engine) and L1 (whole-machine dev-state capture & restore, per-project pinning,
+environment doctor) are complete and verified on a real machine; L2 (global packages) is in progress.**
+See [`docs/DESIGN.md`](docs/DESIGN.md) and [`docs/acceptance/`](docs/acceptance/).
 
 Built in Rust · GUI via Tauri v2 · Licensed MIT OR Apache-2.0
