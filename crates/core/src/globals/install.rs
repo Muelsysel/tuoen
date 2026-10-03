@@ -55,6 +55,7 @@ use crate::detect::DetectContext;
 use crate::restore::manual::{ascii_layout, ascii_token};
 use crate::restore::sections::same_version;
 
+use super::shims::ShimIssue;
 use super::{
     GlobalsRoot, GlobalsSource, GlobalsTool, NPM_PREFIX_VAR, PIP_USER_VALUE, PIP_USER_VAR,
     PYTHONUSERBASE_VAR, UNKNOWN_VERSION,
@@ -167,6 +168,13 @@ pub struct GlobalInstall {
     pub version: String,
     /// 装进哪里：npm → `<base>\npm\<本机 node -v>`，pip → `<base>\pip`。
     pub target: PathBuf,
+    /// 本机那个运行时的版本，**原样的那一个拼法**（`v24.19.0` / `3.12`）。
+    ///
+    /// 它同时是 `target` 最后一段的来源，也是 shim 那一层推导 store 里那个
+    /// **削过的**版本（`24.19.0`）的输入（决策 201：同一个版本两个拼法）。
+    /// 之所以带着它走，是为了让"装进哪儿"与"shim 指向哪儿的 node"读**同一个字符串**
+    /// —— 各算一份的话，漂移的表现是 shim 指向一个不存在的版本目录。
+    pub tool_version: String,
     /// 这个包在快照里的来源（`machine` / `tuoen`，可能两个都有 —— 版本相同时装一次）。
     pub sources: Vec<&'static str>,
     /// 这一趟**要不要网络**：缓存里能解决就是 `false`（票据 #24 §3）。
@@ -446,6 +454,9 @@ pub fn globals_wanted(
                 name,
                 version,
                 target: target_dir.clone(),
+                // `local_version` 是 `Some` 才会走到这里（`version_unknown` 那一支
+                // 对 npm 已经进了 `unsupported`）；给一个明确的空串而不是编一个版本。
+                tool_version: local_version.unwrap_or_default().to_owned(),
                 sources,
                 needs_network,
             });
@@ -601,6 +612,18 @@ pub struct PackageOutcome {
     /// 脱敏时命中过的形状 slug。
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub redactions: Vec<&'static str>,
+    /// 这一趟为这个包**发出来的** shim 命令名（排序去重）。票据 #25。
+    ///
+    /// **只在非空时出键**：`[]` 会被读成"我看过了，它一个命令都没有"，
+    /// 而"这个包没有 bin"和"我们没去发"是两件事。
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub shims: Vec<String>,
+    /// 名字**没能发出来**的那些 + 为什么（`shadowed` / `bin-missing` / `bad-name` …）。
+    ///
+    /// 它是逐包 `result = "skipped-shadowed"` 的证据：一个包的命令名全被占了时，
+    /// 用户必须能看见"被谁抢了"，而不是一条静悄悄的空结果。
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub shim_issues: Vec<ShimIssue>,
 }
 
 /// 一处没做成（进 `apply.failures[]`）。
@@ -664,6 +687,10 @@ pub fn install_globals(
             detail: None,
             output: None,
             redactions: Vec::new(),
+            // shim 是"装成功之后"的独立一步（票据 #25）：这里先把两个键留空，
+            // 由 `restore --only globals --apply` 在**逐包翻转之后**填。
+            shims: Vec::new(),
+            shim_issues: Vec::new(),
         });
     }
     for conflict in &wanted.conflicts {
@@ -688,6 +715,10 @@ pub fn install_globals(
             detail: None,
             output: None,
             redactions: Vec::new(),
+            // shim 是"装成功之后"的独立一步（票据 #25）：这里先把两个键留空，
+            // 由 `restore --only globals --apply` 在**逐包翻转之后**填。
+            shims: Vec::new(),
+            shim_issues: Vec::new(),
         });
     }
     for unsupported in &wanted.unsupported {
@@ -701,6 +732,10 @@ pub fn install_globals(
             detail: Some(format!("reason={}", unsupported.reason)),
             output: None,
             redactions: Vec::new(),
+            // shim 是"装成功之后"的独立一步（票据 #25）：这里先把两个键留空，
+            // 由 `restore --only globals --apply` 在**逐包翻转之后**填。
+            shims: Vec::new(),
+            shim_issues: Vec::new(),
         });
     }
 
@@ -717,6 +752,8 @@ pub fn install_globals(
                 detail: Some("offline=yes cached=no".to_owned()),
                 output: None,
                 redactions: Vec::new(),
+                shims: Vec::new(),
+                shim_issues: Vec::new(),
             });
             report.failures.push(GlobalsFailure {
                 code: FAILURE_NOT_CACHED,
@@ -777,6 +814,8 @@ fn install_one(
         detail: None,
         output: None,
         redactions: Vec::new(),
+        shims: Vec::new(),
+        shim_issues: Vec::new(),
     };
 
     let target = install.target.as_path();
@@ -2045,6 +2084,7 @@ mod tests {
             name: "pypinyin".to_owned(),
             version: "0.55.0".to_owned(),
             target: temp.path.clone(),
+            tool_version: "3.12".to_owned(),
             sources: vec!["machine"],
             needs_network: true,
         };

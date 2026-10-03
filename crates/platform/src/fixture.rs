@@ -346,6 +346,19 @@ pub struct FakeFileSystem {
     /// 与 `index` 分开存：`FileFacts` 是"这个路径的事实"（大小、reparse、链接目标），
     /// 而内容是**另一件事** —— 绝大多数固定装置只需要前者，写一个 `size` 就够了。
     contents: HashMap<String, String>,
+    /// **读过哪些路径**（归一化后的形态，见 [`FakeFileSystem::reads`]）。
+    ///
+    /// `Rc<RefCell<…>>` 与 `FakeRegistry` 同一个理由、同一个做法：克隆一份假文件系统
+    /// 必须克隆出**同一本账**，否则"构造它的人"与"读它的人"各拿一本，断言永远为空。
+    ///
+    /// # 为什么需要这本账（票据 #25）
+    ///
+    /// 有一类断言是"**不许读某个文件**"：npm 会在 `node_modules\.bin` 里生成
+    /// `.cmd` / `.ps1` 转发器，而它们是**产物不是契约**（本仓库绝不发那种东西，
+    /// 决策 10）。固定装置里放一个内容**故意不同**的 `.cmd` 之后，
+    /// "产出的命令名与它无关"是一种**间接**证据；"根本没人打开过它"才是直接证据。
+    /// 没有这本账，那条断言就只能靠间接推断（而"间接口径"正是决策 186 要炸掉的形态）。
+    reads: Rc<RefCell<Vec<String>>>,
 }
 
 impl FakeFileSystem {
@@ -421,7 +434,17 @@ impl FakeFileSystem {
             index,
             dirs,
             contents,
+            reads: Rc::new(RefCell::new(Vec::new())),
         }
+    }
+
+    /// 这本账里**被读过**的路径（归一化后的形态：分隔符统一成 `\`、大小写折叠）。
+    ///
+    /// 给"不许读某个文件"这类断言用，见 `reads` 字段上的说明。**顺序是读取顺序**，
+    /// 同一个路径读两次会出现两次 —— 调用方要的是"**有没有**读过它"。
+    #[must_use]
+    pub fn reads(&self) -> Vec<String> {
+        self.reads.borrow().clone()
     }
 }
 
@@ -499,6 +522,9 @@ impl FileSystem for FakeFileSystem {
     /// 在**没有任何 token 的输入**上通过。前者是唯一不会说谎的那个。
     fn read(&self, path: &Path, limit: u64) -> ReadOutcome {
         let key = normalize_path(&path.to_string_lossy());
+        // 先记账再答：**"读过"这件事与"读没读到"无关** —— 一次落到 NotFound 的读
+        // 也是读（`reads()` 要能看见"有人去够过那个文件"）。
+        self.reads.borrow_mut().push(key.clone());
         let Some(facts) = self.index.get(&key) else {
             return ReadOutcome::NotFound;
         };

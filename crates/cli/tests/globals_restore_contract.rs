@@ -74,7 +74,7 @@ impl Fixture {
         bin.write("machine-prefix.txt", &machine_prefix.display().to_string());
         bin.write("machine-packages.json", machine_packages);
         bin.write("npm.cmd", &npm_script());
-        copy_system_pe(&bin.path().join("node.exe"));
+        copy_fake_node_pe(&bin.path().join("node.exe"));
 
         Self {
             home,
@@ -170,6 +170,64 @@ impl Fixture {
     fn fail_install(&self, name: &str) {
         self.bin.write(&format!("fail-install-{name}.txt"), "1");
     }
+
+    /// 让装出来的包**带上 `bin`**（票据 #25 的固定装置）：`{"<name>":"bin/<name>.mjs",
+    /// "<name>x":"bin/<name>x.mjs"}` 加两个真的载荷文件。
+    ///
+    /// 两个名字是刻意的：一个与包名相同、一个不同（`pn`/`pnx` 是别名那个形状），
+    /// 于是"名字来自 `bin` 的键而不是包名"这件事在断言里是可见的。
+    fn with_bin(&self) {
+        self.bin.write("with-bin.txt", "1");
+    }
+
+    /// 我们自己的 shim 目录（`<LOCALAPPDATA>\tuoen\shims`）。
+    fn shim_dir(&self) -> PathBuf {
+        self.home.local_app_data().join("tuoen").join("shims")
+    }
+
+    /// 产品会拿 `node -v` 的**原样**输出当 npm 那一行的 `tool_version`，
+    /// 而 store 里那个目录名是**削过的**版本（决策 201）。
+    ///
+    /// 这里让测试自己问一次同一个 `node.exe` —— 那是"这台假机器上的 node 版本"
+    /// （一个机器事实），不是产品的输出。
+    fn node_version(&self) -> String {
+        let system_root = std::env::var_os("SystemRoot").expect("SystemRoot 必须存在");
+        let path = format!(
+            "{};{}",
+            self.bin.path().display(),
+            Path::new(&system_root).join("System32").display()
+        );
+        let output = Command::new(self.bin.path().join("node.exe"))
+            .arg("-v")
+            .env("PATH", path)
+            .output()
+            .expect("跑 `node -v`");
+        let text = String::from_utf8_lossy(&output.stdout);
+        let line = text.lines().next().unwrap_or_default().trim().to_owned();
+        assert!(!line.is_empty(), "假 node 必须答得上一句话");
+        // 削前缀是**没得削**：这一串不以 `v` 开头，所以"原样"与"削过"是同一个字符串。
+        // 这正是这个手法能用的前提（真机上那份是 `v24.19.0` / `24.19.0`）。
+        assert!(!line.starts_with('v'), "固定装置的版本不该带 `v`：{line:?}");
+        line
+    }
+
+    /// 在 store 里造出**那个精确版本**的 `node.exe`（决策 200：包 shim 只许指向它）。
+    ///
+    /// 返回 `node\versions\<版本>` 这个目录。
+    fn install_store_node(&self) -> PathBuf {
+        let version = self.node_version();
+        let dir = self
+            .home
+            .local_app_data()
+            .join("tuoen")
+            .join("store")
+            .join("node")
+            .join("versions")
+            .join(&version);
+        std::fs::create_dir_all(&dir).expect("建 store 版本目录");
+        copy_fake_node_pe(&dir.join("node.exe"));
+        dir
+    }
 }
 
 /// 一个假 `npm.cmd`：`config` / `ls` / `pack` / `install` 四件事，按参数分岔。
@@ -243,6 +301,12 @@ fn npm_script() -> String {
      > \"!PKG!\\package.json\" echo {\"name\":\"!NAME!\",\"version\":\"!VER!\"}\r\n\
      > \"!PKG!\\.fake-version\" echo !VER!\r\n\
      > \"%NPM_CONFIG_PREFIX%\\!NAME!.cmd\" echo @echo off\r\n\
+     if not exist \"%~dp0with-bin.txt\" goto maybe_fail\r\n\
+     mkdir \"!PKG!\\bin\" 2>nul\r\n\
+     > \"!PKG!\\package.json\" echo {\"name\":\"!NAME!\",\"version\":\"!VER!\",\"bin\":{\"!NAME!\":\"bin/!NAME!.mjs\",\"!NAME!x\":\"bin/!NAME!x.mjs\"}}\r\n\
+     > \"!PKG!\\bin\\!NAME!.mjs\" echo export {};\r\n\
+     > \"!PKG!\\bin\\!NAME!x.mjs\" echo export {};\r\n\
+     :maybe_fail\r\n\
      if exist \"%~dp0fail-install-!NAME!.txt\" goto install_failed\r\n\
      echo added 1 package\r\n\
      exit /b 0\r\n\
@@ -269,6 +333,46 @@ fn copy_system_pe(destination: &Path) {
             destination.display()
         )
     });
+}
+
+/// 一个**答得像 node** 的假 `node.exe`：系统 `cmd.exe` 的副本 + 它的 MUI 资源。
+///
+/// # 为什么必须连 MUI 一起复制（票据 #25 实测）
+///
+/// 只复制 `cmd.exe` 本体时，改名后的副本**找不到自己的本地化字符串表**，
+/// `node -v` 的第一行会变成
+/// `The system cannot find message text for message number 0x2350 in the message file for Application.`
+/// —— 一个**以点结尾**的字符串。于是它连"版本号"这一关都过不了：
+/// `tuoen_store::layout::check_component` 会以"名字以点或空格结尾"拒掉它
+/// （Win32 会吃掉结尾的点，那个目录名在多数工具里打不开也删不掉），
+/// 于是 npm 的 globals 根名会变成一个**结尾带点**的目录名 ——
+/// 而那正是本模块文档里说的"banner 的原样"。
+///
+/// 把 `<语言>\cmd.exe.mui` 复制成 `<语言>\<副本名>.mui` 之后，副本找回了自己的
+/// 字符串表，`node -v` 报的就是货真价实的
+/// `Microsoft Windows [Version 10.0.…]` —— 与真 node 的 `v24.19.0` 同一种形状。
+/// **不许硬编码语言目录名**：逐个列 `System32` 下的一层目录，见到
+/// `cmd.exe.mui` 就复制 —— 开发机的系统语言不进契约（`AGENTS.md` 规矩五）。
+fn copy_fake_node_pe(destination: &Path) {
+    copy_system_pe(destination);
+    let system32 = Path::new(&std::env::var_os("SystemRoot").expect("SystemRoot")).join("System32");
+    let Some(name) = destination.file_name().and_then(|name| name.to_str()) else {
+        return;
+    };
+    let mui = format!("{name}.mui");
+    for entry in std::fs::read_dir(&system32).into_iter().flatten().flatten() {
+        let source = entry.path().join("cmd.exe.mui");
+        if !source.is_file() || !entry.path().is_dir() {
+            continue;
+        }
+        let target_dir = destination
+            .parent()
+            .unwrap_or(&system32)
+            .join(entry.file_name());
+        if std::fs::create_dir_all(&target_dir).is_ok() {
+            let _ = std::fs::copy(&source, target_dir.join(&mui));
+        }
+    }
 }
 
 fn describe(output: &Output) -> String {
@@ -637,4 +741,228 @@ fn a_failed_package_does_not_stop_the_others() {
         staging_after, staging_before,
         "失败那一趟不许动别的任何东西"
     );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 五、shim（#25）：装好的包要**敲得出来**
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// 模板与 CLI 在同一个目录里（`target/<profile>`）—— 这是本仓库找模板的规矩，
+/// 而下面几条"真的发出了 `.exe`"的用例**依赖它**。所以它必须先被证明，
+/// 不能让"模板不在"表现成"产品没发 shim"（`AGENTS.md`：一条不能失败的测量不是测量）。
+fn assert_template_is_next_to_the_cli() {
+    let exe = std::env::current_exe().expect("测试可执行文件的位置");
+    let profile = exe
+        .parent()
+        .and_then(Path::parent)
+        .expect("target/<profile>");
+    for name in ["tuoen.exe", "tuoen-shim.exe"] {
+        let path = profile.join(name);
+        assert!(
+            path.is_file(),
+            "`{}` 必须存在（`cargo test` 会构建全部 bin）：摸一下 `cargo build --bins`",
+            path.display()
+        );
+    }
+}
+
+/// 装好的包 → `PATH` 上的 `.exe` shim：名字来自包自己的 `bin`，目标是 store 里
+/// **那个精确版本**的 `node.exe` + 包里的载荷。
+#[test]
+fn apply_publishes_exe_shims_for_the_installed_bins() {
+    assert_template_is_next_to_the_cli();
+    let fixture = Fixture::new("shims", MACHINE_ONE);
+    let snap = fixture.snapshot("snap-1");
+    fixture.with_bin();
+    let store_version_dir = fixture.install_store_node();
+    let before = registry_snapshot();
+
+    let (data, output) = plan_data(&fixture, &snap, &["--apply", "--offline"]);
+    assert_eq!(output.status.code(), Some(0), "{}", describe(&output));
+
+    // ① 逐包结果：装上了，而且带着**它发出来的命令名**（名字来自包自己的 `bin`）。
+    let pnpm = packages(&data, "globals")
+        .iter()
+        .find(|package| package["name"] == "pnpm")
+        .expect("pnpm 那一条")
+        .clone();
+    assert_eq!(pnpm["result"], "installed", "{pnpm}");
+    assert_eq!(
+        pnpm["shims"],
+        serde_json::json!(["pnpm", "pnpmx"]),
+        "两个名字都来自 `bin`（`pnpmx` 与包名不同，正是别名那个形状）：{pnpm}"
+    );
+
+    // ② 盘上真的有两个 `.exe`，而且**没有** `.cmd` / `.ps1`（铁律）。
+    let shim_dir = fixture.shim_dir();
+    for name in ["pnpm.exe", "pnpmx.exe"] {
+        let path = shim_dir.join(name);
+        assert!(path.is_file(), "`{}` 必须存在", path.display());
+    }
+    let forbidden: Vec<String> = std::fs::read_dir(&shim_dir)
+        .expect("shim 目录")
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.ends_with(".cmd") || name.ends_with(".ps1"))
+        .collect();
+    assert!(forbidden.is_empty(), "绝不发 .cmd / .ps1：{forbidden:?}");
+
+    // ③ 烘进去的那条命令行**就是** store 的精确版本 + 包里的载荷。
+    //    `shim list` 解的是二进制里的槽位，所以这是"写进去的是什么"的直接证据
+    //    （真机验收里那一步是"跑起来与真身逐字比"，测试里只能查到这个层面）。
+    let listed = fixture.run(&["shim", "list", "--json"]);
+    assert_eq!(listed.status.code(), Some(0), "{}", describe(&listed));
+    let listed = json(&listed).data.expect("shim list 的 data");
+    let entry = listed["shims"]
+        .as_array()
+        .expect("shims 是数组")
+        .iter()
+        .find(|entry| entry["command"] == "pnpm")
+        .expect("`pnpm.exe` 那一条")
+        .clone();
+    assert_eq!(entry["status"], "ok", "{entry}");
+    assert_eq!(
+        entry["target"].as_str(),
+        Some(
+            store_version_dir
+                .join("node.exe")
+                .to_string_lossy()
+                .as_ref()
+        ),
+        "目标必须是 store 里那个**精确版本目录**的 node.exe（决策 200）：{entry}"
+    );
+    assert_eq!(entry["targetExists"], true, "{entry}");
+    let prefix = entry["prefix"].as_str().expect("prefix");
+    assert!(prefix.contains("pnpm.mjs"), "前缀参数是那个脚本：{prefix}");
+    assert!(
+        prefix.contains("bin"),
+        "前缀参数是包目录里的相对路径拼出来的：{prefix}"
+    );
+
+    // ④ 节里的三个加法键：分母（我们发了哪些）与遮蔽（有没有被抢）**分开**。
+    let outcome = section(&data["apply"], "globals");
+    assert_eq!(
+        outcome["shimDir"].as_str(),
+        Some(shim_dir.to_string_lossy().as_ref()),
+        "{outcome}"
+    );
+    assert_eq!(
+        outcome["shimCommands"],
+        serde_json::json!(["pnpm", "pnpmx"]),
+        "分母是 shim 目录里真的有的那些 `.exe`：{outcome}"
+    );
+    // 这本机 `PATH` 只有临时 `bin` + `System32` ⇒ 不可能命中 `pnpm.cmd`。
+    // 分母非空，所以"没被抢"这句话是有内容的（不是"没得比"）。
+    assert!(outcome["shadowedShims"].is_null(), "{outcome}");
+
+    assert_registry_unchanged(before, "发 shim");
+}
+
+/// store 里没有那个精确版本的 `node.exe` ⇒ **报告**，一条 shim 都不发，
+/// 而且**绝不**退回机器自己的 node（决策 200：那会是一个不报错的假话）。
+#[test]
+fn a_missing_store_node_is_reported_and_no_shim_is_written() {
+    assert_template_is_next_to_the_cli();
+    let fixture = Fixture::new("no-store-node", MACHINE_ONE);
+    let snap = fixture.snapshot("snap-1");
+    fixture.with_bin();
+    // 刻意**不**建 store 里那个版本目录。
+
+    let (data, output) = plan_data(&fixture, &snap, &["--apply", "--offline"]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "包装上了就是成功 —— 发不出 shim 是一件事，不是安装失败：{}",
+        describe(&output)
+    );
+    let pnpm = packages(&data, "globals")[0].clone();
+    assert_eq!(pnpm["result"], "installed", "{pnpm}");
+    assert!(pnpm["shims"].is_null(), "一条都不许发：{pnpm}");
+    let issues = pnpm["shimIssues"].as_array().expect("shimIssues");
+    assert_eq!(issues.len(), 2, "{pnpm}");
+    assert!(
+        issues.iter().all(|issue| issue["reason"] == "node-missing"),
+        "原因要说出来（而不是静默退回机器侧的 node）：{pnpm}"
+    );
+    assert!(
+        !fixture.shim_dir().join("pnpm.exe").exists(),
+        "store 里没有那一版 node ⇒ 一条 shim 都不该出现"
+    );
+}
+
+/// 两个名字都被**别人的文件**占着 ⇒ 逐包结果是 `skipped-shadowed`（票据 #25 §4：
+/// 这个词表成员**只**由这一票产出），而且别人的文件一个字节都不许被改。
+#[test]
+fn a_package_whose_names_are_taken_reports_skipped_shadowed() {
+    assert_template_is_next_to_the_cli();
+    let fixture = Fixture::new("shadowed", MACHINE_ONE);
+    let snap = fixture.snapshot("snap-1");
+    fixture.with_bin();
+    fixture.install_store_node();
+
+    // 第一趟：真的发出来了（先证明"没被抢"时的样子）。
+    let (data, output) = plan_data(&fixture, &snap, &["--apply", "--offline"]);
+    assert_eq!(output.status.code(), Some(0), "{}", describe(&output));
+    assert_eq!(results(&data, "globals"), ["installed"]);
+    assert_eq!(
+        packages(&data, "globals")[0]["shims"],
+        serde_json::json!(["pnpm", "pnpmx"]),
+        "{data}"
+    );
+
+    let shim_dir = fixture.shim_dir();
+    let occupied = "not-a-shim";
+    for name in ["pnpm.exe", "pnpmx.exe"] {
+        assert!(
+            shim_dir.join(name).is_file(),
+            "{}",
+            shim_dir.join(name).display()
+        );
+        std::fs::write(shim_dir.join(name), occupied).expect("写一个占位文件");
+    }
+    // 让这一趟**真的要装**（不删的话计划是 `no-change`，走不到发 shim 那一步）。
+    std::fs::remove_dir_all(fixture.npm_root().join("node_modules").join("pnpm")).expect("删掉包");
+
+    // 人类输出先看一眼（它要能说出"被谁占了"）。
+    let human = fixture.run(&[
+        "restore",
+        &snap.display().to_string(),
+        "--only",
+        "globals",
+        "--apply",
+        "--offline",
+    ]);
+    assert_eq!(human.status.code(), Some(0), "{}", describe(&human));
+    let text = stdout(&human);
+    assert!(text.contains("没发出来"), "{text}");
+    assert!(text.contains("已经被别人占了"), "{text}");
+    assert!(text.contains("by=file:"), "要点名被谁占了：{text}");
+
+    // 机器可读那一份：同一个局面（把包再删一次，让它重新成为"要装的那一个"）。
+    std::fs::remove_dir_all(fixture.npm_root().join("node_modules").join("pnpm")).expect("删掉包");
+    let (data, output) = plan_data(&fixture, &snap, &["--apply", "--offline"]);
+    assert_eq!(output.status.code(), Some(0), "{}", describe(&output));
+    assert_eq!(
+        results(&data, "globals"),
+        ["skipped-shadowed"],
+        "一个名字都没发出来、且都是被占 ⇒ 那是 skipped-shadowed：{data}"
+    );
+    let pnpm = packages(&data, "globals")[0].clone();
+    let issues = pnpm["shimIssues"].as_array().expect("shimIssues");
+    assert_eq!(issues.len(), 2, "{pnpm}");
+    assert!(
+        issues.iter().all(|issue| issue["reason"] == "shadowed"
+            && issue["detail"]
+                .as_str()
+                .is_some_and(|detail| detail.starts_with("by=file:"))),
+        "{pnpm}"
+    );
+    // **不覆盖**：那两个文件逐字未变。
+    for name in ["pnpm.exe", "pnpmx.exe"] {
+        assert_eq!(
+            std::fs::read_to_string(shim_dir.join(name)).expect("读占位文件"),
+            occupied,
+            "别人的文件一个字节都不许动"
+        );
+    }
 }

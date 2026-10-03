@@ -10,6 +10,9 @@
 //!   （票据 #24）。它是 `restore --only globals --apply` 的引擎，**纯函数部分**
 //!   （`globals_wanted`）与**会起进程的部分**（`probe_npm_cache` / `install_globals`）
 //!   分得很清楚 —— 计划与执行读的是同一个分类函数。
+//! * [`shims`] —— 装好之后**要发哪些 `.exe` shim**（票据 #25）：名字与目标怎么来、
+//!   `node.exe` 从 store 的哪个精确版本目录取（决策 200/201）、以及"这个名字被谁占了"
+//!   （逐包 `skipped-shadowed` 的唯一产地）。
 //!
 //! # 枚举不在这里
 //!
@@ -22,6 +25,7 @@ mod bins;
 mod install;
 mod listing;
 mod root;
+mod shims;
 
 pub use install::{
     FAILURE_INSTALL_FAILED, FAILURE_NEEDS_NETWORK, FAILURE_NOT_CACHED, FAILURE_VERSION_NOT_FOUND,
@@ -39,6 +43,11 @@ pub use listing::{
 pub use root::{
     GlobalsRoot, GlobalsRootError, GlobalsTool, NPM_PREFIX_VAR, PIP_USER_VALUE, PIP_USER_VAR,
     PYTHONUSERBASE_VAR, UNKNOWN_VERSION,
+};
+pub use shims::{
+    CommandDecision, NodeExe, Occupied, PackageShims, REASON_BIN_MISSING, REASON_NO_TARGET,
+    REASON_NODE_MISSING, REASON_NODE_VERSION_UNSAFE, REASON_SHADOWED, ShimIssue, commands_for,
+    node_exe_for, resolve,
 };
 // crate 内部还要用它：`capture` 的 `globals` 那一节按同一套规则算根（决策 187 的
 // 那一条 —— `LOCALAPPDATA` 在**进程**环境里，注册表里根本没有它）。

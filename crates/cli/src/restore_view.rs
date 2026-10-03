@@ -106,6 +106,23 @@ pub(crate) struct SectionOutcome {
     /// 只在非空时出键：别的四节没有"包"这个粒度，出一个空数组会被读成"一个包都没成"。
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub(crate) packages: Vec<PackageOutcome>,
+    /// 我们发布 shim 的那个目录（票据 #25）。`None` = **这一趟没有查遮蔽**。
+    ///
+    /// 与 `shadowedShims: []` 必须分得开：后者是"查了，一条都没被抢"。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) shim_dir: Option<String>,
+    /// 我们的 shim 目录里发布了哪些命令（`<名字>`，已排序）—— `shadowedShims` 的**分母**。
+    ///
+    /// 三态（`path_view.rs` 记着这条教训）：
+    /// `None` = 这次没查；`Some([])` = 查了、我们一条都没发；`Some([…])` = 发了这些。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) shim_commands: Option<Vec<String>>,
+    /// 发出来的命令里**仍然**被 `PATH` 上更靠前的条目抢走的那些。
+    ///
+    /// 形状与 `path show --json` 的 `shadowedShims` **逐字相同**（同一个
+    /// [`crate::path_view::ShadowedView`]）：同一件事在两处长得不一样，用户就得学两遍。
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(crate) shadowed_shims: Vec<crate::path_view::ShadowedView>,
 }
 
 /// 一处没做成。**全 ASCII**：成功载荷要能逐字节比对，中文只进人类输出。
@@ -290,7 +307,27 @@ fn print_section(section: &SectionPlan, username: &Username, outcome: Option<&Se
                     package_result_prose(package.result)
                 ),
             }
+            // shim（票据 #25）：**哪些命令发出来了、哪些没发、被谁占了**。
+            // 这一层必须逐条说，因为用户唯一直接感受到的就是"敲不敲得出来"。
+            if !package.shims.is_empty() {
+                println!("    发出来的命令：{}", package.shims.join(", "));
+            }
+            for issue in &package.shim_issues {
+                match &issue.detail {
+                    Some(detail) => println!(
+                        "    · 命令 `{}` 没发出来：{}（{detail}）",
+                        issue.command,
+                        shim_reason_prose(issue.reason)
+                    ),
+                    None => println!(
+                        "    · 命令 `{}` 没发出来：{}",
+                        issue.command,
+                        shim_reason_prose(issue.reason)
+                    ),
+                }
+            }
         }
+        print_shims(outcome);
     }
 
     if let Some(note) = &section.note {
@@ -422,6 +459,82 @@ fn package_result_prose(result: &str) -> &str {
         RESULT_UNSUPPORTED => "做不到",
         RESULT_SKIPPED_SHADOWED => "被同名的命令遮住了，跳过",
         other => other,
+    }
+}
+
+/// 一条命令"没发出来"的原因 slug → 中文（票据 #25）。
+///
+/// 词表横跨两个来源（**都不是这一层自己编的**）：core 的四个常量
+/// （`no-target` / `bin-missing` / `node-missing` / `node-version-unsafe` /
+/// `shadowed`）与 `tuoen_shim::ShimError::kind()` 的那一组。`_ =>` 把 slug 原样
+/// 打出去：一句没翻译的 slug 也比一句编出来的中文强（编的那句会看起来更可信）。
+fn shim_reason_prose(reason: &str) -> &str {
+    match reason {
+        "shadowed" => "这个名字已经被别人占了（**不覆盖**）",
+        "no-target" => "`bin` 的值不是包内的相对路径（包外的东西我们不指路）",
+        "bin-missing" => "`bin` 指向的载荷在盘上不存在",
+        "node-missing" => "store 里没有这个精确版本的 node.exe（**绝不退回别的 node**）",
+        "node-version-unsafe" => "版本号那一段不合法，连拼路径都不该拼",
+        "bad-name" => "这个名字在 Windows 上不安全（保留设备名 / 非法字符 / 结尾是点或空格）",
+        "script-target" => "目标是脚本，shim 不能直接转发（改成 `node.exe` + 前缀参数）",
+        "target-not-absolute" => "目标不是绝对路径",
+        "target-contains-quote" => "目标路径里有引号",
+        "target-ends-with-separator" => "目标路径以分隔符结尾",
+        "prefix-too-long" => "前缀参数太长，放不进 shim 的槽位",
+        "prefix-nul" => "前缀参数里有 NUL（会把命令行截断）",
+        "target-unreadable" => "读不到那个目标（多半已经被卸载）",
+        "target-not-a-file" => "目标存在但不是普通文件",
+        "dest-not-a-shim" => "落盘位置上已经有一个**不是我们的**文件（不许覆盖）",
+        "dest-is-target" => "落盘路径与目标路径是同一个文件（事故守卫）",
+        "dest-is-template" => "落盘路径就是模板本身（事故守卫）",
+        "template-missing" => "找不到 shim 模板（`tuoen-shim.exe` 不在 tuoen 旁边）",
+        "template-unreadable" => "模板读不到",
+        "template-not-recognized" => "那个文件不是我们的模板",
+        "write-failed" => "写不进去",
+        "self-check-failed" => "写完之后自检没过（槽位里的内容不对）",
+        "no-exe-dir" => "读不到 tuoen 自己所在的位置，所以不知道模板在哪",
+        other => other,
+    }
+}
+
+/// shim 这一层的总账：目录、分母、以及"被 `PATH` 上更靠前的谁抢了"。
+///
+/// **"没得比"与"比过了没被抢"必须分开说**（决策 73 的第二次教训）：
+/// `shim_commands` 是 `None`（没查）与 `Some([])`（查了，一条都没发）是两件事，
+/// 而后者与"发了、一条都没被抢"也是两件事。
+fn print_shims(outcome: &SectionOutcome) {
+    if let Some(dir) = &outcome.shim_dir {
+        println!("  shim 目录：{dir}");
+    }
+    if let Some(commands) = &outcome.shim_commands {
+        if commands.is_empty() {
+            println!(
+                "  我们的 shim 目录里**一条命令都没有** —— 所以下面的\"没被抢\"是**没得比**，不是赢了。"
+            );
+        } else {
+            println!(
+                "  我们的 shim 目录里有 {} 条命令：{}",
+                commands.len(),
+                commands.join(", ")
+            );
+        }
+        if outcome.shadowed_shims.is_empty() && !commands.is_empty() {
+            println!(
+                "  这 {} 条命令在 `PATH` 上**没有一个被抢在前面**。",
+                commands.len()
+            );
+        }
+    }
+    for shadowed in &outcome.shadowed_shims {
+        println!(
+            "  ⚠ `{}` 被抢在前面了：命中的是 `{}`（{} 第 {} 条，值 `{}`）—— \
+             我们发的 shim 排在它后面，敲出来跑的不是我们那条。",
+            shadowed.command,
+            shadowed.file,
+            shadowed.by.scope,
+            shadowed.by.index + 1,
+            shadowed.by.value
+        );
     }
 }
 

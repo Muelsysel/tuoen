@@ -590,7 +590,16 @@ pub fn collect_shims(ctx: &DetectContext<'_>, opts: &DoctorOptions, path: &PathF
 ///
 /// **只按 `[[effective]]` 走**：启动器注入项的位置推不出来（决策 87），
 /// 而遮蔽检测要的正是"真实的先后"。
-fn effective_refs(path: &PathFile) -> Vec<tuoen_platform::EntryRef> {
+///
+/// # 为什么是 `pub`（票据 #25）
+///
+/// 第三个问这个问题的调用方出现了：`restore --only globals --apply` 发完 shim
+/// 之后要报"我们发的命令有没有被 `PATH` 上更靠前的条目抢走"。判据本身
+/// （`tuoen_platform::detect_shadowing`）已经只有一处，但**它的输入**是这里 —
+/// 在 CLI 里再拼一份 `EntryRef` 就会漂移，而漂移的表现是"`doctor` 说被抢了、
+/// `restore` 说没有"（同一台机器、两个答案）。
+#[must_use]
+pub fn effective_refs(path: &PathFile) -> Vec<tuoen_platform::EntryRef> {
     path.effective
         .iter()
         .filter_map(|reference| {

@@ -28,8 +28,9 @@ use std::path::Path;
 
 use tuoen_core::capture::{CaptureError, Section};
 use tuoen_core::globals::{
-    FAILURE_NEEDS_NETWORK, GlobalsRoot, PackageOutcome, globals_wanted, install_globals,
-    probe_npm_cache,
+    FAILURE_NEEDS_NETWORK, GlobalInstall, GlobalsInstallReport, GlobalsRoot, GlobalsTool, NodeExe,
+    PackageOutcome, RESULT_INSTALLED, RESULT_SKIPPED_SHADOWED, ShimIssue, commands_for,
+    globals_wanted, install_globals, node_exe_for, probe_npm_cache, resolve,
 };
 use tuoen_core::pathdiff::{DiffClass, PathDiffOptions, Selection};
 use tuoen_core::restore::{
@@ -318,6 +319,11 @@ impl SectionApply {
                 broadcast_replies: None,
                 error: None,
                 packages: Vec::new(),
+                // 没走"发 shim"那一步 ⇒ **没有查过遮蔽**，三个键都不出
+                // （`shimCommands: []` 会被读成"查了、一条都没发"）。
+                shim_dir: None,
+                shim_commands: None,
+                shadowed_shims: Vec::new(),
             },
             failures: Vec::new(),
         }
@@ -343,6 +349,9 @@ impl SectionApply {
                 broadcast_replies: None,
                 error: failures.first().cloned(),
                 packages,
+                shim_dir: None,
+                shim_commands: None,
+                shadowed_shims: Vec::new(),
             },
             failures,
         }
@@ -358,6 +367,9 @@ impl SectionApply {
                 broadcast_replies: None,
                 error: Some(failure.clone()),
                 packages: Vec::new(),
+                shim_dir: None,
+                shim_commands: None,
+                shadowed_shims: Vec::new(),
             },
             failures: vec![failure],
         }
@@ -438,16 +450,221 @@ fn apply_globals(
         );
     }
     let ctx = backends.context(true);
-    let report = install_globals(ctx.runner, &wanted, offline);
-    let failures = report
+    let mut report = install_globals(ctx.runner, &wanted, offline);
+    // **装成功之后**的独立一步（票据 #25）：把包提供的命令变成 `PATH` 上的 `.exe` shim。
+    // 它拿不到"装失败"的包 —— 那份产物根本不在盘上。
+    let mut failures = Vec::new();
+    let shim_report = publish_shims(backends, &ctx, local, &wanted, &mut report, &mut failures);
+    let all_failures = report
         .failures
         .iter()
         .map(|failure| ApplyFailure {
             code: failure.code,
             detail: failure.detail.clone(),
         })
+        .chain(failures)
         .collect();
-    SectionApply::with_packages(section, report.wrote, report.packages, failures)
+    let mut applied = SectionApply::with_packages(
+        section,
+        report.wrote || shim_report.wrote,
+        report.packages,
+        all_failures,
+    );
+    // **遮蔽是两件事，两个键**（票据 #25 §3）：
+    // * `shimCommands` 是分母（我们的 shim 目录里发布了哪些命令），
+    //   `Some([])` = "查了，我们一条都没发"；`None` = "这次没查"；
+    // * `shadowedShims` 是"比过了、输给了 `PATH` 上更靠前的谁"。
+    // **"没得比"与"比过了没被抢"绝不许合并**（`path_view.rs` 记着这条教训）。
+    applied.outcome.shim_dir = shim_report.shim_dir;
+    applied.outcome.shim_commands = shim_report.commands;
+    applied.outcome.shadowed_shims = shim_report.shadowed;
+    applied
+}
+
+/// 这一趟发 shim 的结果：`--json` 里那三个加法键 + 有没有真的写。
+#[derive(Debug, Default)]
+struct ShimReport {
+    /// 真的落了盘。
+    wrote: bool,
+    /// shim 目录（`None` = 这一趟根本没查）。
+    shim_dir: Option<String>,
+    /// 分母：我们的 shim 目录里有哪些命令（`None` = 没查）。
+    commands: Option<Vec<String>>,
+    /// 被 `PATH` 上更靠前的条目抢走的那些。
+    shadowed: Vec<crate::path_view::ShadowedView>,
+}
+
+/// 把这一趟**真的装上了**的包变成 shim，并顺手回一份 `PATH` 级遮蔽报告。
+///
+/// # 为什么是独立的一步、而且只认 `installed`
+///
+/// 包没装上就不该有 shim：转发一个不存在的载荷只是把失败推迟到用户敲命令的那一刻
+/// （`crate::shim` 的文档点名过这个失效模式）。`already-present` 的包**故意不补**
+/// shim —— 那是"我们自己的根里已经有了"，补它就等于让一份 `no-change` 的计划
+/// 变成 `applied`（#24 冻结了那份语义）。缺口与它的代价写在本文件的报告里。
+///
+/// # 名字的归属在**这一趟内**也要判一次
+///
+/// `claims` 跨包共享：同一个快照里两个包要同一个名字时，先发的那个赢、后发的如实
+/// 报 `shadowed`（而盘上的 `lookup` 那时还看不见它 —— 它刚写进去，也可能这一趟
+/// 根本没写）。
+fn publish_shims(
+    backends: &Backends,
+    ctx: &tuoen_core::detect::DetectContext<'_>,
+    local: &RestoreBundle,
+    wanted: &tuoen_core::globals::GlobalsWanted,
+    report: &mut GlobalsInstallReport,
+    failures: &mut Vec<ApplyFailure>,
+) -> ShimReport {
+    // 只有"这一趟装上"的包才发 —— 一个都没有时**一个文件都不碰**（连模板都不找：
+    // 在一个只读的安装目录里翻模板会报出一堆与本次无关的失败）。
+    let publishable: Vec<&GlobalInstall> = wanted
+        .installs
+        .iter()
+        .filter(|install| {
+            package_of(report, install).is_some_and(|package| package.result == RESULT_INSTALLED)
+        })
+        .collect();
+    if publishable.is_empty() {
+        return ShimReport::default();
+    }
+
+    let dir = match crate::shim_cmd::exe_dir() {
+        Ok(dir) => dir,
+        Err(error) => {
+            failures.push(ApplyFailure {
+                code: error.code(),
+                detail: "shim-template=no-exe-dir".to_owned(),
+            });
+            return ShimReport::default();
+        }
+    };
+    let template = match tuoen_shim::find_template(&dir) {
+        Ok((template, _source)) => template,
+        Err(error) => {
+            failures.push(ApplyFailure {
+                code: error.kind(),
+                detail: format!("shim-template={}", ascii(&dir.display().to_string())),
+            });
+            return ShimReport::default();
+        }
+    };
+
+    // store 就是装配时那一个：`Backends` 只留了根的路径，这里按**同一个根**重建
+    // （`Store::new` 是纯构造，不碰磁盘）。
+    let store = tuoen_store::Store::new(backends.store_root().to_path_buf());
+    let shim_dir = backends.shim_dir();
+    let mut claims: BTreeMap<String, String> = BTreeMap::new();
+    let mut wrote = false;
+
+    for install in publishable {
+        let node = match install.tool {
+            GlobalsTool::Npm => node_exe_for(&store, &install.tool_version),
+            // pip 那条路不看 node：它的目标是 `Scripts\*.exe` 自己。
+            GlobalsTool::Pip => NodeExe::Missing,
+        };
+        let owner = format!("package:{}:{}", install.tool.slug(), install.name);
+        let decisions = commands_for(ctx, install, &node);
+        let resolved = resolve(decisions, &owner, &mut claims, &|spec| {
+            crate::shim_cmd::occupancy(shim_dir, spec)
+        });
+
+        let mut issues = resolved.issues;
+        let mut created: Vec<String> = Vec::new();
+        for spec in &resolved.specs {
+            let dest = shim_dir.join(spec.file_name());
+            match tuoen_shim::write_shim(&template, &dest, spec) {
+                Ok(_) => {
+                    wrote = true;
+                    created.push(spec.name.clone());
+                }
+                Err(error) => {
+                    // 写不进去 = 用户敲不出来 ⇒ **说出来**，而且这一节算失败
+                    // （一句 `applied` 会把"命令其实不存在"盖住）。
+                    let detail = format!(
+                        "command={} dest={}",
+                        spec.name,
+                        ascii(&dest.display().to_string())
+                    );
+                    failures.push(ApplyFailure {
+                        code: error.kind(),
+                        detail: detail.clone(),
+                    });
+                    issues.push(ShimIssue::new(&spec.name, error.kind(), Some(detail)));
+                }
+            }
+        }
+        created.sort();
+        created.dedup();
+
+        if let Some(package) = package_of_mut(report, install) {
+            // 一个名字都没发出来、而且至少一条是因为**被占** ⇒ 那个包的结局换 slug
+            // （`skipped-shadowed` 的**唯一**产地，票据 #25 §4）。
+            if created.is_empty() && issues.iter().any(ShimIssue::is_shadowed) {
+                package.result = RESULT_SKIPPED_SHADOWED;
+            }
+            package.shims = created;
+            package.shim_issues = issues;
+        }
+    }
+
+    // `PATH` 级遮蔽：**只报告、不挡生成**。用户级条目永远输给机器级，所以我们发的
+    // 命令可能排在一份 `.cmd` 后面 —— 那不是我们没发，而是它排得更靠前。
+    // 判据只有一处（`tuoen_platform::detect_shadowing`，`doctor` 与 `path add` 也在用），
+    // 它同时给出**分母**（我们发布了哪些命令）。
+    let (shadowed_raw, commands) = match local.path.as_ref() {
+        Some(path) => tuoen_platform::detect_shadowing(
+            ctx.fs,
+            &tuoen_core::doctor::facts::effective_refs(path),
+            shim_dir,
+        ),
+        None => (Vec::new(), tuoen_platform::shim_commands(ctx.fs, shim_dir)),
+    };
+    ShimReport {
+        wrote,
+        shim_dir: Some(shim_dir.display().to_string()),
+        commands: Some(commands),
+        shadowed: shadowed_raw
+            .iter()
+            .map(crate::path_view::ShadowedView::from)
+            .collect(),
+    }
+}
+
+/// `wanted.installs` 里那一条对应的逐包结果。
+///
+/// 判据是 `(tool, ascii 化后的包名)` —— 那是 `PackageOutcome` 里唯一能对上的键
+/// （它的 `name` 字段在构造时就被压成 ASCII 了，见 `install.rs`）。
+fn package_of<'a>(
+    report: &'a GlobalsInstallReport,
+    install: &GlobalInstall,
+) -> Option<&'a PackageOutcome> {
+    let name = ascii(&install.name);
+    report
+        .packages
+        .iter()
+        .find(|package| package.tool == install.tool.slug() && package.name == name)
+}
+
+/// 同上，可变版本。
+fn package_of_mut<'a>(
+    report: &'a mut GlobalsInstallReport,
+    install: &GlobalInstall,
+) -> Option<&'a mut PackageOutcome> {
+    let name = ascii(&install.name);
+    report
+        .packages
+        .iter_mut()
+        .find(|package| package.tool == install.tool.slug() && package.name == name)
+}
+
+/// 纯 ASCII 化（`--json` 的契约：成功载荷里只有 ASCII）。
+///
+/// 用的是 core 的那唯一一份实现（`tuoen_core::restore::ascii_token`）：
+/// 抄第二份就等于让"进 `--json` 的字符串一定是 ASCII"这条契约有两个实现
+/// —— 而两个实现漂移的表现是"一处漏了 CJK 而用例只覆盖另一处"。
+fn ascii(text: &str) -> String {
+    tuoen_core::restore::ascii_token(text)
 }
 
 /// 从计划里那一条 `install` 反推出 `install` 命令要的 `spec`。
@@ -634,6 +851,10 @@ fn section_apply(section: &SectionPlan, wrote: bool, failures: Vec<ApplyFailure>
             broadcast_replies: None,
             error: failures.first().cloned(),
             packages: Vec::new(),
+            // 这三节不发 shim ⇒ 没查过遮蔽（见 `SectionApply::plain`）。
+            shim_dir: None,
+            shim_commands: None,
+            shadowed_shims: Vec::new(),
         },
         failures,
     }

@@ -361,7 +361,11 @@ pub fn add(args: &ShimAddArgs) -> Result<ShimAddView, ShimCliError> {
 }
 
 /// 当前可执行文件所在的目录 —— 找模板的起点。
-fn exe_dir() -> Result<PathBuf, ShimCliError> {
+///
+/// `pub(crate)` 是给 `restore --only globals --apply` 用的（票据 #25 要自己发 shim）：
+/// 模板的位置**只有这一处定义**，第二个调用方再拼一遍就会漂移，而漂移的表现是
+/// "`shim add` 找得到模板、`restore` 找不到"。
+pub(crate) fn exe_dir() -> Result<PathBuf, ShimCliError> {
     let exe = std::env::current_exe().map_err(|source| {
         ShimCliError::own(
             "no-exe-dir",
@@ -540,6 +544,39 @@ fn slot_magic_offsets(bytes: &[u8]) -> impl Iterator<Item = usize> + '_ {
         .windows(SLOT_MAGIC.len())
         .enumerate()
         .filter_map(|(at, window)| (window == SLOT_MAGIC).then_some(at))
+}
+
+/// 这个名字在 shim 目录里**现在**归谁（票据 #25）。
+///
+/// 三态与 [`tuoen_core::globals::Occupied`] 一一对应，判据只有一条：
+/// **盘上那条 shim 烘着的前缀是不是逐字就是我们要的这一条**。
+///
+/// * 文件不存在（或者读不出来）→ `Free`。"读不出来"也交给 `Free`，因为
+///   `write_shim` 自己会以 `write-failed` / `dest-not-a-shim` 报出来 ——
+///   在这里提前猜一个原因反而会把真实错误盖住。
+/// * 是我们的 shim、前缀逐字相同 → `Same`（重写一遍，幂等）。
+/// * 别的情况 → `Foreign`，`detail` 说清是**哪个文件**或**哪一条前缀**占着它。
+///   一个不是我们的 shim 的文件（`not-a-shim`）也算 `Foreign`：**我们不覆盖别人的文件**。
+#[must_use]
+pub(crate) fn occupancy(shim_dir: &Path, spec: &ShimSpec) -> tuoen_core::globals::Occupied {
+    use tuoen_core::globals::Occupied;
+
+    let dest = shim_dir.join(spec.file_name());
+    let Ok(contents) = std::fs::read(&dest) else {
+        return Occupied::Free;
+    };
+    match baked_prefix(&contents) {
+        Some(prefix) if prefix == spec.render_prefix() => Occupied::Same,
+        // `k:v` 而不是 `k=v`：`detail` 里 `=` 是**键值分隔符**，`ascii_token` 会把值里的
+        // `=` 压成 `-`（它自己的用例写着这条规则："值里混进一个 `=` 会让
+        // `scope=machine var=a=b` 没法被解析"）。所以值内部用 `:` 当子分隔符，
+        // 人类输出里才真的读得成 `by=file:C:\…\pnpm.exe`，而不是 `by=file-C:\…`。
+        Some(prefix) => Occupied::Foreign(format!("shim:{prefix}")),
+        None if contains_slot_magic(&contents) => {
+            Occupied::Foreign(format!("shim:{}", dest.display()))
+        }
+        None => Occupied::Foreign(format!("file:{}", dest.display())),
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

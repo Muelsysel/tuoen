@@ -97,10 +97,18 @@ fn is_reserved_device_name(value: &str) -> bool {
 /// **注意它允许 `+` 与 `.`** —— Temurin 的真实版本串就是 `21.0.12.1+1`，
 /// 把 `+` 当非法字符会让真制品装不进去。
 ///
+/// # 为什么它是 `pub`（票据 #25）
+///
+/// `Store::version_dir` 对版本号那一段是 `debug_assert!` + 这条判据，而调用方
+/// （`tuoen_core::globals::shims`）手里那个版本号来自**运行时自己的输出**
+/// （`node -v` 削掉 `v`）—— 一个畸形值在 debug 构建里会让进程 panic。
+/// 让它**先问这条判据、再拼路径**是那条 `debug_assert!` 存在的意义；
+/// 各写一份判据则会漂移（漂移的表现是"产品 panic 了，而检查说没问题"）。
+///
 /// # Errors
 ///
 /// 名字违反了上面那条表里的任意一条规则。
-pub(crate) fn check_component(what: &'static str, value: &str) -> Result<(), StoreError> {
+pub fn check_component(what: &'static str, value: &str) -> Result<(), StoreError> {
     let reject = |why: &str| {
         Err(StoreError::UnsafeName {
             what,

@@ -1111,6 +1111,57 @@ L3 的安全评审要重新看它（已记进 §5 待定项）。
 **过程中的一次自伤（记下来，免得再犯）**：改 `envelope.rs` 的文档时，我把注释文本拼进了 PowerShell **双引号**字符串里 —— 里面的反引号被当成转义符吃掉了（`` `not-found `` 里的 `` `n `` 变成换行、`` `restore `` 里的 `` `r `` 变成回车），于是**裸 CR 进了文档注释**，编译报 `bare CR not allowed in doc-comment` 与 `unknown start of token`。教训与 #17 那条是同一族的两个方向：**在 PowerShell 里拼带反引号的文本，一律用单引号字符串或写成文件再拼**。
 
 ---
+### 1.29 L2-25 包的 `.exe` shim：精确版本的 node、三态遮蔽、以及一次孤儿交付（决策 211–219）
+
+**交付物**：新文件 `crates/core/src/globals/shims.rs`（931 行）；`crates/cli/tests/globals_restore_contract.rs` 扩到 +323 行。一共 11 个文件 **+1371 −31**：`crates/core/src/globals/bins.rs` +609（pip 的第二来源 `*.dist-info\RECORD`）、`crates/cli/src/restore_cmd.rs` +228（`publish_shims` 那一步）、`crates/cli/src/restore_view.rs` +111（人类面）、`crates/core/src/globals/install.rs` +40（`GlobalInstall.tool_version`、`PackageOutcome.shims`/`shim_issues`）、`crates/cli/src/shim_cmd.rs` +35（`occupancy`，并把 `exe_dir` 改成 `pub(crate)`）、`crates/platform/src/fixture.rs` +26、`crates/core/src/doctor/facts.rs` +11、`crates/store/src/layout.rs` +10、`crates/core/src/globals/mod.rs` +9。
+
+**决策 211：`detail` 的 `k=v` 的**值**内部用 `:` 当子分隔符（`by=file:<路径>`），不用 `=`。**
+
+`ascii_token`（`crates/core/src/restore/manual.rs:152`）**故意吃掉 `=`** —— 它自己的用例名就是 `ascii_token_drops_the_equals_sign_so_key_value_details_stay_parseable`，理由是"值里混进一个 `=` 会让 `scope=machine var=a=b` 没法被解析"。而 `shim_cmd.rs::occupancy` 一开始把被占者写成 `file=<路径>` / `shim=<前缀>`，过一遍 `ascii_token` 之后**键名被吃掉**：人类输出成了 `by=file-C:\…\pnpm.exe`，读者分不清 `file` 是键还是路径的一段。改的是**值的写法**，不是 `ascii_token` 的规则 —— 那条规则守着全仓库每一个 `k=v` 细节，动它要重审所有调用点。孤儿交付留下的两条红正是这个：测试期望写的是没被脱敏过的样子（`Some("by=file=pn.exe")` 与 `strings("by=file=")`），**产品是对的、期望是错的**。
+
+**决策 212：只有"这一趟真的装上了"的包才发 shim（`result == "installed"`），`already-present` 与 `no-change` 一律不补。**
+
+理由两条：(a) 转发一个不存在的载荷只是把失败推迟到用户敲命令的那一刻；(b) 给 `already-present` 的包补 shim 会把一份 `no-change` 的计划变成 `applied`，而 #24 已经冻结了那份语义。代价是**真实的缺口**：用户第二次 `restore` 不会补上第一次没发成功的 shim（要等下一次真的装了东西）。缺口与代价写进报告，不留给"下次再说"。
+
+**决策 213：`--json` 里"没查过"与"查了没发"必须能分开 —— `shimDir` / `shimCommands` 是 `Option`。**
+
+`None` = 这一趟**根本没走发 shim 那一步**（一个包都没装）；`Some([])` = 查了、我们的 shim 目录里一条都没有。写成 `"shimCommands": []` 会被读成后者，所以前者必须是 `null`/缺键。第三个键 `shadowedShims` 是**第三件事**：比过了、输给了 `PATH` 上更靠前的谁。"没得比"与"比过了没被抢"绝不许合并（`path_view.rs` 记着这条教训）。
+
+**决策 214：`PackageOutcome.shims` / `shimIssues` 空就**不出键**（`skip_serializing_if`）。**
+
+`"shims": []` 会被读成"我看过了、这个包一个命令都没有"，而"这个包没有 bin"与"我们没去发"是两件事 —— 与决策 174 同一族的口径。
+
+**决策 215：五个稳定 slug**：`shadowed`（名字被占，**不覆盖**）/ `no-target`（`bin` 的值不是可用的包内相对路径）/ `bin-missing`（前缀参数指向的载荷不在盘上 —— `write_shim` **不查**这一条，它只查 `spec.target`）/ `node-missing`（store 里没有那个精确版本）/ `node-version-unsafe`（版本号连拼路径都不合法）。`tuoen_shim::validate_name` 拒掉的每一条名字也要变成一条 issue，**绝不许静默丢掉**：用户会以为那个命令发出去了。
+
+**决策 216："这个名字归谁"是两件不同的事，两个键分开报。**
+
+- **内部先到先得**：`resolve` 用一份跨包共享的 `claims`，先发的赢、后发的如实记 `shadowed`；盘上已有的（`Occupied::Foreign`）**不覆盖**。一个包里**一个名字都没发出来、且至少一条是因为被占** ⇒ 逐包 `result = "skipped-shadowed"`（由本票产出，`#24` 刻意不产出它）。
+- **`PATH` 级遮蔽**：我们发出去的 shim 有没有被 `PATH` 上更靠前的条目抢走 ⇒ `shadowedShims`，判据是既有的 `tuoen_platform::detect_shadowing`。
+
+第二条的**输入**必须是 `doctor` 那一份 `effective_refs`：在 CLI 里再拼一份 `EntryRef` 就会漂移，而漂移的表现是"`doctor` 说被抢了、`restore` 说没有"（同一台机器、两个答案）。
+
+**决策 217：三处共享面只放开可见性、不改语义。**
+
+- `crates/core/src/doctor/facts.rs` 的 `effective_refs` → `pub`（决策 216 的理由）；
+- `crates/store/src/layout.rs` 的 `check_component` → `pub`：`Store::version_dir` 对版本号那一段是 `debug_assert!` + 这条判据，而调用方手里的版本号来自**运行时自己的输出**（`node -v` 削掉 `v`）—— 一个畸形值在 debug 构建里会让进程 panic。让它**先问判据、再拼路径**才是那条 `debug_assert!` 的用法；
+- `FakeFileSystem` 新增只读账 `reads()`（`Rc<RefCell<…>>`，与 `FakeRegistry` 同一个理由：克隆一份假文件系统必须克隆出**同一本账**）。记账发生在**答之前** —— "读过"与"读没读到"无关，一次落到 `NotFound` 的读也是读。
+
+**决策 218："绝不去读 `node_modules\.bin\*.cmd`"这条纪律要有**直接**证据。**
+
+npm 在 `.bin` 里生成 `.cmd` / `.ps1` 转发器，它们是**产物不是契约**（决策 10）。往固定装置里放一个内容故意不同的 `.cmd` 之后，"产出的命令名与它无关"仍然只是**间接**推断；有了 `reads()` 账，"根本没人打开过它"才是直接证据 —— 决策 186 要炸的就是间接口径。
+
+**决策 219：孤儿交付的复核纪律（第一次出现"代理失败退出、无收尾报告"）。**
+
+从**工作树**而不是从报告重建事实：① 先 `cargo check --workspace --all-targets` 判它能不能编（能编说明死在收尾阶段，不能编说明死在中途，两者的复核顺序不同）；② 跑全量门禁，并**逐条读它动过的共享面** —— 本票那三处都属于"别的票据也会碰"的地方，所以每一处都要有自己的理由（决策 217）；③ **默认它刚写的期望是未收尾的**：这次两条红全在它自己新写的测试期望里（决策 211），产品是对的 ⇒ **修期望、不改产品**，并且把"为什么期望错了"写进决策表，而不是只让代码变绿；④ 孤儿交付同样要跑变异 —— 它没跑，我补了三条。
+
+**门禁与证据**：`cargo fmt --all --check` 0 · `cargo check --workspace --all-targets` 0 · `cargo test --workspace --no-fail-fast` **38 target / 1436 passed / 0 failed**（比 #24 收尾时多 25 条）· `clippy --workspace --all-targets -- -D warnings` 0。
+
+真机验收 `scripts/acceptance-L2-27.ps1` 从 **94/4/1** 变成 **`100 passed / 0 failed / 1 skipped` / `verdict=PASS` / exit 0**：§7 的四条红（`pn.exe` / `pnpm.exe` / `pnpx.exe` / `pnx.exe` 不存在）全绿；`shim 的 pnpm --version 与真身逐字相同 shim=11.21.0 real=11.21.0`；`<shims>` 里恰好四个文件、`.cmd`/`.ps1` **零个**。唯一跳过的是 pip 侧的 `.exe` shim（要联网装 `pypinyin`，`-WithNetwork` 才跑），**记为诚实未覆盖**。
+
+变异验证（三条，全部真红；每条跑完逐字节还原 + 刷新 mtime，与备份的 sha256 相同）：① 前缀参数存在性检查 `if !is_file(ctx, &payload)` → `if false` ⇒ `globals::shims::tests::a_bin_target_that_is_not_on_disk_is_reported_rather_than_published` 红；② `Occupied::Foreign` 改成照发（覆盖别人的文件）⇒ `our_own_command_is_rewritten_and_someone_elses_is_left_alone` 与 `a_package_whose_names_are_taken_reports_skipped_shadowed` 两条红；③ 版本号合法性判据 `check_component(…).is_err()` → `if false` ⇒ `a_version_directory_without_node_exe_is_missing` 红。
+
+---
+
 ## 2. 平台硬约束（来自本机实测，非推断）
 
 这些是**必须绕着走的地面事实**，实现时不得假设相反情况。
