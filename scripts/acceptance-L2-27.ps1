@@ -748,6 +748,12 @@ Check '快照里能定位到 pnpm 那一行、并且只留它' $okPnpm ''
 $plan1 = Invoke-Tuoen @('restore', $snap, '--only', 'globals', '--json') 'restore plan globals'
 Check 'restore --only globals（计划）退出 0' ($plan1.Exit -eq 0) "exit=$($plan1.Exit)"
 $p1 = Get-Payload $plan1
+
+# 决策 188 的收口：`globals` 从"不认识的 section"变成认识的之后，
+# `summary.unrestorable` 必须**只剩 `configs`**（那个键只在真有它们时才出）。
+$unrestorable = @(Arr (Prop $p1 'summary') 'unrestorable')
+Check '决策 188：summary.unrestorable 只剩 configs' (($unrestorable -join ',') -eq 'configs') "unrestorable=$($unrestorable -join ',')"
+
 $sec1 = Find (Arr $p1 'sections') 'id' 'globals'
 Check '计划里有 globals 这一节' ($null -ne $sec1) "ids=$((@(Arr $p1 'sections' | ForEach-Object { Prop $_ 'id' }) -join ','))"
 if ($sec1) {
