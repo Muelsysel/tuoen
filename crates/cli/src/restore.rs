@@ -30,11 +30,11 @@ pub struct RestoreArgs {
     #[arg(default_value = DEFAULT_DIR)]
     pub dir: PathBuf,
 
-    /// 只做这些 section（可重复）。取值就是四个 slug：tools / path / env / wsl。
+    /// 只做这些 section（可重复）。取值就是五个 slug：tools / path / env / wsl / globals。
     #[arg(long = "only", value_name = "SECTION", value_parser = parse_section)]
     pub only: Vec<SectionId>,
 
-    /// 真的动手（装工具、写用户级环境变量、重建用户级 PATH）。
+    /// 真的动手（装工具、装全局包、写用户级环境变量、重建用户级 PATH）。
     #[arg(long, conflicts_with = "dry_run")]
     pub apply: bool,
 
@@ -45,6 +45,14 @@ pub struct RestoreArgs {
     /// path section 里把**本机自己的**健康问题（重复 / 失效 / 空条目）也一起应用。
     #[arg(long)]
     pub with_fix: bool,
+
+    /// **绝不碰网络**（票据 #24）：`globals` 那一节只走本地缓存。
+    ///
+    /// 它是**承诺**而不是偏好（决策 190 的同一条）：缓存里没有的包一律报
+    /// `not-cached` 并且**一个字节都不写** —— 有必须联网的包时整节拒绝，
+    /// 并在错误里点名是哪几个。
+    #[arg(long)]
+    pub offline: bool,
 
     /// 输出稳定的 JSON（键与取值不本地化）。
     #[arg(long)]
@@ -87,18 +95,19 @@ mod tests {
         assert!(!args.dry_run, "默认形态不该伪装成显式的 --dry-run");
         assert!(!args.with_fix, "决策 151：fix 默认不选中");
         assert!(!args.json);
-        assert!(args.only.is_empty(), "空 --only 表示四个 section 都要");
+        assert!(!args.offline, "`--offline` 是用户显式说的承诺，不是默认值");
+        assert!(args.only.is_empty(), "空 --only 表示五个 section 都要");
     }
 
     #[test]
-    fn only_takes_the_four_slugs_and_repeats() {
-        let args = restore(&["--only", "path", "--only", "env"]);
-        assert_eq!(args.only, vec![SectionId::Path, SectionId::Env]);
+    fn only_takes_the_five_slugs_and_repeats() {
+        let args = restore(&["--only", "path", "--only", "globals"]);
+        assert_eq!(args.only, vec![SectionId::Path, SectionId::Globals]);
     }
 
     #[test]
     fn only_is_generated_from_the_section_table() {
-        // 四个 slug 一个不多一个不少 —— 表在 core，这里只是把它走一遍。
+        // 五个 slug 一个不多一个不少 —— 表在 core，这里只是把它走一遍。
         for id in SectionId::ALL {
             let args = restore(&["--only", id.as_str()]);
             assert_eq!(args.only, vec![id], "{} 应当能被 --only 接受", id.as_str());

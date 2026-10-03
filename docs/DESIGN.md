@@ -1041,6 +1041,52 @@ L3 的安全评审要重新看它（已记进 §5 待定项）。
 **"和参考实现一致"不能靠感觉** —— 一致的地方要指出**行号**，不一致的地方要指出**为什么它的场景不同**。
 一份只写"参考了 mise"的决策记录，等于什么都没记。
 
+### 1.27 L2-24 `restore --only globals`：逐包 staging、诚实的不对称、以及信封不许与退出码自相矛盾（决策 204–209）
+
+**决策 204：`globals` 那一节**逐包** staging + 产物自证 + 翻转；失败只拖垮那一个包。**
+
+- 每包 `<目标>/.staging-<n>` → 装 → **产物自证**（`node_modules/<包名>` 真的出现）→ 翻转（npm 的包目录**整棵替换**、其余递归合并）→ 删 staging；失败删 staging，若正式目录是本趟新建的空目录也一并删掉。
+- 票据的"7 个里成了 6 个"与 L0 `install` 的先例**只有这一种做法能同时成立**：整节一把 staging 做不到"一个失败不拖垮整节"。
+- 真机证据：拿一份含 10 个包（7 npm + 3 pip）的快照跑 `--apply --offline` → 退出 1、`apply.wrote=false`、`failures[0].code="needs-network"`、**根里的文件数 12 → 12 未变**。
+
+**决策 205：幂等只比**本机 tuoen 侧**的 `(包, 版本)` 集合；"读不到根"永远不许判 `no-change`。**
+
+- 快照的两个来源里都可能带着同一个包（本机侧采集也写 `source="tuoen"`），所以"装过了吗"只能问**我们自己那一侧**。
+- 我们根里**多出来**的包（快照里没有）只报数（`rows.extra`）、**永不删** —— 删不删是用户的决定，不是工具的。
+
+**决策 206：`counts.rows` 的五个键，以及 `Writes.installs` 的真实口径。**
+
+- `rows` = `already-present / install / version-conflict / unsupported / extra`；`counts.effective` = `install` 的条数。
+- `Writes.installs` 在 `globals` 节承载的是"**需要网络**"，**不是**"有 install 动作" —— 否则 `status == would-change` 与 `needsNetwork == false` 不可能同时成立（`status_for` 里 `installs` 优先于 `would-change`）。字段名会误导，所以口径写在这里。
+
+**决策 207：pip 一律 `needsNetwork = true`（诚实的不对称）。**
+
+- 本机**没有**可证明的离线解析路径（决策 197 那条实测解决的是"装"，不是"解析"）。推论：一份含 pip 包、且本机根里没有的快照，在 `--offline` 下会得到 `needs-network` 的**整节拒绝** —— 这是如实，不是缺陷。
+- 真机验收因此只用 npm 的 pnpm；"pip 真装"留在诚实缺口里。
+
+**决策 208：信封不许与退出码自相矛盾 —— `--apply` 有失败 ⇒ `ok: false` + `apply-failed`，`data` 照旧出。**
+
+- 修的是一个**既有** bug（不是本票引入）：`finish()` 过去**无条件**用 `Envelope::ok`，而退出码在调用处**另算** ⇒ 真机上出现过"退出码 1、`ok: true`"。`crates/cli/src/envelope.rs` 的 `Envelope::partial` 文档早就点名禁止这种形态：*"报成 `ok: true` 又会让 `ok` 与退出码互相矛盾 —— 脚本会以为一切正常"*。
+- 现在退出码与 `ok` 在**同一处**决定（`finish` 返回它算出来的码，调用方不再另算）；`data` 仍然交出去，"已经做了什么"必须看得见。
+- 变异验证：把 `if failed {` 改成 `if false {` ⇒ 1 条红，报错里逐字带着那份 `"schemaVersion":1,…,"ok":true,…,退出码 Some(1)` 的载荷。恢复后推 mtime、复跑绿。
+- 与决策 189 合起来，这就是**信封 v2** 的两件事：删掉 `shim.remove` 的 `not-found`（1→2），以及这条 `ok`/退出码的矛盾。
+
+**决策 209：两条新的人工待办，以及 `ManualActionCode::ALL` 的顺序。**
+
+- 新增 `globals-version-conflict`（`remediation = resolve-manually`）与 `globals-prefix-moved`（`remediation = use-tuoen-globals-list`）；`ALL` 5 → 7，**前五项顺序一字未动**（顺序是公开契约）。
+- `detail` 形状 `tool=… to=… from=…`：`from=` **放最后是刻意的**（路径可能含空格），消费者按 ` from=` 切。
+
+**门禁与验收（真机）**：`cargo fmt --all --check` 0 · `cargo check --workspace --all-targets` 0 · `cargo test --workspace --no-fail-fast` **38 个 target / 1411 passed / 0 failed** · `clippy -D warnings` 0。`scripts/acceptance-L2-27.ps1` 真机 **91 passed / 4 failed / 1 skipped**，4 条红**全部**是"pnpm 的四个 bin 还没有 shim"（`pn,pnpm,pnpx,pnx`）= #25 的交付物 —— 也就是说 #24 之后，"只读面 + 重定向面 + 还原面 + 红线"全绿。
+
+**验收脚本侧的四条修正（我的错，产品没有错）**：
+
+1. `New-GlobalsSnapshot` 把 `-split` 的**第 0 段**（那就是**文件头**）滤掉了 ⇒ 快照缺 `schema_version`，产品报 `snapshot-toml`：`missing field 'schema_version'`。这不是产品的缺口：五个 section 文件的结构体**都没有** `serde(default)`，"每个文件都带 `schema_version` 与 `captured_at`"是契约。
+2. 同一处的第二个脆弱点：装过一次之后 `globals.toml` 里有**两个** npm 块（machine + tuoen）⇒ 过滤命中 0 或 2 ⇒ 快照**静默退化**成整份 capture（10 个包），于是计划变成"要联网"。现在按 `source = "machine"` 锁定那一块。
+3. 四条**机器状态**断言（"只有 machine 来源"、"npm 那一行只有一条"）在"这台机器装过一次之后"永远红。改成断言**取值面**（状态无关），"tuoen 侧现在是不是空的"只报 `Note`。**这是"断言不许依赖机器状态"（票据 #8 第 5 条）的又一次，而且这次错在验收脚本里。**
+4. 决策 188 的 `unrestorable == configs` 只有在**磁盘上真的有 `configs.toml`** 时才看得见 ⇒ §5 的快照改用**完整** capture（不是 `--only globals`）；改完之后这条断言第一次真的测到了东西（`restorable` 少了 `globals`、只剩 `configs`）。
+
+**已知的固定装置瑕疵（如实记）**：`crates/cli/tests/globals_restore_contract.rs` 的固定装置派生出的那一段 npm 版本号是一句 Windows 错误文本（`The system cannot find message text for message number 0x2350 in the message file for Application.`）。测试仍然有效（它比的是自己那一份），但"真实形态是 `v24.19.0`"这件事在那一层没有被覆盖 —— 真机验收覆盖了它。
+
 ---
 ## 2. 平台硬约束（来自本机实测，非推断）
 

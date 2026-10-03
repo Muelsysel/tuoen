@@ -39,10 +39,23 @@ pub struct RestoreOptions {
     /// 当前用户名。`None` 就没有用户名重写（宁可少做一步，也不猜）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_username: Option<String>,
+    /// **我们自己的根**（`%LOCALAPPDATA%\tuoen\globals`）—— `globals` 那一节装进哪里。
+    ///
+    /// 它是**传进来的**，不是在这里读进程环境算的：`plan` 必须是纯函数（决策 150），
+    /// 而"根在哪"是 CLI 的事（决策 187 的接缝）。`None` = 算不出来 —— 那一节的包
+    /// 会被记成 `unsupported` + `reason=globals-root-unknown`，**绝不**静默跳过。
+    #[serde(skip)]
+    pub globals_base: Option<std::path::PathBuf>,
+    /// npm 缓存探针的结果（`<tool>:<name>@<version>` → 能不能离线解决）。
+    ///
+    /// 空表 = 什么都没探过 ⇒ 一律算"要网络"（**不许**把"没探过"当成"缓存里有"）。
+    /// 同样 `#[serde(skip)]`：它是**量出来的事实**，不是用户给的选项。
+    #[serde(skip)]
+    pub globals_cache: BTreeMap<String, bool>,
 }
 
 impl RestoreOptions {
-    /// 什么都不限制（四个 section、不带 `--with-fix`、不给用户名）。
+    /// 什么都不限制（五个 section、不带 `--with-fix`、不给用户名、不知道我们的根）。
     #[must_use]
     pub fn all() -> Self {
         Self::default()
@@ -261,7 +274,7 @@ impl RestorePlan {
 
 /// 算出"照着这份快照还原本机"的计划。**纯函数**。
 ///
-/// 四节**永远都在**（顺序固定）：
+/// 五节**永远都在**（顺序固定）：
 ///
 /// * 没被 `--only` 选中的 → `skipped` + `note = "not-selected"`（决策 161）；
 /// * 快照里根本没有的 → `skipped` + `note = "section-not-in-snapshot"`（决策 159）。
@@ -302,6 +315,10 @@ pub fn plan(target: &RestoreBundle, local: &RestoreBundle, opts: &RestoreOptions
                 .wsl
                 .as_ref()
                 .map(|file| sections::wsl(file, local.wsl.as_ref())),
+            SectionId::Globals => target
+                .globals
+                .as_ref()
+                .map(|file| sections::globals(file, local.globals.as_ref(), opts)),
         };
         match outcome {
             Some((section_plan, manual)) => {
@@ -422,8 +439,16 @@ mod tests {
         let bundle = real_machine();
         let plan = plan(&bundle, &bundle, &RestoreOptions::all());
 
-        assert_eq!(plan.sections.len(), 4);
+        assert_eq!(plan.sections.len(), 5);
         for section in &plan.sections {
+            if section.id == SectionId::Globals {
+                // 这份固定装置里**没有** `globals.toml` ⇒ 如实说"快照里没有它"
+                // （决策 159）。它与"本机全对上了"不是同一句话，所以这里不能
+                // 顺手把 `Globals` 也当成 `NoChange`。
+                assert_eq!(section.status, SectionStatus::Skipped);
+                assert_eq!(section.note.as_deref(), Some(NOTE_SECTION_NOT_IN_SNAPSHOT));
+                continue;
+            }
             assert_eq!(
                 section.status,
                 SectionStatus::NoChange,
@@ -434,6 +459,7 @@ mod tests {
         }
         assert!(!plan.has_changes(), "票据的判据：还原到本机 = 接近空的计划");
         assert!(plan.summary.no_change == 4);
+        assert!(plan.summary.skipped == 1, "globals 那一节不在固定装置里");
         // "接近空"不是"一行动作都没有"：唯一的动作是**报告**性质的 `skipped-secret`
         // （本机 32 个变量全都在，但那 1 条凭据我们没捕获过，要说出来）。
         assert!(
@@ -609,20 +635,25 @@ mod tests {
         let plan = plan(&bundle, &bundle, &opts);
         assert_eq!(
             plan.sections.len(),
-            4,
+            5,
             "没选中的也在计划里（用户要看得出他漏了什么）"
         );
         assert_eq!(
             plan.section(SectionId::Path).expect("path").status,
             SectionStatus::NoChange
         );
-        for id in [SectionId::Tools, SectionId::Env, SectionId::Wsl] {
+        for id in [
+            SectionId::Tools,
+            SectionId::Env,
+            SectionId::Wsl,
+            SectionId::Globals,
+        ] {
             let section = plan.section(id).expect("skipped");
             assert_eq!(section.status, SectionStatus::Skipped);
             assert_eq!(section.note.as_deref(), Some("not-selected"));
             assert!(section.counts.rows.is_empty(), "没做过的事不许有条数");
         }
-        assert_eq!(plan.summary.skipped, 3);
+        assert_eq!(plan.summary.skipped, 4);
     }
 
     #[test]
@@ -637,12 +668,17 @@ mod tests {
             plan.section(SectionId::Tools).expect("tools").status,
             SectionStatus::NeedsNetwork
         );
-        for id in [SectionId::Path, SectionId::Env, SectionId::Wsl] {
+        for id in [
+            SectionId::Path,
+            SectionId::Env,
+            SectionId::Wsl,
+            SectionId::Globals,
+        ] {
             let section = plan.section(id).expect("skipped");
             assert_eq!(section.status, SectionStatus::Skipped);
             assert_eq!(section.note.as_deref(), Some("section-not-in-snapshot"));
         }
-        assert_eq!(plan.summary.skipped, 3);
+        assert_eq!(plan.summary.skipped, 4);
         // 两份说明必须分得开 —— 用户看到的话完全不同。
         assert_ne!(NOTE_NOT_SELECTED, NOTE_SECTION_NOT_IN_SNAPSHOT);
     }
@@ -659,7 +695,7 @@ mod tests {
         let env = plan.section(SectionId::Env).expect("env");
         assert_eq!(env.status, SectionStatus::Skipped);
         assert_eq!(env.note.as_deref(), Some("section-not-in-snapshot"));
-        assert_eq!(plan.summary.skipped, 4, "另外三节是 not-selected");
+        assert_eq!(plan.summary.skipped, 5, "另外四节是 not-selected");
     }
 
     #[test]
@@ -667,7 +703,7 @@ mod tests {
         let target = real_machine();
         let plan = plan(&target, &target, &RestoreOptions::all());
         let ids: Vec<&str> = plan.sections.iter().map(|s| s.id.as_str()).collect();
-        assert_eq!(ids, ["tools", "path", "env", "wsl"]);
+        assert_eq!(ids, ["tools", "path", "env", "wsl", "globals"]);
         // 反复算两次逐条相同（`--json` 必须逐字节稳定）。
         let again = super::plan(&target, &target, &RestoreOptions::all());
         assert_eq!(plan, again);

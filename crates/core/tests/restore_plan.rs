@@ -459,13 +459,28 @@ fn planning_against_your_own_machine_is_nearly_empty() {
     let local = load("machine-a-current");
     let p = plan(&target, &local, &all());
 
-    for id in SectionId::ALL {
+    for id in [
+        SectionId::Tools,
+        SectionId::Path,
+        SectionId::Env,
+        SectionId::Wsl,
+    ] {
         assert_eq!(
             section(&p, id).status,
             SectionStatus::NoChange,
             "{id:?} 两侧相同时不该有任何变更"
         );
     }
+    // 固定装置里**没有** `globals.toml`（全局包那一节是票据 #24 的事）⇒
+    // 这一节如实说"快照里没有它"，而不是"本机已经对上了"（决策 159）。
+    assert_eq!(
+        section(&p, SectionId::Globals).status,
+        SectionStatus::Skipped
+    );
+    assert_eq!(
+        section(&p, SectionId::Globals).note.as_deref(),
+        Some(NOTE_SECTION_NOT_IN_SNAPSHOT)
+    );
     assert!(!p.has_changes());
 
     // tools：7 行全部只计数（同名同版本 = 本机已经有了）。
@@ -518,14 +533,14 @@ fn planning_against_your_own_machine_is_nearly_empty() {
     assert!(section(&p, SectionId::Wsl).actions.is_empty());
     assert_eq!(effective_total(&p, SectionId::Wsl), 0);
 
-    // 摘要：四节 no-change；手动待办 = 两个管理器 + 凭据那一条。
-    assert_eq!(p.summary.sections, 4);
+    // 摘要：四节 no-change + globals 那一节"快照里没有"；手动待办 = 两个管理器 + 凭据那一条。
+    assert_eq!(p.summary.sections, 5);
     assert_eq!(p.summary.no_change, 4);
     assert_eq!(p.summary.would_change, 0);
     assert_eq!(p.summary.requires_elevation, 0);
     assert_eq!(p.summary.needs_network, 0);
     assert_eq!(p.summary.unsupported, 0);
-    assert_eq!(p.summary.skipped, 0);
+    assert_eq!(p.summary.skipped, 1, "globals 不在固定装置里");
 
     // **两侧相同时也要报"这些工具归别人管"**：那是我们**永远**不做的事，
     // 不是"这一次的差异"。按管理器去重：`nvm4w` 在目标里管着两行，只出一条。
@@ -602,6 +617,11 @@ fn every_section_reports_all_of_its_keys_even_when_zero() {
         keys(&p, SectionId::Wsl),
         ["extra", "missing", "path-differs", "same"]
     );
+    // 这一节没参与（固定装置里没有 `globals.toml`）⇒ **一张全 0 的表都不印**：
+    // "没参与"与"参与了但全是 0"在 `--json` 里必须是两件事（决策 159）。
+    assert!(keys(&p, SectionId::Globals).is_empty());
+    // `globals` 那五把键的**形状**由 core 的单测钉住（`restore::sections` 里的
+    // `globals_reports_all_of_its_keys_even_when_zero`）—— 这里不重复一份。
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -893,7 +913,12 @@ fn a_section_that_was_not_selected_is_skipped_with_its_own_note() {
         &only(SectionId::Path),
     );
 
-    for id in [SectionId::Tools, SectionId::Env, SectionId::Wsl] {
+    for id in [
+        SectionId::Tools,
+        SectionId::Env,
+        SectionId::Wsl,
+        SectionId::Globals,
+    ] {
         assert_eq!(section(&p, id).status, SectionStatus::Skipped, "{id:?}");
         assert_eq!(
             section(&p, id).note.as_deref(),
@@ -911,7 +936,7 @@ fn a_section_that_was_not_selected_is_skipped_with_its_own_note() {
         section(&p, SectionId::Path).status,
         SectionStatus::WouldChange
     );
-    assert_eq!(p.summary.skipped, 3);
+    assert_eq!(p.summary.skipped, 4);
     assert_eq!(p.summary.would_change, 1);
     assert!(
         p.manual_actions.is_empty(),
@@ -932,7 +957,12 @@ fn a_section_the_snapshot_lacks_is_skipped_with_a_different_note() {
     let local = load("machine-a");
     let p = plan(&target, &local, &all());
 
-    for id in [SectionId::Tools, SectionId::Env, SectionId::Wsl] {
+    for id in [
+        SectionId::Tools,
+        SectionId::Env,
+        SectionId::Wsl,
+        SectionId::Globals,
+    ] {
         assert_eq!(section(&p, id).status, SectionStatus::Skipped, "{id:?}");
         assert_eq!(
             section(&p, id).note.as_deref(),
@@ -953,7 +983,7 @@ fn a_section_the_snapshot_lacks_is_skipped_with_a_different_note() {
         section(&p, SectionId::Path).note.as_deref(),
         Some(NOTE_FIX_NOT_SELECTED)
     );
-    assert_eq!(p.summary.skipped, 3);
+    assert_eq!(p.summary.skipped, 4);
     assert_eq!(p.summary.no_change, 1);
 }
 

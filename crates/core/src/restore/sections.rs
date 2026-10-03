@@ -6,7 +6,7 @@
 //! 2. 真会写下去几条？（`counts.effective`，决策 158 的第二个口径）
 //! 3. 哪些事我们做不到、为什么做不到？（`manual_actions`，决策 152 的公开契约）
 //!
-//! # 四节的口径都不一样，这不是不一致，是事实
+//! # 五节的口径都不一样，这不是不一致，是事实
 //!
 //! | section | 目标 | 默认动作 | 有没有 `effective` |
 //! |---|---|---|---|
@@ -14,6 +14,7 @@
 //! | `path` | 把 `PATH` 重建到快照的样子 | `add`/`remove`/`move`/`case-only`（**不含 `fix`**） | 有（真落地的条数，决策 158） |
 //! | `env` | 补上缺的持久环境变量 | `set-user` / `set-machine` | 有（`set-user`/`set-machine`） |
 //! | `wsl` | **只报告** | 什么都不做 | **恒空**（`note = "report-only"`） |
+//! | `globals` | 把两个来源的全局包装进**我们自己的根** | `install-global` | 有（`install` 的条数） |
 //!
 //! # 为什么 restore 从不卸载、从不覆盖、从不清理
 //!
@@ -38,13 +39,16 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use tuoen_platform::{DirEntryFacts, EnvScope, FileFacts, FileSystem, ReadOutcome};
 
-use crate::capture::{EnvFile, PathBudgetRow, PathFile, SkippedFile, ToolRow, ToolsFile, WslFile};
+use crate::capture::{
+    EnvFile, GlobalsFile, PathBudgetRow, PathFile, SkippedFile, ToolRow, ToolsFile, WslFile,
+};
 use crate::pathdiff::{self, DiffClass, PathDiffOptions, PathDiffRow, Selection};
 
 use super::manual::{
     ManualAction, ManualActionCode, REMEDIATION_INSTALL_MANUALLY,
     REMEDIATION_NOT_SUPPORTED_IN_THIS_VERSION, REMEDIATION_RECONFIGURE_MANUALLY,
-    REMEDIATION_RUN_AS_ADMINISTRATOR, REMEDIATION_USE_THE_MANAGER, ascii_token, dedupe_manual,
+    REMEDIATION_RESOLVE_MANUALLY, REMEDIATION_RUN_AS_ADMINISTRATOR, REMEDIATION_USE_THE_MANAGER,
+    REMEDIATION_USE_TUOEN_GLOBALS_LIST, ascii_token, dedupe_manual,
 };
 use super::plan::{PlannedAction, RestoreOptions, SectionCounts, SectionPlan};
 
@@ -67,11 +71,17 @@ pub enum SectionId {
     Env,
     /// `wsl.toml`。
     Wsl,
+    /// `globals.toml` —— 把两个来源的全局包装进**我们自己的根**（票据 #24）。
+    ///
+    /// **追加在末尾**（决策 165 的收口处）：`ALL` 的顺序就是计划里 `sections` 的顺序，
+    /// 也是 `summary.unrestorable` 的差集顺序 —— 插在中间会让**已经冻结的**
+    /// `["globals","configs"]` 那句话变成 `["configs"]` 之外的另一种排列。
+    Globals,
 }
 
 impl SectionId {
-    /// 全部四个，**顺序即计划里 `sections` 的顺序**（固定顺序，两次调用逐条相同）。
-    pub const ALL: [Self; 4] = [Self::Tools, Self::Path, Self::Env, Self::Wsl];
+    /// 全部五个，**顺序即计划里 `sections` 的顺序**（固定顺序，两次调用逐条相同）。
+    pub const ALL: [Self; 5] = [Self::Tools, Self::Path, Self::Env, Self::Wsl, Self::Globals];
 
     /// 稳定小写 slug（`--json` 与 `tuoen.d/` 的文件名同源）。
     #[must_use]
@@ -81,6 +91,7 @@ impl SectionId {
             Self::Path => "path",
             Self::Env => "env",
             Self::Wsl => "wsl",
+            Self::Globals => "globals",
         }
     }
 
@@ -166,6 +177,12 @@ pub const NOTE_MACHINE_SCOPE_REQUIRES_ELEVATION: &str = "machine-scope-requires-
 pub const NOTE_NEEDS_NETWORK: &str = "needs-network";
 /// 这一节只报告差异，**不会写任何东西**（`wsl`：我们不自动导入 vhdx）。
 pub const NOTE_REPORT_ONLY: &str = "report-only";
+/// 本机**我们自己的根**这次读不出来（枚举失败）—— 我们按"全缺"去装。
+///
+/// 这句与"根是空的"**必须分得开**（决策 175 的三态）：前者是"不知道"，后者是"确实没有"。
+/// 两者对"要装什么"的结论恰好相同（都去装），但对**用户该做什么**的结论不同 ——
+/// 前者可能是权限/工具的问题，后者只是"还没装过"。
+pub const NOTE_GLOBALS_ROOT_UNREADABLE: &str = "globals-root-unreadable";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 判据用的小工具
@@ -289,7 +306,7 @@ fn installed_locally(row: &ToolRow, local: &[ToolRow]) -> bool {
 
 /// 同一个版本号吗。**只做规范化，不做前缀匹配** —— "同名同版本"是精确的一件事，
 /// 而 `24` 匹配 `24.19.0` 是 `pathdiff`/manifest 的"约束匹配"，是另一件事。
-fn same_version(wanted: &str, mine: &str) -> bool {
+pub(crate) fn same_version(wanted: &str, mine: &str) -> bool {
     fn norm(text: &str) -> &str {
         text.trim().trim_start_matches(['v', 'V'])
     }
@@ -829,10 +846,161 @@ pub(crate) fn wsl(target: &WslFile, local: Option<&WslFile>) -> (SectionPlan, Ve
     )
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// globals（票据 #24）
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// `globals` section —— 把两个来源的全局包**装进我们自己的根**。
+///
+/// # 这一节比的是"快照 vs 我们自己的根"，不是"快照 vs 本机"
+///
+/// 快照里那些包所在的 `prefix`（本机是 `C:\nvm4w\nodejs`）是第三方版本管理器的地盘，
+/// tuoen **永不写**（决策 154）。于是三件事跟着来：
+///
+/// * 幂等判据**只比本机 tuoen 那一侧**（决策 155/203）—— 拿机器侧比会永远 `would-change`；
+/// * 本机那一侧**读不出来**时按"全缺"去装（宁可多装一遍，也不要把"不知道"写成"没有"）；
+/// * 快照里的 `prefix` 与我们装进去的地方**不是一处**这件事，是必须说出来的一句话
+///   （`globals-prefix-moved`，票据 #24 §4）—— 说不说它，与装没装上无关。
+///
+/// # 这一节的 `installs` 不是"有 install 动作"
+///
+/// [`Writes::installs`] 在这里承载的是"**需要网络**"（票据 #24 §3）：全部包都能在本地
+/// 缓存里解决时它是 `false`，于是这一节的 `status` 落到 `would-change`、
+/// `needsNetwork` 也是 `false`。计划说 `false` 的，`--apply --offline` 必须真的
+/// 不用网络就装上；计划说 `true` 的，`--apply --offline` 必须拒绝并点名那个包。
+///
+/// # `counts.rows` 的键（globals 是新节，键集由这一票定）
+///
+/// `already-present` / `install` / `version-conflict` / `unsupported` / `extra`。
+/// `effective` 只有 `install` —— 另外四类**一个字节都不会写**。
+/// `already-present` 与 `extra` 只计数、**不进 `actions`**（`tools` 节的先例：
+/// "本机已经有它"不是一条要做的动作）。
+pub(crate) fn globals(
+    target: &GlobalsFile,
+    local: Option<&GlobalsFile>,
+    opts: &RestoreOptions,
+) -> (SectionPlan, Vec<ManualAction>) {
+    let wanted = crate::globals::globals_wanted(
+        target,
+        local,
+        opts.globals_base.as_deref(),
+        &opts.globals_cache,
+    );
+    let mut counts = SectionCounts::with_keys(&[
+        "already-present",
+        "install",
+        "version-conflict",
+        "unsupported",
+        "extra",
+    ]);
+    let mut actions: Vec<PlannedAction> = Vec::new();
+    let mut manual: Vec<ManualAction> = Vec::new();
+    let mut writes = Writes::default();
+
+    for install in &wanted.installs {
+        let tool = install.tool.slug();
+        let name = ascii_token(&install.name);
+        let version = ascii_token(&install.version);
+        counts.bump_row("install");
+        counts.bump_effective("install");
+        writes.writes = true;
+        writes.installs |= install.needs_network;
+        actions.push(PlannedAction::new(
+            format!("globals:{tool}:{name}"),
+            "install-global",
+            &format!("{tool}:{name}@{version}"),
+            format!(
+                "tool={tool} version={version} to={} sources={} cached={}",
+                install.target.display(),
+                install.sources.join("+"),
+                if install.needs_network { "no" } else { "yes" },
+            ),
+        ));
+    }
+
+    // 本机我们自己的根里已经有它 —— **只计数**（`tools` 节的先例）。
+    for _ in &wanted.already_present {
+        counts.bump_row("already-present");
+    }
+
+    // 我们从不卸载本机多出来的包，只报数（与 `tools`/`wsl` 的 `extra` 同一条）。
+    for _ in &wanted.extra {
+        counts.bump_row("extra");
+    }
+
+    for conflict in &wanted.conflicts {
+        let tool = conflict.tool.slug();
+        let name = ascii_token(&conflict.name);
+        let pairs: Vec<String> = conflict
+            .versions
+            .iter()
+            .map(|(source, version)| format!("{source}={}", ascii_token(version)))
+            .collect();
+        counts.bump_row("version-conflict");
+        writes.unsupported = true;
+        let detail = format!("tool={tool} {}", pairs.join(" "));
+        actions.push(PlannedAction::new(
+            format!("globals:{tool}:{name}"),
+            "version-conflict",
+            &format!("{tool}:{name}"),
+            &detail,
+        ));
+        manual.push(ManualAction::new(
+            ManualActionCode::GlobalsVersionConflict,
+            &format!("{tool}:{name}"),
+            &detail,
+            REMEDIATION_RESOLVE_MANUALLY,
+        ));
+    }
+
+    for unsupported in &wanted.unsupported {
+        let tool = unsupported.tool.slug();
+        let name = ascii_token(&unsupported.name);
+        let version = ascii_token(&unsupported.version);
+        counts.bump_row("unsupported");
+        writes.unsupported = true;
+        actions.push(PlannedAction::new(
+            format!("globals:{tool}:{name}"),
+            "unsupported",
+            &format!("{tool}:{name}@{version}"),
+            format!("tool={tool} reason={}", unsupported.reason),
+        ));
+    }
+
+    // 前缀搬家：**每个工具一条**。这句话说的不是"缺一个包"，而是"快照里那些包
+    // 不在我们装的地方" —— 与这一节有没有要装的包无关。
+    for moved in &wanted.prefix_moved {
+        let tool = moved.tool.slug();
+        manual.push(ManualAction::new(
+            ManualActionCode::GlobalsPrefixMoved,
+            tool,
+            format!("tool={tool} to={} from={}", moved.to.display(), moved.from).as_str(),
+            REMEDIATION_USE_TUOEN_GLOBALS_LIST,
+        ));
+    }
+
+    let note = if wanted.root_unreadable {
+        Some(NOTE_GLOBALS_ROOT_UNREADABLE)
+    } else if writes.installs {
+        Some(NOTE_NEEDS_NETWORK)
+    } else {
+        None
+    };
+    assemble_with(
+        SectionId::Globals,
+        counts,
+        actions,
+        writes,
+        note,
+        &mut manual,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::capture::Existence;
+    use crate::globals::{GlobalsSource, GlobalsTool};
 
     use crate::restore::test_support as fixture;
 
@@ -1458,5 +1626,326 @@ mod tests {
             plan.counts.effective.is_empty(),
             "没写东西时 effective 是空的"
         );
+    }
+
+    // ── globals（票据 #24） ───────────────────────────────────────────────
+
+    const GLOBALS_AT: &str = "2026-01-01T00:00:00Z";
+    const GLOBALS_BASE: &str = r"C:\Users\me\AppData\Local\tuoen\globals";
+
+    fn global_row(
+        tool: GlobalsTool,
+        source: GlobalsSource,
+        tool_version: &str,
+        prefix: Option<&str>,
+        packages: &[(&str, &str)],
+    ) -> crate::capture::GlobalRow {
+        crate::capture::GlobalRow {
+            tool: tool.slug().to_owned(),
+            source: source.slug().to_owned(),
+            tool_version: tool_version.to_owned(),
+            prefix: prefix.map(str::to_owned),
+            prefix_inside_version_dir: prefix.map(|_| false),
+            packages: packages
+                .iter()
+                .map(|(name, version)| crate::capture::GlobalPackage {
+                    name: (*name).to_owned(),
+                    version: (*version).to_owned(),
+                })
+                .collect(),
+            enumerate_error: None,
+        }
+    }
+
+    fn globals_file(rows: Vec<crate::capture::GlobalRow>) -> GlobalsFile {
+        let mut file = GlobalsFile::new(GLOBALS_AT);
+        file.global = rows;
+        file
+    }
+
+    /// 本机现场：npm 与 pip 两个工具都在，npm 的运行时版本是 `v24.19.0`。
+    fn local_globals(packages: &[(&str, &str)]) -> GlobalsFile {
+        globals_file(vec![
+            global_row(
+                GlobalsTool::Npm,
+                GlobalsSource::Machine,
+                "v24.19.0",
+                Some(r"C:\nvm4w\nodejs"),
+                &[],
+            ),
+            global_row(
+                GlobalsTool::Npm,
+                GlobalsSource::Tuoen,
+                "v24.19.0",
+                Some(&format!(r"{GLOBALS_BASE}\npm\v24.19.0")),
+                packages,
+            ),
+        ])
+    }
+
+    /// 快照：npm 的机器侧一行，带 `packages`。
+    fn target_globals(packages: &[(&str, &str)]) -> GlobalsFile {
+        globals_file(vec![global_row(
+            GlobalsTool::Npm,
+            GlobalsSource::Machine,
+            "v24.19.0",
+            Some(r"C:\nvm4w\nodejs"),
+            packages,
+        )])
+    }
+
+    fn globals_opts(cache: &[(&str, bool)]) -> RestoreOptions {
+        RestoreOptions {
+            globals_base: Some(std::path::PathBuf::from(GLOBALS_BASE)),
+            globals_cache: cache
+                .iter()
+                .map(|(key, cached)| ((*key).to_owned(), *cached))
+                .collect(),
+            ..RestoreOptions::all()
+        }
+    }
+
+    #[test]
+    fn globals_reports_all_of_its_keys_even_when_zero() {
+        let (plan, manual) = globals(&globals_file(Vec::new()), None, &globals_opts(&[]));
+        assert_eq!(
+            counts_of(&plan),
+            vec![
+                ("already-present".to_owned(), 0),
+                ("extra".to_owned(), 0),
+                ("install".to_owned(), 0),
+                ("unsupported".to_owned(), 0),
+                ("version-conflict".to_owned(), 0),
+            ],
+            "形状稳定：GUI / 脚本可以无条件取键"
+        );
+        assert!(plan.counts.effective.is_empty());
+        assert_eq!(plan.status, SectionStatus::NoChange);
+        assert!(plan.actions.is_empty());
+        assert!(manual.is_empty());
+    }
+
+    #[test]
+    fn a_cached_package_is_would_change_and_does_not_need_the_network() {
+        // **票据 #24 §3 的两条断言同时成立只有这样**：`installs` 在这一节里
+        // 承载的是"需要网络"，不是"有 install 动作"。
+        let (plan, _) = globals(
+            &target_globals(&[("pnpm", "11.21.0")]),
+            Some(&local_globals(&[])),
+            &globals_opts(&[("npm:pnpm@11.21.0", true)]),
+        );
+        assert_eq!(plan.status, SectionStatus::WouldChange);
+        assert!(!plan.needs_network, "缓存里能解决 ⇒ 不需要网络");
+        assert_eq!(plan.counts.rows["install"], 1);
+        assert_eq!(plan.counts.effective["install"], 1, "真会落地一条");
+        assert_eq!(plan.actions.len(), 1);
+        let action = &plan.actions[0];
+        assert_eq!(action.id, "globals:npm:pnpm");
+        assert_eq!(action.kind, "install-global");
+        assert_eq!(action.subject, "npm:pnpm@11.21.0");
+        assert!(action.detail.contains("cached=yes"), "{}", action.detail);
+        assert!(
+            action
+                .detail
+                .contains(&format!(r"to={GLOBALS_BASE}\npm\v24.19.0")),
+            "计划里逐条写出目标路径：{}",
+            action.detail
+        );
+        assert!(
+            action.detail.contains("sources=machine"),
+            "{}",
+            action.detail
+        );
+        assert_eq!(plan.note, None, "全都能离线解决时没有'要网络'那句说明");
+    }
+
+    #[test]
+    fn a_package_that_is_not_cached_needs_the_network() {
+        let (plan, _) = globals(
+            &target_globals(&[("pnpm", "11.21.0")]),
+            Some(&local_globals(&[])),
+            &globals_opts(&[]),
+        );
+        assert_eq!(plan.status, SectionStatus::NeedsNetwork);
+        assert!(plan.needs_network);
+        assert!(plan.actions[0].detail.contains("cached=no"));
+        assert_eq!(plan.note.as_deref(), Some(NOTE_NEEDS_NETWORK));
+    }
+
+    #[test]
+    fn a_pip_package_always_needs_the_network() {
+        // pip 没有可证明的离线解析路径 ⇒ 一律算要网络（诚实缺口，写进报告）。
+        let target = globals_file(vec![global_row(
+            GlobalsTool::Pip,
+            GlobalsSource::Machine,
+            "3.12",
+            Some(r"C:\Python312"),
+            &[("pypinyin", "0.55.0")],
+        )]);
+        let local = globals_file(vec![global_row(
+            GlobalsTool::Pip,
+            GlobalsSource::Machine,
+            "3.12",
+            Some(r"C:\Python312"),
+            &[],
+        )]);
+        let (plan, _) = globals(&target, Some(&local), &globals_opts(&[]));
+        assert_eq!(plan.status, SectionStatus::NeedsNetwork);
+        assert!(plan.needs_network);
+        assert!(
+            plan.actions[0]
+                .detail
+                .contains(&format!(r"to={GLOBALS_BASE}\pip")),
+            "{}",
+            plan.actions[0].detail
+        );
+    }
+
+    #[test]
+    fn an_already_present_package_is_only_counted() {
+        let (plan, manual) = globals(
+            &target_globals(&[("pnpm", "11.21.0")]),
+            Some(&local_globals(&[("pnpm", "11.21.0")])),
+            &globals_opts(&[]),
+        );
+        assert_eq!(plan.status, SectionStatus::NoChange);
+        assert_eq!(plan.counts.rows["already-present"], 1);
+        assert!(
+            plan.actions.is_empty(),
+            "本机已经有它不是一条要做的动作（`tools` 节的先例）"
+        );
+        assert!(plan.counts.effective.is_empty());
+        // 待办里**只有**"前缀搬家"那一条：包都装好了，但那句话与装没装上无关。
+        assert_eq!(
+            manual
+                .iter()
+                .map(|action| action.code.as_str())
+                .collect::<Vec<_>>(),
+            ["globals-prefix-moved"]
+        );
+    }
+
+    #[test]
+    fn a_different_version_in_our_root_is_not_already_present() {
+        let (plan, _) = globals(
+            &target_globals(&[("pnpm", "11.21.0")]),
+            Some(&local_globals(&[("pnpm", "11.20.0")])),
+            &globals_opts(&[("npm:pnpm@11.21.0", true)]),
+        );
+        assert_eq!(plan.counts.rows["already-present"], 0);
+        assert_eq!(plan.counts.rows["install"], 1, "版本不同就要重装");
+        assert_eq!(plan.counts.rows["extra"], 0);
+    }
+
+    #[test]
+    fn a_version_conflict_is_a_manual_todo_and_installs_nothing() {
+        let target = globals_file(vec![
+            global_row(
+                GlobalsTool::Npm,
+                GlobalsSource::Machine,
+                "v24.19.0",
+                Some(r"C:\nvm4w\nodejs"),
+                &[("pnpm", "11.21.0")],
+            ),
+            global_row(
+                GlobalsTool::Npm,
+                GlobalsSource::Tuoen,
+                "v24.19.0",
+                Some(&format!(r"{GLOBALS_BASE}\npm\v24.19.0")),
+                &[("pnpm", "11.20.0")],
+            ),
+        ]);
+        let (plan, manual) = globals(&target, Some(&local_globals(&[])), &globals_opts(&[]));
+        assert_eq!(plan.counts.rows["version-conflict"], 1);
+        assert_eq!(plan.counts.rows["install"], 0, "一个都不装");
+        assert!(plan.counts.effective.is_empty());
+        assert_eq!(plan.status, SectionStatus::Unsupported);
+        assert_eq!(plan.actions[0].kind, "version-conflict");
+        assert_eq!(plan.actions[0].subject, "npm:pnpm");
+        assert_eq!(
+            plan.actions[0].detail, "tool=npm machine=11.21.0 tuoen=11.20.0",
+            "两个版本都要摆出来（**绝不静默挑一个**）"
+        );
+        let todo = manual
+            .iter()
+            .find(|action| action.code == ManualActionCode::GlobalsVersionConflict)
+            .expect("版本冲突要有一条人工待办");
+        assert_eq!(todo.subject, "npm:pnpm");
+        assert_eq!(todo.remediation, REMEDIATION_RESOLVE_MANUALLY);
+    }
+
+    #[test]
+    fn a_moved_prefix_is_a_manual_todo_with_both_paths() {
+        // 票据 #24 §4 的必需部分：这句话与"装没装上"无关，它说的是"**不在**哪儿"。
+        let (plan, manual) = globals(
+            &target_globals(&[("pnpm", "11.21.0")]),
+            Some(&local_globals(&[("pnpm", "11.21.0")])),
+            &globals_opts(&[]),
+        );
+        assert_eq!(plan.status, SectionStatus::NoChange, "包都已经在");
+        let todo = manual
+            .iter()
+            .find(|action| action.code == ManualActionCode::GlobalsPrefixMoved)
+            .expect("前缀搬家要有一条人工待办");
+        assert_eq!(todo.subject, "npm");
+        assert_eq!(
+            todo.detail,
+            format!(r"tool=npm to={GLOBALS_BASE}\npm\v24.19.0 from=C:\nvm4w\nodejs"),
+            "`to=` 在前、`from=` 在最后（路径里可能有空格）"
+        );
+        assert_eq!(todo.remediation, REMEDIATION_USE_TUOEN_GLOBALS_LIST);
+    }
+
+    #[test]
+    fn an_unreadable_root_is_not_a_no_change() {
+        // 决策 175 的三态：读不出来 ≠ 根是空的。两者都去装，但**绝不算 no-change**。
+        let mut local = local_globals(&[]);
+        local.global[1].enumerate_error = Some("command-failed".to_owned());
+        let (plan, _) = globals(
+            &target_globals(&[("pnpm", "11.21.0")]),
+            Some(&local),
+            &globals_opts(&[("npm:pnpm@11.21.0", true)]),
+        );
+        assert_eq!(plan.counts.rows["install"], 1);
+        assert_eq!(plan.status, SectionStatus::WouldChange);
+        assert_eq!(plan.note.as_deref(), Some(NOTE_GLOBALS_ROOT_UNREADABLE));
+    }
+
+    #[test]
+    fn an_unknown_runtime_version_is_unsupported_not_a_guess() {
+        let mut local = local_globals(&[]);
+        local.global[0].tool_version = "unknown".to_owned();
+        let (plan, manual) = globals(
+            &target_globals(&[("pnpm", "11.21.0")]),
+            Some(&local),
+            &globals_opts(&[]),
+        );
+        assert_eq!(plan.counts.rows["unsupported"], 1);
+        assert_eq!(plan.counts.rows["install"], 0);
+        assert_eq!(plan.actions[0].kind, "unsupported");
+        assert_eq!(
+            plan.actions[0].detail,
+            "tool=npm reason=runtime-version-unknown"
+        );
+        assert_eq!(plan.status, SectionStatus::Unsupported);
+        assert!(
+            manual.is_empty(),
+            "算不出根名不是'前缀搬家'（我们连装到哪儿都不知道）"
+        );
+    }
+
+    #[test]
+    fn extra_packages_in_our_root_are_counted_and_never_removed() {
+        let (plan, _) = globals(
+            &target_globals(&[("pnpm", "11.21.0")]),
+            Some(&local_globals(&[
+                ("pnpm", "11.21.0"),
+                ("something-else", "1.0.0"),
+            ])),
+            &globals_opts(&[]),
+        );
+        assert_eq!(plan.counts.rows["extra"], 1);
+        assert!(plan.actions.is_empty(), "多出来的只报数，从不卸载");
+        assert_eq!(plan.status, SectionStatus::NoChange);
     }
 }

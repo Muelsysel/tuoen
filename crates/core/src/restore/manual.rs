@@ -3,7 +3,8 @@
 //! # 这个文件为什么存在
 //!
 //! `restore` 会做不完的事：要提权的、凭据要用户自己重配的、许可不允许再分发的、
-//! 别人管的工具、这个版本还不支持的。这五类**不是日志**，是票据点名的**公开契约**
+//! 别人管的工具、这个版本还不支持的（#24 又加了两类：全局包装在别处、两个来源版本冲突）。
+//! 这七类**不是日志**，是票据点名的**公开契约**
 //! （决策 152）：GUI（L3）靠 `code` + `detail` 本地化，脚本靠它们做断言。
 //!
 //! 于是有一条硬要求：**中文散文只进人类输出**。这一层里每个字段都是稳定 ASCII，
@@ -25,7 +26,7 @@
 
 use serde::{Deserialize, Serialize};
 
-/// 手动待办的类别。**五个 `code` 是稳定字符串**（决策 152），`as_str` 是唯一取值处。
+/// 手动待办的类别。**七个 `code` 是稳定字符串**（决策 152），`as_str` 是唯一取值处。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ManualActionCode {
@@ -39,16 +40,25 @@ pub enum ManualActionCode {
     ThirdPartyManager,
     /// 这个版本还不支持自动还原的这一条。
     Unsupported,
+    /// 快照里的全局包**不在** tuoen 的根里 —— 它们装在机器自己的 prefix 下（票据 #24 §4）。
+    ///
+    /// 这一条**不是**"缺了什么"，而是"装到哪儿去了"：`npm ls -g` 永远看不到我们装的那些，
+    /// 而用户以为"还原完了就该跟原来一样"。这句话必须说出来（决策 190 的不对称）。
+    GlobalsPrefixMoved,
+    /// 同一个全局包在两个来源里**版本不同** —— 一个都不装，等用户自己定（票据 #24 的安装期规则）。
+    GlobalsVersionConflict,
 }
 
 impl ManualActionCode {
-    /// 全部五类，**顺序即文档里那张表的顺序**（稳定，便于 CLI 生成帮助）。
-    pub const ALL: [Self; 5] = [
+    /// 全部七类，**顺序即文档里那张表的顺序**（稳定，便于 CLI 生成帮助）。
+    pub const ALL: [Self; 7] = [
         Self::RequiresElevation,
         Self::CredentialReconfigure,
         Self::LicenceBlocked,
         Self::ThirdPartyManager,
         Self::Unsupported,
+        Self::GlobalsPrefixMoved,
+        Self::GlobalsVersionConflict,
     ];
 
     /// 稳定小写 slug（进 `--json`，**不本地化**）。
@@ -60,14 +70,15 @@ impl ManualActionCode {
             Self::LicenceBlocked => "licence-blocked",
             Self::ThirdPartyManager => "third-party-manager",
             Self::Unsupported => "unsupported",
+            Self::GlobalsPrefixMoved => "globals-prefix-moved",
+            Self::GlobalsVersionConflict => "globals-version-conflict",
         }
     }
 }
 
 /// 一条手动待办。
 ///
-/// 三个字符串字段**全是纯 ASCII**（由 [`ascii_token`] 保证）。`remediation` 的取值见下面
-/// 那五个常量 —— 它是"用户该做什么"的稳定 slug（`run-as-administrator` 这种），
+/// 三个字符串字段**全是纯 ASCII**（由 [`ascii_token`] 保证）。`remediation` 的取值见下面那七个常量 —— 它是"用户该做什么"的稳定 slug（`run-as-administrator` 这种），
 /// 中文说明（例如"不提权时的降级路径是什么"）属于人类输出，不在这个结构里。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -118,6 +129,16 @@ pub const REMEDIATION_INSTALL_MANUALLY: &str = "install-manually";
 pub const REMEDIATION_USE_THE_MANAGER: &str = "use-the-manager";
 /// 建议"等这个版本支持"（不是失败，是我们明确不做）。
 pub const REMEDIATION_NOT_SUPPORTED_IN_THIS_VERSION: &str = "not-supported-in-this-version";
+/// 建议"用 `tuoen globals list` 看我们管着哪些全局包"（票据 #24 §4）。
+///
+/// 为什么不是 `install-manually`：那些包**已经装好了**，只是装在别的地方 ——
+/// 用户要做的不是再装一遍，而是知道去哪儿找它们。
+pub const REMEDIATION_USE_TUOEN_GLOBALS_LIST: &str = "use-tuoen-globals-list";
+/// 建议"自己决定留哪个版本"（票据 #24 的安装期规则：两个来源版本不同 ⇒ 一个都不装）。
+///
+/// **绝不静默挑一个**：`machine` 那一份是用户此刻真正在用的，`tuoen` 那一份是我们管的根 ——
+/// 挑错了的表现是"工具版本悄悄变了"，而那种事没有任何人会发现。
+pub const REMEDIATION_RESOLVE_MANUALLY: &str = "resolve-manually";
 
 /// 把任意文本压成**纯 ASCII token**：非 ASCII / 控制字符 / 空白 → `-`（连续折叠）。
 ///
@@ -198,7 +219,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_five_codes_have_stable_kebab_slugs() {
+    fn the_seven_codes_have_stable_kebab_slugs() {
         let slugs: Vec<&str> = ManualActionCode::ALL.iter().map(|c| c.as_str()).collect();
         assert_eq!(
             slugs,
@@ -208,8 +229,11 @@ mod tests {
                 "licence-blocked",
                 "third-party-manager",
                 "unsupported",
+                // #24 加的两类：前五类的位置**一个字都没动**（已冻结的载荷顺序）。
+                "globals-prefix-moved",
+                "globals-version-conflict",
             ],
-            "五个 code 是公开契约，顺序与取值都不许漂"
+            "七个 code 是公开契约，顺序与取值都不许漂"
         );
         // 每个 code 都有自己的 slug（复制粘贴漏改会在这里红）。
         let mut unique = slugs.clone();
@@ -228,6 +252,8 @@ mod tests {
             REMEDIATION_NOT_SUPPORTED_IN_THIS_VERSION,
             "not-supported-in-this-version"
         );
+        assert_eq!(REMEDIATION_USE_TUOEN_GLOBALS_LIST, "use-tuoen-globals-list");
+        assert_eq!(REMEDIATION_RESOLVE_MANUALLY, "resolve-manually");
     }
 
     #[test]

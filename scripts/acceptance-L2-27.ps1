@@ -448,15 +448,29 @@ function Invoke-Shell {
 }
 
 # 从一份 `globals.toml` 里切出**一个包**，重组成一份能直接喂给 `restore` 的最小快照：
-# 文件头 + 那个工具的那一行 + 那一个 `[[global.packages]]` 块。
+# 文件头 + 那个工具的**那一行** + 那一个 `[[global.packages]]` 块。
 # 只动文本、不解析再重排 —— 这样写回的快照与产品自己写出来的**逐字同形**。
+#
+# 两个真机上真踩过的坑（都会让"快照"悄悄变成别的东西）：
+#   ① `-split` 出来的**第 0 段就是文件头**（`schema_version` / `captured_at` / `sections`），
+#      而它不含 `tool = `，会被下面的过滤滤掉 —— 少了文件头的快照会被产品判 `snapshot-toml`
+#      （`missing field 'schema_version'`）。所以文件头必须自己拼回去，并且下面从 `[[global]]`
+#      的**位置**开始切，不要把那一段再喂进过滤器。
+#   ② 只要这台机器**曾经**按本票的验收装过一次包，`globals.toml` 里就会有**两个** npm 块
+#      （machine + tuoen）。所以工具块必须按 `source = "machine"` 锁定，否则过滤命中 0 或 2 个、
+#      函数返回 `$false`，而快照目录里已经躺着 `Copy-Item` 复制过来的**整份** capture
+#      —— 于是计划里会多出 10 个包，红得完全看不出根因。
 function New-GlobalsSnapshot {
     param([string]$Source, [string]$Tool, [string]$Name, [string]$Dest)
     if (-not (Test-Path -LiteralPath $Source -PathType Leaf)) { return $false }
     $raw = Get-Content -LiteralPath $Source -Raw
-    # 先按 `[[global]]` 切工具块（文件头跟着第一块走）。
-    $toolBlocks = @(($raw -split "(?m)^(?=\[\[global\]\])") | Where-Object {
-            $_ -match ("(?m)^tool = `"" + [regex]::Escape($Tool) + "`"\s*$") })
+    $headAt = $raw.IndexOf('[[global]]')
+    if ($headAt -lt 0) { return $false }
+    $head = $raw.Substring(0, $headAt)
+    # 工具块：只认 machine 那一块（`[[global]]` 与 `[[global.packages]]` 不会互相误切）。
+    $toolBlocks = @(($raw.Substring($headAt) -split "(?m)^(?=\[\[global\]\])") | Where-Object {
+            ($_ -match ("(?m)^tool = `"" + [regex]::Escape($Tool) + "`"\s*$")) -and
+            ($_ -match '(?m)^source = "machine"\s*$') })
     if ($toolBlocks.Count -ne 1) { return $false }
     $blk = $toolBlocks[0]
     # 块内再按 `[[global.packages]]` 切包 —— 每个包块**自带**它那一行表头。
@@ -465,7 +479,7 @@ function New-GlobalsSnapshot {
     if ($pkgBlocks.Count -ne 1) { return $false }
     $cut = $blk.IndexOf('[[global.packages]]')
     if ($cut -lt 0) { return $false }
-    Set-Content -LiteralPath $Dest -Value ($blk.Substring(0, $cut) + $pkgBlocks[0]) -Encoding utf8 -NoNewline
+    Set-Content -LiteralPath $Dest -Value ($head + $blk.Substring(0, $cut) + $pkgBlocks[0]) -Encoding utf8 -NoNewline
     $true
 }
 
@@ -624,7 +638,13 @@ $gKeys = @(Prop (Prop $g1 'globals') 'keys')
 Check 'globals.toml 的行里有 source 键（加性、永远出键）' ($gKeys -contains 'source') "keys=$($gKeys -join ',')"
 $gEntries = @(Prop (Prop $g1 'globals') 'entries')
 $gSources = @(Prop (Prop $g1 'globals') 'sources')
-Check 'globals.toml 只有 machine 来源（tuoen 的根还是空的）' (($gSources -join ',') -eq 'machine') "sources=$($gSources -join ',')"
+# **不**断言"只有 machine 来源"：那是一条**机器状态**断言（票据 #8 那条规矩的同一族）——
+# 只要这台机器**曾经**跑过一次本脚本，tuoen 的根里就有包，capture 里就会多出 tuoen 那一块，
+# 于是这条断言在"产品完全做对"的时候永远红。这里断言**取值面**（状态无关），
+# "tuoen 侧现在是不是空的"只报事实、不断言。
+Check 'globals.toml 里出现的来源都在 {machine, tuoen} 里' `
+    (@($gSources | Where-Object { $_ -notin @('machine', 'tuoen') }).Count -eq 0) "sources=$($gSources -join ',')"
+Note "capture 时两个来源的行数：$(($gEntries | Group-Object source | ForEach-Object { "$($_.Name)=$($_.Count)" }) -join ' ')（tuoen 侧是否为空取决于这台机器跑过验收没有）"
 $gMachine = @($gEntries | Where-Object { $_.source -eq 'machine' })
 $gNpm = @($gMachine | Where-Object { $_.tool -eq 'npm' })
 Check "globals.toml 的 npm 行数 = globals list 的 $($mNpm.Count)" ($gNpm.Count -eq $mNpm.Count) "capture=$($gNpm.Count) list=$($mNpm.Count)"
@@ -635,8 +655,10 @@ Note "capture 出来的行键：$($gKeys -join ',')"
 #   npm 的 prefix `C:\nvm4w\nodejs` 是指向 `…\nvm\v24.19.0` 的符号链接 ⇒ 解析后落在版本目录里 ⇒ true
 #   pip 的 prefix 以 `Python312` 结尾 —— 含字母，不是版本段 ⇒ false
 $gToolRows = @(Prop (Prop $g1 'globals') 'tool_rows')
-$gRowNpm = @($gToolRows | Where-Object { $_.tool -eq 'npm' })
-$gRowPip = @($gToolRows | Where-Object { $_.tool -eq 'pip' })
+# 同样按 `source` 锁定 machine 那两行：装过包之后 tool 行会出现 npm(machine)+npm(tuoen)，
+# 只按 `tool` 过滤会数出 2，于是这三条断言在"产品做对了"的时候红。
+$gRowNpm = @($gToolRows | Where-Object { $_.tool -eq 'npm' -and $_.source -eq 'machine' })
+$gRowPip = @($gToolRows | Where-Object { $_.tool -eq 'pip' -and $_.source -eq 'machine' })
 Check 'globals.toml 里 npm 那行 prefix_inside_version_dir = true' `
     ($gRowNpm.Count -eq 1 -and $gRowNpm[0].inside -eq $true) `
     "rows=$($gRowNpm.Count) inside=$(if ($gRowNpm.Count -eq 1) { $gRowNpm[0].inside } else { 'n/a' })"
@@ -737,20 +759,37 @@ if (Test-Path -LiteralPath $pkgDir) {
     Note "tuoen 的根里还没有 pnpm —— 这一轮会是第一次装"
 }
 
-# 快照 = §3 那份真机 capture，但 `globals.toml` 只留 **pnpm 那一行** ——
-# 这样"真的做了什么"是一个能逐项核对的有限动作，而不是"把机器上七个包都装一遍"。
+# 快照 = 一份**完整**的真机 capture（六个 section 文件都在），但 `globals.toml` 只留
+# **machine 侧的 pnpm 那一行**：
+#   ① 只留一行，是要让"真的做了什么"是一个能逐项核对的**有限**动作
+#      （而不是"把机器上七个包都装一遍"）；
+#   ② 用**完整** capture（不是 `--only globals`）是因为决策 188 的收口只有在
+#      **磁盘上真的有 `configs.toml`** 时才看得见 —— 那一刻 `summary.unrestorable`
+#      才应该恰好等于 `configs`，而 `globals` 必须**不在**里面。
+$fullDir = Join-Path $root 'capture-full'
+$capFull = Invoke-Tuoen @('capture', '--out', $fullDir) 'capture 完整'
+Check '完整 capture 退出 0（决策 188 那份快照需要 configs.toml 在场）' ($capFull.Exit -eq 0) "exit=$($capFull.Exit)"
 $snap = Join-Path $root 'snap-1'
 New-Item -ItemType Directory -Path $snap -Force | Out-Null
-Copy-Item -Path (Join-Path $capDir '*') -Destination $snap -Force
-$okPnpm = New-GlobalsSnapshot -Source (Join-Path $capDir 'globals.toml') -Tool 'npm' -Name 'pnpm' -Dest (Join-Path $snap 'globals.toml')
-Check '快照里能定位到 pnpm 那一行、并且只留它' $okPnpm ''
+Copy-Item -Path (Join-Path $fullDir '*') -Destination $snap -Force
+$snapGlobals = Join-Path $snap 'globals.toml'
+$okPnpm = New-GlobalsSnapshot -Source (Join-Path $fullDir 'globals.toml') -Tool 'npm' -Name 'pnpm' -Dest $snapGlobals
+Check '快照里能定位到 machine 侧的 pnpm 那一行、并且只留它' $okPnpm "snap=$snapGlobals"
+$snapHead = if (Test-Path -LiteralPath $snapGlobals) {
+    ((Get-Content -LiteralPath $snapGlobals -Raw) -split "`n" | Select-Object -First 2) -join ' | '
+} else { '(文件不在)' }
+Check '写出来的 globals.toml 带 schema_version 文件头（少了它产品会判 snapshot-toml）' `
+    ((Test-Path -LiteralPath $snapGlobals) -and ((Get-Content -LiteralPath $snapGlobals -Raw) -match '(?m)^\s*schema_version')) `
+    "head=$snapHead"
 
 $plan1 = Invoke-Tuoen @('restore', $snap, '--only', 'globals', '--json') 'restore plan globals'
 Check 'restore --only globals（计划）退出 0' ($plan1.Exit -eq 0) "exit=$($plan1.Exit)"
 $p1 = Get-Payload $plan1
 
 # 决策 188 的收口：`globals` 从"不认识的 section"变成认识的之后，
-# `summary.unrestorable` 必须**只剩 `configs`**（那个键只在真有它们时才出）。
+# `summary.unrestorable` 必须**只剩 `configs`**（`globals` 必须不在里面）。
+# 那个键只在"磁盘上真的有那个文件"时才出 —— 所以 §5 的快照用的是**完整** capture
+# （带 `configs.toml`），否则这个键根本不出现、"收口对不对"就测不到。
 $unrestorable = @(Arr (Prop $p1 'summary') 'unrestorable')
 Check '决策 188：summary.unrestorable 只剩 configs' (($unrestorable -join ',') -eq 'configs') "unrestorable=$($unrestorable -join ',')"
 

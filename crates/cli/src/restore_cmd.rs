@@ -23,9 +23,14 @@
 //! * **不调用 `setx`**：1024 字符处静默裁剪 + 永久展开 `%VAR%`。
 //! * **不自动提权**：需要提权的部分只报告。
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use tuoen_core::capture::{CaptureError, Section};
+use tuoen_core::globals::{
+    FAILURE_NEEDS_NETWORK, GlobalsRoot, PackageOutcome, globals_wanted, install_globals,
+    probe_npm_cache,
+};
 use tuoen_core::pathdiff::{DiffClass, PathDiffOptions, Selection};
 use tuoen_core::restore::{
     PlannedAction, RestoreBundle, RestoreError, RestoreOptions, RestorePlan, SectionId,
@@ -97,12 +102,20 @@ pub fn run(args: &RestoreArgs) -> i32 {
     };
 
     let who = username(&backends);
-    let options = RestoreOptions {
+    // **我们自己的根**（决策 187 的接缝）：`plan` 是纯函数，所以"根在哪"在这里算。
+    // 算不出来（没有 `%LOCALAPPDATA%`）就是 `None` —— 那一节的包会被记成
+    // `unsupported` + `reason=globals-root-unknown`，**绝不**静默跳过。
+    let globals_base = GlobalsRoot::from_process_env()
+        .ok()
+        .map(|root| root.base().to_path_buf());
+    let mut options = RestoreOptions {
         sections: args.only.clone(),
         with_fix: args.with_fix,
         current_username: who.value.clone(),
+        globals_base,
+        globals_cache: BTreeMap::new(),
     };
-    // "哪几节"只有一处定义（core 的 `effective_sections`：空 = 全部四节、顺序固定）。
+    // "哪几节"只有一处定义（core 的 `effective_sections`：空 = 全部五节、顺序固定）。
     let selected = options.effective_sections();
 
     let ctx = backends.context(true);
@@ -111,6 +124,21 @@ pub fn run(args: &RestoreArgs) -> i32 {
         Err(error) => return report_capture_failure(args.json, command, &error),
     };
     let local = RestoreBundle::from_capture(&captured);
+
+    // **缓存探针**（票据 #24 §3）：计划里的 `needsNetwork` 是**量出来的**，
+    // 不是"有 install 动作就算要网络"。只探真的要装的那些包，而且只在选中了
+    // `globals` 时才探 —— 没选中就**一个进程都不起**。
+    if selected.contains(&SectionId::Globals)
+        && let Some(file) = target.globals.as_ref()
+    {
+        let wanted = globals_wanted(
+            file,
+            local.globals.as_ref(),
+            options.globals_base.as_deref(),
+            &BTreeMap::new(),
+        );
+        options.globals_cache = probe_npm_cache(&ctx, &wanted.installs);
+    }
 
     // **纯函数**：计划与真做读的是同一份东西（决策 150）。
     let plan = plan(&target, &local, &options);
@@ -124,15 +152,14 @@ pub fn run(args: &RestoreArgs) -> i32 {
         return finish(args.json, &plan, &who, &unrestorable, None);
     }
 
-    let report = apply_plan(&backends, &plan, &target, &local, &options);
-    let code = if report.failed() {
-        exit::RUNTIME_ERROR
-    } else {
-        exit::SUCCESS
-    };
-    finish(args.json, &plan, &who, &unrestorable, Some(&report));
-    code
+    let report = apply_plan(&backends, &plan, &target, &local, &options, args.offline);
+    // 退出码与信封里的 `ok` **在同一处**决定（`finish`）—— 分成两处算过，
+    // 结果是"退出码 1 而 `ok: true`"真的发生过。
+    finish(args.json, &plan, &who, &unrestorable, Some(&report))
 }
+
+/// `--apply` 有失败时的稳定错误码（与退出码 1 成对出现）。
+const APPLY_FAILED: &str = "apply-failed";
 
 /// 计划做好了：输出 + 退出码。两种模式共用，所以"计划"这一段不可能漂移。
 fn finish(
@@ -142,6 +169,7 @@ fn finish(
     unrestorable: &[String],
     apply: Option<&ApplyReport>,
 ) -> i32 {
+    let failed = apply.is_some_and(ApplyReport::failed);
     if json {
         // 四个顶层键**逐字来自** core 的 `RestorePlan`（引用，不重算）——
         // 摊开写只是为了在 `summary` 里塞进那个 CLI 侧拥有的 `unrestorable`。
@@ -155,11 +183,40 @@ fn finish(
             },
             apply,
         };
-        crate::print_json(&Envelope::ok(command_name(apply.is_some()), &view));
+        if failed {
+            // 逐节落盘的命令：有东西没做成就是 `ok: false` + 一个稳定错误码，而 `data`
+            // 照旧交出去（已经做了什么必须看得见）。
+            //
+            // 这里曾经**无条件**用 `Envelope::ok`，于是"退出码 1、`ok: true`"真的出现过 ——
+            // 正是 `Envelope::partial` 的文档（`crates/cli/src/envelope.rs`）点名禁止的那种
+            // 自相矛盾："脚本会以为一切正常"。
+            let failures = apply.map_or(&[][..], |report| report.failures.as_slice());
+            let message = match failures.first() {
+                Some(first) => format!(
+                    "还原没有全部成功：{} 项失败（第一条 {}：{}）",
+                    failures.len(),
+                    first.code,
+                    first.detail
+                ),
+                None => "还原没有全部成功".to_owned(),
+            };
+            crate::print_json(&Envelope::partial(
+                command_name(apply.is_some()),
+                APPLY_FAILED,
+                message,
+                &view,
+            ));
+        } else {
+            crate::print_json(&Envelope::ok(command_name(apply.is_some()), &view));
+        }
     } else {
         print_plan_human(plan, who, unrestorable, apply);
     }
-    exit::SUCCESS
+    if failed {
+        exit::RUNTIME_ERROR
+    } else {
+        exit::SUCCESS
+    }
 }
 
 fn command_name(applying: bool) -> &'static str {
@@ -186,6 +243,7 @@ fn section_of(id: SectionId) -> Section {
         SectionId::Path => Section::Path,
         SectionId::Env => Section::Env,
         SectionId::Wsl => Section::Wsl,
+        SectionId::Globals => Section::Globals,
     }
 }
 
@@ -222,6 +280,7 @@ fn apply_plan(
     target: &RestoreBundle,
     local: &RestoreBundle,
     options: &RestoreOptions,
+    offline: bool,
 ) -> ApplyReport {
     let mut report = ApplyReport::new();
     // **只**按这个函数的结论决定碰哪些节。
@@ -236,6 +295,7 @@ fn apply_plan(
             // WSL 只报告：装发行版要 `wsl --install`（会重启、会改 Windows 功能），
             // 那不是"还原一份环境快照"该顺手做的事。
             SectionId::Wsl => SectionApply::plain(section, "report-only", false),
+            SectionId::Globals => apply_globals(backends, section, target, local, options, offline),
         };
         report.push(applied.outcome, applied.failures);
     }
@@ -257,8 +317,34 @@ impl SectionApply {
                 wrote,
                 broadcast_replies: None,
                 error: None,
+                packages: Vec::new(),
             },
             failures: Vec::new(),
+        }
+    }
+
+    /// 一节带着**逐包结果**收尾（只有 `globals` 用得上）。
+    fn with_packages(
+        section: &SectionPlan,
+        wrote: bool,
+        packages: Vec<PackageOutcome>,
+        failures: Vec<ApplyFailure>,
+    ) -> Self {
+        let outcome = if failures.is_empty() {
+            if wrote { "applied" } else { "no-change" }
+        } else {
+            "failed"
+        };
+        Self {
+            outcome: SectionOutcome {
+                id: section.id.as_str(),
+                outcome,
+                wrote,
+                broadcast_replies: None,
+                error: failures.first().cloned(),
+                packages,
+            },
+            failures,
         }
     }
 
@@ -271,6 +357,7 @@ impl SectionApply {
                 wrote: false,
                 broadcast_replies: None,
                 error: Some(failure.clone()),
+                packages: Vec::new(),
             },
             failures: vec![failure],
         }
@@ -306,6 +393,61 @@ fn apply_tools(section: &SectionPlan) -> SectionApply {
         }
     }
     section_apply(section, wrote, failures)
+}
+
+/// `globals`：把两个来源的全局包装进**我们自己的根**（票据 #24）。
+///
+/// # 三件事按顺序发生，顺序是刻意的
+///
+/// 1. **重算一遍要装什么** —— 用的是与 `plan` **同一个** `globals_wanted`，只是这次带着
+///    探针的结果（`options.globals_cache`）。计划与执行读同一份判据，所以
+///    `already-present` / `version-conflict` 在这里也都可达。
+/// 2. **`--offline` 的承诺先兑现**：有必须联网的包就**整节拒绝**、一个字节都不写，
+///    并点名是哪几个包（票据 #24 的安装期补充规则②：它是"绝不碰网络"的承诺，
+///    不是"优先用缓存"）。
+/// 3. **逐包 staging + 翻转**（`install_globals`）：一个失败不拖垮整节。
+fn apply_globals(
+    backends: &Backends,
+    section: &SectionPlan,
+    target: &RestoreBundle,
+    local: &RestoreBundle,
+    options: &RestoreOptions,
+    offline: bool,
+) -> SectionApply {
+    let Some(file) = target.globals.as_ref() else {
+        // 快照里没有这一节时计划是 `skipped`，走不到这里；真走到了也什么都不写。
+        return SectionApply::plain(section, "no-change", false);
+    };
+    let wanted = globals_wanted(
+        file,
+        local.globals.as_ref(),
+        options.globals_base.as_deref(),
+        &options.globals_cache,
+    );
+    if wanted.installs.is_empty() {
+        return SectionApply::plain(section, "no-change", false);
+    }
+    if offline && wanted.needs_network() {
+        return SectionApply::failed(
+            section,
+            FAILURE_NEEDS_NETWORK,
+            format!(
+                "offline=yes packages={}",
+                wanted.network_packages().join(",")
+            ),
+        );
+    }
+    let ctx = backends.context(true);
+    let report = install_globals(ctx.runner, &wanted, offline);
+    let failures = report
+        .failures
+        .iter()
+        .map(|failure| ApplyFailure {
+            code: failure.code,
+            detail: failure.detail.clone(),
+        })
+        .collect();
+    SectionApply::with_packages(section, report.wrote, report.packages, failures)
 }
 
 /// 从计划里那一条 `install` 反推出 `install` 命令要的 `spec`。
@@ -491,6 +633,7 @@ fn section_apply(section: &SectionPlan, wrote: bool, failures: Vec<ApplyFailure>
             wrote,
             broadcast_replies: None,
             error: failures.first().cloned(),
+            packages: Vec::new(),
         },
         failures,
     }
@@ -620,12 +763,12 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_only_means_all_four_sections() {
+    fn an_empty_only_means_all_five_sections() {
         // "空 = 我没限制"这条约定由 core 的 `effective_sections` 拥有，
-        // CLI 只是把空 `--only` 原样传下去 —— 这里钉住"传下去之后是四节"。
+        // CLI 只是把空 `--only` 原样传下去 —— 这里钉住"传下去之后是五节"。
         let options = RestoreOptions::default();
         assert_eq!(options.effective_sections(), SectionId::ALL.to_vec());
-        assert_eq!(capture_sections(&options.effective_sections()).len(), 4);
+        assert_eq!(capture_sections(&options.effective_sections()).len(), 5);
     }
 
     #[test]

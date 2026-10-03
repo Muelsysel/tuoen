@@ -37,16 +37,23 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use tuoen_platform::FileSystem;
 
-use crate::capture::{CaptureBundle, EnvFile, PathFile, SkippedFile, ToolsFile, WslFile};
+use crate::capture::{
+    CaptureBundle, EnvFile, GlobalsFile, PathFile, SkippedFile, ToolsFile, WslFile,
+};
 
 use super::SectionId;
 
-/// 四个 section 各自的文件名（**顺序即 `SectionId::ALL` 的顺序**）。
-pub const SNAPSHOT_FILES: [(SectionId, &str); 4] = [
+/// 五个 section 各自的文件名（**顺序即 `SectionId::ALL` 的顺序**）。
+///
+/// `globals.toml` **追加在末尾**（决策 165 的收口处）：这张表的顺序与
+/// [`SectionId::ALL`] 是同一个顺序，而 `summary.unrestorable` 的差集顺序也是它 ——
+/// 插在中间会让 `["configs"]` 之外多出一种排列。
+pub const SNAPSHOT_FILES: [(SectionId, &str); 5] = [
     (SectionId::Tools, "tools.toml"),
     (SectionId::Path, "path.toml"),
     (SectionId::Env, "env.toml"),
     (SectionId::Wsl, "wsl.toml"),
+    (SectionId::Globals, "globals.toml"),
 ];
 
 /// 跳过清单的文件名。**它不是 section**（跨 section 的一份说明），
@@ -78,6 +85,12 @@ pub struct RestoreBundle {
     /// `wsl.toml`。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub wsl: Option<WslFile>,
+    /// `globals.toml` —— 两个来源的全局包（`machine` / `tuoen`）。
+    ///
+    /// 它是**唯一**一节"还原时写的东西不在快照说的地方"：快照里的 `prefix` 是
+    /// 第三方版本管理器的地盘（决策 154 永不写），我们装进自己的根（票据 #24）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub globals: Option<GlobalsFile>,
     /// `skipped.toml`。**看见了但没写的东西**（本票只用到凭据那一类）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub skipped: Option<SkippedFile>,
@@ -95,6 +108,7 @@ impl RestoreBundle {
             path: bundle.path.clone(),
             env: bundle.env.clone(),
             wsl: bundle.wsl.clone(),
+            globals: bundle.globals.clone(),
             skipped: bundle.skipped.clone(),
         }
     }
@@ -146,6 +160,7 @@ impl RestoreBundle {
                 SectionId::Path => bundle.path = Some(parse(file, &path, &text)?),
                 SectionId::Env => bundle.env = Some(parse(file, &path, &text)?),
                 SectionId::Wsl => bundle.wsl = Some(parse(file, &path, &text)?),
+                SectionId::Globals => bundle.globals = Some(parse(file, &path, &text)?),
             }
         }
 
@@ -183,6 +198,7 @@ impl RestoreBundle {
             SectionId::Path => self.path.is_some(),
             SectionId::Env => self.env.is_some(),
             SectionId::Wsl => self.wsl.is_some(),
+            SectionId::Globals => self.globals.is_some(),
         }
     }
 
@@ -216,6 +232,7 @@ impl RestoreBundle {
             self.path.as_ref().map(|file| file.captured_at.as_str()),
             self.env.as_ref().map(|file| file.captured_at.as_str()),
             self.wsl.as_ref().map(|file| file.captured_at.as_str()),
+            self.globals.as_ref().map(|file| file.captured_at.as_str()),
             self.skipped.as_ref().map(|file| file.captured_at.as_str()),
         ];
         first.into_iter().flatten().find(|text| !text.is_empty())

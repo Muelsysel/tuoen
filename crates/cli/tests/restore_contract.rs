@@ -977,15 +977,30 @@ fn path_actions_use_the_snapshot_side_ids() {
 #[test]
 fn a_real_capture_of_this_machine_is_a_no_change_plan() {
     // 真机形态：现场 `capture` 一份，然后拿它当目标 —— 本机与它自己必然一致，
-    // 所以四节全 `no-change`（决策 155 的幂等）。这一条同时证明
+    // 所以**这四节**全 `no-change`（决策 155 的幂等）。这一条同时证明
     // "整条链路在真机上跑得通"（进程边界 + 真实注册表 + 真实检测引擎）。
+    //
+    // # 为什么显式 `--only` 这四节（票据 #24）
+    //
+    // `globals` 那一节问的是**另一个问题**：它把快照里的全局包**镜像进我们自己的根**
+    // （决策 154：机器自己那个前缀我们永不写）。所以"对着本机自己的快照"在它这里
+    // **第一次永远不会是 `no-change`** —— 本机的 `C:\nvm4w\nodejs` 里那些包，
+    // 在我们自己的根里确实一个都没有。这不是幂等破了，而是那一节的"一致"是
+    // **枚举出来的 `(包, 版本)` 集合与快照里的 tuoen 侧相同**（决策 203）。
+    // 它的幂等（第二次 `no-change`）由 `globals_restore_contract` 那一组用例钉住。
     let fixture = Fixture::new("restore-self");
     let dir = fixture.scratch().join("tuoen.d");
     let capture = fixture.run(&["capture", "--out", &dir.display().to_string()]);
     assert_eq!(capture.status.code(), Some(0), "{}", describe(&capture));
 
     let before = registry_snapshot();
-    let data = plan_data(&fixture, &dir, &[]);
+    let data = plan_data(
+        &fixture,
+        &dir,
+        &[
+            "--only", "tools", "--only", "path", "--only", "env", "--only", "wsl",
+        ],
+    );
 
     for id in ["tools", "path", "env", "wsl"] {
         assert_eq!(
@@ -995,6 +1010,9 @@ fn a_real_capture_of_this_machine_is_a_no_change_plan() {
             section(&data, id)
         );
     }
+    // 没被选中的那一节如实说"你没让我做它"（不是"没有变更"）。
+    assert_eq!(section(&data, "globals")["status"], "skipped");
+    assert_eq!(section(&data, "globals")["note"], "not-selected");
     assert_eq!(data["summary"]["wouldChange"].as_u64(), Some(0));
     assert_eq!(data["summary"]["requiresElevation"].as_u64(), Some(0));
     assert_eq!(data["summary"]["needsNetwork"].as_u64(), Some(0));

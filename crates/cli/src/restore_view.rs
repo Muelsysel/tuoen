@@ -21,12 +21,18 @@
 use std::collections::BTreeMap;
 
 use serde::Serialize;
+use tuoen_core::globals::{
+    PackageOutcome, RESULT_ALREADY_PRESENT, RESULT_INSTALL_FAILED, RESULT_INSTALLED,
+    RESULT_NOT_CACHED, RESULT_SKIPPED_SHADOWED, RESULT_UNSUPPORTED, RESULT_VERSION_CONFLICT,
+    RESULT_VERSION_NOT_FOUND,
+};
 use tuoen_core::restore::{
-    ManualAction, NOTE_FIX_NOT_SELECTED, NOTE_MACHINE_SCOPE_REQUIRES_ELEVATION, NOTE_NEEDS_NETWORK,
-    NOTE_NOT_SELECTED, NOTE_REPORT_ONLY, NOTE_SECTION_NOT_IN_SNAPSHOT,
-    REMEDIATION_INSTALL_MANUALLY, REMEDIATION_NOT_SUPPORTED_IN_THIS_VERSION,
-    REMEDIATION_RECONFIGURE_MANUALLY, REMEDIATION_RUN_AS_ADMINISTRATOR,
-    REMEDIATION_USE_THE_MANAGER, RestorePlan, RestoreSummary, SectionCounts, SectionId,
+    ManualAction, NOTE_FIX_NOT_SELECTED, NOTE_GLOBALS_ROOT_UNREADABLE,
+    NOTE_MACHINE_SCOPE_REQUIRES_ELEVATION, NOTE_NEEDS_NETWORK, NOTE_NOT_SELECTED, NOTE_REPORT_ONLY,
+    NOTE_SECTION_NOT_IN_SNAPSHOT, REMEDIATION_INSTALL_MANUALLY,
+    REMEDIATION_NOT_SUPPORTED_IN_THIS_VERSION, REMEDIATION_RECONFIGURE_MANUALLY,
+    REMEDIATION_RESOLVE_MANUALLY, REMEDIATION_RUN_AS_ADMINISTRATOR, REMEDIATION_USE_THE_MANAGER,
+    REMEDIATION_USE_TUOEN_GLOBALS_LIST, RestorePlan, RestoreSummary, SectionCounts, SectionId,
     SectionPlan,
 };
 
@@ -94,6 +100,12 @@ pub(crate) struct SectionOutcome {
     pub(crate) broadcast_replies: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) error: Option<ApplyFailure>,
+    /// **逐包结果** —— 只有 `globals` 那一节会有（票据 #24 §2：一个失败不拖垮整节，
+    /// 所以"这一节到底成了几个"必须逐条看得见，而不是一句 `applied`）。
+    ///
+    /// 只在非空时出键：别的四节没有"包"这个粒度，出一个空数组会被读成"一个包都没成"。
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(crate) packages: Vec<PackageOutcome>,
 }
 
 /// 一处没做成。**全 ASCII**：成功载荷要能逐字节比对，中文只进人类输出。
@@ -181,12 +193,13 @@ fn print_unrestorable(unrestorable: &[String]) {
     }
     println!();
     println!(
-        "注意：这份快照里还有 **{}** —— L1 的 `restore` **不还原**它们（只捕获）。",
+        "注意：这份快照里还有 **{}** —— `restore` **不还原**它们（只捕获）。",
         unrestorable.join(" · ")
     );
     println!(
-        "  这不是「没看见」：它们的内容在快照里（`globals.toml` / `configs.toml`）。\
-         还原它们要跑包管理器自己的解析、或者替用户写配置文件 —— 两件事 L1 都明确不做。"
+        "  这不是「没看见」：它们的内容在快照里。`restore` 能还原的是 \
+         tools / path / env / wsl / globals；剩下的这些要替用户写工具自己的配置文件 —— \
+         那件事我们明确不做。"
     );
 }
 
@@ -239,6 +252,45 @@ fn print_section(section: &SectionPlan, username: &Username, outcome: Option<&Se
             action.subject,
             action.detail
         );
+    }
+
+    // **决策 203**：装包会执行来自包本身的代码，这句话必须说出来 —— 而且与
+    // "装在 tuoen 的根、**不在**机器原来的前缀"是**同一段说明**（决策 190 那句）。
+    // 我们刻意不加 `--ignore-scripts`（一部分包不跑脚本就是坏的），
+    // 换来的是"安装成功、命令存在、一跑就炸"这种假话 —— 代价要说清。
+    if section.id == SectionId::Globals
+        && section
+            .actions
+            .iter()
+            .any(|action| action.kind == "install-global")
+    {
+        println!(
+            "  这些包装进**我们自己的根**（`tuoen globals list` 看得到），**不在**机器原来的前缀里；"
+        );
+        println!(
+            "  装的时候 npm / pip 会执行**来自包本身**的安装脚本（决策 203：我们刻意不加 `--ignore-scripts`）。"
+        );
+    }
+
+    // 逐包结果（只有 `--apply` 之后才有）：一个失败不拖垮整节，
+    // 所以"这一节到底成了几个"必须逐条看得见，而不是一句 `applied`。
+    if let Some(outcome) = outcome {
+        for package in &outcome.packages {
+            match &package.detail {
+                Some(detail) => println!(
+                    "  · {} {} —— {}（{detail}）",
+                    package.tool,
+                    package.name,
+                    package_result_prose(package.result)
+                ),
+                None => println!(
+                    "  · {} {} —— {}",
+                    package.tool,
+                    package.name,
+                    package_result_prose(package.result)
+                ),
+            }
+        }
     }
 
     if let Some(note) = &section.note {
@@ -352,6 +404,36 @@ pub(crate) fn section_prose(id: SectionId) -> &'static str {
         SectionId::Path => "PATH",
         SectionId::Env => "环境变量",
         SectionId::Wsl => "WSL",
+        SectionId::Globals => "全局包（装进我们自己的根）",
+    }
+}
+
+/// 一个包的结果 slug → 中文。**词表是 core 拥有的**（匹配常量而不是字面量：
+/// 少一个成员时编译器不会红，但这条 `_ =>` 会把 slug 原样打给用户 —— 所以
+/// `every_package_result_has_chinese_prose` 那条用例守着它）。
+fn package_result_prose(result: &str) -> &str {
+    match result {
+        RESULT_INSTALLED => "装好了",
+        RESULT_ALREADY_PRESENT => "我们自己的根里已经有了",
+        RESULT_NOT_CACHED => "缓存里没有（**一个字节都没写**）",
+        RESULT_VERSION_NOT_FOUND => "那个版本在源上不存在",
+        RESULT_INSTALL_FAILED => "安装失败",
+        RESULT_VERSION_CONFLICT => "两个来源版本不同，一个都不装",
+        RESULT_UNSUPPORTED => "做不到",
+        RESULT_SKIPPED_SHADOWED => "被同名的命令遮住了，跳过",
+        other => other,
+    }
+}
+
+/// 从 `globals-prefix-moved` 的 `detail` 里取回两条路径。
+///
+/// `detail` 的形状是 `tool=npm to=<我们装的地方> from=<快照里的前缀>`，**`from=` 在最后**
+/// 是刻意的：路径里可能有空格，只有"最后一段"才不用转义就能整条取回。
+fn prefix_moved_paths(detail: &str) -> (String, String) {
+    let rest = detail.split_once("to=").map_or(detail, |(_, rest)| rest);
+    match rest.split_once(" from=") {
+        Some((to, from)) => (to.trim().to_owned(), from.trim().to_owned()),
+        None => (rest.trim().to_owned(), String::new()),
     }
 }
 
@@ -386,6 +468,9 @@ fn kind_prose(section: SectionId, kind: &str) -> &str {
         (SectionId::Wsl, "missing-distro") => "缺发行版",
         (SectionId::Wsl, "extra-distro") => "多发行版",
         (SectionId::Wsl, "path-differs") => "路径不同",
+        (SectionId::Globals, "install-global") => "装进我们自己的根",
+        (SectionId::Globals, "version-conflict") => "两个来源版本不同，一个都不装",
+        (SectionId::Globals, "unsupported") => "做不到",
         _ => kind,
     }
 }
@@ -406,6 +491,10 @@ fn note_prose(note: &str) -> &'static str {
         }
         NOTE_NEEDS_NETWORK => "需要下载（要网络）",
         NOTE_REPORT_ONLY => "只报告，**不写**",
+        NOTE_GLOBALS_ROOT_UNREADABLE => {
+            "本机**我们自己的根**这次没读到（可能是权限或枚举失败）—— 于是按「全都缺」去装；\
+             这与「根是空的」不是同一件事"
+        }
         _ => "（见 `--json`）",
     }
 }
@@ -417,6 +506,8 @@ fn manual_code_prose(code: &str) -> &str {
         "licence-blocked" => "许可不允许",
         "third-party-manager" => "第三方版本管理器",
         "unsupported" => "不支持",
+        "globals-prefix-moved" => "全局包装在别处",
+        "globals-version-conflict" => "全局包版本冲突",
         other => other,
     }
 }
@@ -451,6 +542,20 @@ fn manual_detail_prose(code: &str, detail: &str) -> String {
         ("requires-elevation", detail) => Some(format!(
             "机器级的写操作（`{detail}`）要管理员权限 —— **tuoen 不自动提权**（决策 12/136）。"
         )),
+        // 票据 #24 §4 的**必需部分**：快照里那些包所在的 `prefix` 不是我们装进去的地方。
+        // 这句话是「npm ls -g 看不到它们」的唯一解释 —— 不说，用户会以为我们什么都没装。
+        ("globals-prefix-moved", detail) => {
+            let (to, from) = prefix_moved_paths(detail);
+            Some(format!(
+                "装进的是 `{to}`，**不在** `{from}`；`npm ls -g` / `pip list` 看不到它们，\
+                 `tuoen globals list` 看得到。"
+            ))
+        }
+        ("globals-version-conflict", detail) => Some(format!(
+            "同一个包在两个来源里版本不同（`{detail}`）—— **一个都不装**：\
+             `machine` 那一份是你此刻真正在用的，`tuoen` 那一份是我们管的根，\
+             挑错了的表现是「工具版本悄悄变了」。请自己决定留哪个。"
+        )),
         _ => None,
     };
     match known {
@@ -468,6 +573,10 @@ fn remediation_prose(remediation: &str) -> &str {
         REMEDIATION_USE_THE_MANAGER => "用它自己的命令升级（tuoen 不接管）",
         REMEDIATION_RECONFIGURE_MANUALLY => "自己把这个凭据重新配一遍",
         REMEDIATION_NOT_SUPPORTED_IN_THIS_VERSION => "等这个版本支持（我们明确不做，不是失败）",
+        REMEDIATION_USE_TUOEN_GLOBALS_LIST => {
+            "用 `tuoen globals list` 看我们管着哪些全局包（它们不在机器原来的前缀里）"
+        }
+        REMEDIATION_RESOLVE_MANUALLY => "自己决定留哪个版本（我们绝不替你挑）",
         other => other,
     }
 }
@@ -479,8 +588,8 @@ mod tests {
 
     #[test]
     fn every_manual_code_has_chinese_prose() {
-        // 五类一个都不能漏（漏了就会把 slug 原样打给用户）。取值表来自 core，
-        // 所以 core 加第六类时这条会红。
+        // 七类一个都不能漏（漏了就会把 slug 原样打给用户）。取值表来自 core，
+        // 所以 core 加第八类时这条会红。
         for code in ManualActionCode::ALL {
             assert_ne!(
                 manual_code_prose(code.as_str()),
@@ -492,6 +601,40 @@ mod tests {
     }
 
     #[test]
+    fn every_package_result_has_chinese_prose() {
+        // 逐包结果的**词表**（票据 #24）：包括本票**不产出**的 `skipped-shadowed` ——
+        // 它是词表成员（消费者会见到它），所以中文散文也必须有。
+        for slug in [
+            RESULT_INSTALLED,
+            RESULT_ALREADY_PRESENT,
+            RESULT_NOT_CACHED,
+            RESULT_VERSION_NOT_FOUND,
+            RESULT_INSTALL_FAILED,
+            RESULT_VERSION_CONFLICT,
+            RESULT_UNSUPPORTED,
+            RESULT_SKIPPED_SHADOWED,
+        ] {
+            assert_ne!(package_result_prose(slug), slug, "{slug} 缺中文");
+        }
+    }
+
+    #[test]
+    fn the_prefix_moved_sentence_says_the_two_paths_apart() {
+        // 票据 #24 §4：这句话必须同时说出"装在哪儿"与"**不在**哪儿"。
+        let (to, from) = prefix_moved_paths(
+            "tool=npm to=C:\\Users\\me\\AppData\\Local\\tuoen\\globals\\npm\\v24.19.0 from=C:\\nvm4w\\nodejs",
+        );
+        assert_eq!(
+            to,
+            "C:\\Users\\me\\AppData\\Local\\tuoen\\globals\\npm\\v24.19.0"
+        );
+        assert_eq!(from, "C:\\nvm4w\\nodejs");
+        let prose = manual_detail_prose("globals-prefix-moved", "tool=npm to=C:\\a from=C:\\b");
+        assert!(prose.contains("不在"), "{prose}");
+        assert!(prose.contains("tuoen globals list"), "{prose}");
+    }
+
+    #[test]
     fn every_remediation_has_chinese_prose() {
         for slug in [
             REMEDIATION_RUN_AS_ADMINISTRATOR,
@@ -499,6 +642,8 @@ mod tests {
             REMEDIATION_INSTALL_MANUALLY,
             REMEDIATION_USE_THE_MANAGER,
             REMEDIATION_NOT_SUPPORTED_IN_THIS_VERSION,
+            REMEDIATION_USE_TUOEN_GLOBALS_LIST,
+            REMEDIATION_RESOLVE_MANUALLY,
         ] {
             assert_ne!(remediation_prose(slug), slug, "{slug} 缺中文");
         }

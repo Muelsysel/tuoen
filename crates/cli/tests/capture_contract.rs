@@ -1483,16 +1483,22 @@ fn the_two_new_sections_are_visible_in_help_and_listed_in_the_schema() {
     assert!(!schema.contains("tools"), "{schema}");
 }
 
-/// 一份带了这两个 section 的快照，`restore` 必须**明说自己不还原它们**。
+/// 一份带了 `configs.toml` 的快照，`restore` 必须**明说自己不还原它**。
 ///
 /// # 这条用例为什么住在这个文件里
 ///
-/// 它测的是**一对命令**：`capture` 真的把这两个 section 写出来，
-/// 而 `restore` 对它们的说法必须能被机器读到（`summary.unrestorable`）。
-/// 前半段是这个文件的主题，后半段是这一票的另一半 —— 拆开写会让
-/// "capture 写出来的东西 restore 认不认"这件事没有一处是被完整测过的。
+/// 它测的是**一对命令**：`capture` 真的把 `configs` 写出来，而 `restore` 对它的说法
+/// 必须能被机器读到（`summary.unrestorable`）。前半段是这个文件的主题，后半段是
+/// 这一票的另一半 —— 拆开写会让"capture 写出来的东西 restore 认不认"没有一处被完整测过。
+///
+/// # 票据 #24 之后这句话变了（**改，不是删**）
+///
+/// `globals` 从"不认识的 section"变成了认识的那一个（决策 188 的收口）：
+/// 现在 `restore` 能还原的是**五节**，差集里只剩 `configs`。
+/// 这条断言因此从 `["globals","configs"]` 变成 `["configs"]` —— 它守的东西一点没变：
+/// **快照里有、而 `restore` 不做的那些，必须被点名说出来**。
 #[test]
-fn a_snapshot_with_the_two_new_sections_says_restore_cannot_restore_them() {
+fn a_snapshot_with_configs_says_restore_cannot_restore_it() {
     let home = IsolatedHome::new("capture-restore-pair");
     let profile = TempDir::new("capture-restore-pair-profile");
     let bin = TempDir::new("capture-restore-pair-bin");
@@ -1520,29 +1526,37 @@ fn a_snapshot_with_the_two_new_sections_says_restore_cannot_restore_them() {
     let data = envelope.data.expect("成功载荷");
     assert_eq!(
         data["summary"]["unrestorable"],
-        value!(["globals", "configs"]),
-        "带了这两个 section 就必须明说：{data}"
+        value!(["configs"]),
+        "带了这一节就必须明说：{data}"
     );
-    // **不许因此改变 `sections` 的四条**：`restore` 能做的仍然是四件事。
+    // `globals` 已经能还原了（票据 #24）⇒ 它**不再**出现在这句话里。
+    assert!(
+        !data["summary"]["unrestorable"]
+            .as_array()
+            .expect("数组")
+            .iter()
+            .any(|slug| slug == "globals"),
+        "globals 已经能还原，不许再报成不还原：{data}"
+    );
+    // 能做的事从四件变成五件 —— `globals` 那一节必须在计划里。
     assert_eq!(
         data["sections"].as_array().expect("数组").len(),
-        4,
-        "`restore` 的四个 section 一个都不许多、一个都不许少：{data}"
+        5,
+        "`restore` 的五个 section 一个都不许多、一个都不许少：{data}"
     );
 
     // 人类输出也要说这句话（`--json` 是给脚本的，人看的是 stdout）：
-    // 一份四条全 `no-change` 的计划**看起来**像"这份快照里的东西本机都有了"，
-    // 而真相是"里面有两类东西我压根不还原"。
+    // 一份全 `no-change` 的计划**看起来**像"这份快照里的东西本机都有了"，
+    // 而真相是"里面还有一类东西我压根不还原"。
     let human = run_capture_in(&home, &profile, &bin, &["restore", out_arg(&full).as_str()]);
     assert_eq!(human.status.code(), Some(0), "{}", describe(&human));
     let text = stdout(&human);
+    assert!(text.contains("不还原"), "要明说这一节不还原：{text}");
+    assert!(text.contains("configs"), "要点名 `configs`：{text}");
     assert!(
-        text.contains("不还原"),
-        "要明说这两个 section 不还原：{text}"
+        text.contains("还有 **configs**"),
+        "不还原的那一节只能有 `configs`：{text}"
     );
-    for slug in ["globals", "configs"] {
-        assert!(text.contains(slug), "要点名 `{slug}`：{text}");
-    }
     assert!(text.contains("没看见"), "要说清这不是「没看见」：{text}");
 
     // 反例：一份**没有**这两个 section 的快照，那个键必须**根本不出现** ——

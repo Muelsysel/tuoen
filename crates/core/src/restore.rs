@@ -61,9 +61,14 @@
 //! 它只用 `%TEMP%` 下自建自删的临时目录。
 
 mod bundle;
-mod manual;
+// `pub(crate)` 而不是私有：`globals::install` 要用 `ascii_token` / `ascii_layout`
+// 把**每一个**进计划的字符串压成 ASCII（决策 152）。把那两把尺子抄第二份，
+// 就是让"进计划的字符串一定是 ASCII"这条契约有两个实现。
+pub(crate) mod manual;
 mod plan;
-mod sections;
+// 同上：`globals::install` 要用 `sections::same_version`（"同名同版本"在
+// `tools` 与 `globals` 两节必须是同一把尺子）。
+pub(crate) mod sections;
 
 pub mod test_support;
 
@@ -71,12 +76,14 @@ pub use bundle::{RestoreBundle, RestoreError, SKIPPED_FILE, SNAPSHOT_FILES};
 pub use manual::{
     ManualAction, ManualActionCode, REMEDIATION_INSTALL_MANUALLY,
     REMEDIATION_NOT_SUPPORTED_IN_THIS_VERSION, REMEDIATION_RECONFIGURE_MANUALLY,
-    REMEDIATION_RUN_AS_ADMINISTRATOR, REMEDIATION_USE_THE_MANAGER, ascii_token,
+    REMEDIATION_RESOLVE_MANUALLY, REMEDIATION_RUN_AS_ADMINISTRATOR, REMEDIATION_USE_THE_MANAGER,
+    REMEDIATION_USE_TUOEN_GLOBALS_LIST, ascii_token,
 };
 pub use plan::{
     PlannedAction, RestoreOptions, RestorePlan, RestoreSummary, SectionCounts, SectionPlan, plan,
 };
 pub use sections::{
-    NOTE_FIX_NOT_SELECTED, NOTE_MACHINE_SCOPE_REQUIRES_ELEVATION, NOTE_NEEDS_NETWORK,
-    NOTE_NOT_SELECTED, NOTE_REPORT_ONLY, NOTE_SECTION_NOT_IN_SNAPSHOT, SectionId, SectionStatus,
+    NOTE_FIX_NOT_SELECTED, NOTE_GLOBALS_ROOT_UNREADABLE, NOTE_MACHINE_SCOPE_REQUIRES_ELEVATION,
+    NOTE_NEEDS_NETWORK, NOTE_NOT_SELECTED, NOTE_REPORT_ONLY, NOTE_SECTION_NOT_IN_SNAPSHOT,
+    SectionId, SectionStatus,
 };
