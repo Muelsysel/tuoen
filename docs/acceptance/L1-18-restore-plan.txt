@@ -1,0 +1,71 @@
+=== A. restore <本机自己 capture 的快照>（人类输出：计划，什么都没有写）===
+命令：tuoen restore C:\Users\Muelsyse\AppData\Local\Temp\tuoen-acceptance-L1-18\tuoen.d
+
+恢复计划 —— 快照：C:\Users\Muelsyse\AppData\Local\Temp\tuoen-acceptance-L1-18\tuoen.d
+模式：只出计划（**什么都没有写**）。要真的做：`tuoen restore C:\Users\Muelsyse\AppData\Local\Temp\tuoen-acceptance-L1-18\tuoen.d --apply`
+
+[tools] 工具 · 无变更
+  行数：extra 0 · installed 27 · missing 0 · third-party 0 · unsupported 0
+
+[path] PATH · 无变更
+  行数：add 0 · caseOnly 0 · fix 24 · keep 25 · move 0 · remove 0
+  当前用户名：Muelsyse（来自进程环境 USERPROFILE）—— 同一份快照在不同用户名下类别会不同
+  说明：fix 类（本机自身的健康问题：重复 / 失效 / 空条目 / 用户名）**默认不选中** —— 要一起应用加 `--with-fix`
+
+[env] 环境变量 · 无变更
+  行数：missing-machine 0 · missing-user 0 · present 32 · secret-skipped 1
+  · [env:ARK_API_KEY] 凭据，跳过 ARK_API_KEY（scope=user）
+
+[wsl] WSL · 无变更
+  行数：extra 0 · missing 0 · path-differs 0 · same 2
+  说明：只报告，**不写**
+
+摘要：4 个 section —— 无变更 4 · 会变更 0 · 需要提权 0 · 需要网络 0 · 不支持 0 · 跳过 0
+这份快照要写的东西：**没有** —— 本机已经和它一致。
+
+注意：这份快照里还有 **globals · configs** —— L1 的 `restore` **不还原**它们（只捕获）。
+  这不是「没看见」：它们的内容在快照里（`globals.toml` / `configs.toml`）。还原它们要跑包管理器自己的解析、或者替用户写配置文件 —— 两件事 L1 都明确不做。
+
+人工待办（3 条）—— **无变更不等于你什么都不用做**：
+  · [第三方版本管理器] nvm4w：由第三方版本管理器 `nvm4w` 管 —— tuoen **不接管**它：改它的符号链接要管理员，而且两个管理器会抢同一个 reparse point。
+    怎么办：用它自己的命令升级（tuoen 不接管）
+  · [第三方版本管理器] uv：由第三方版本管理器 `uv` 管 —— tuoen **不接管**它：改它的符号链接要管理员，而且两个管理器会抢同一个 reparse point。
+    怎么办：用它自己的命令升级（tuoen 不接管）
+  · [凭据要自己重配] env:ARK_API_KEY：变量名里有 `KEY` / `TOKEN` / `SECRET` 这类词，且值够长、不像路径 —— 无法排除它是凭据，所以**它没有进快照**（材料从不进快照）。
+    怎么办：自己把这个凭据重新配一遍
+
+以上是计划，**什么都没有写**。
+
+=== B. restore <同一份快照 + 一个本机没有的变量> --only env（非空计划，同样什么都没有写）===
+命令：tuoen restore C:\Users\Muelsyse\AppData\Local\Temp\tuoen-acceptance-L1-18\probe-snapshot --only env
+
+恢复计划 —— 快照：C:\Users\Muelsyse\AppData\Local\Temp\tuoen-acceptance-L1-18\probe-snapshot
+模式：只出计划（**什么都没有写**）。要真的做：`tuoen restore C:\Users\Muelsyse\AppData\Local\Temp\tuoen-acceptance-L1-18\probe-snapshot --apply`
+
+[tools] 工具 · 跳过
+  说明：你**没有选它**（`--only` 把它排除了）
+
+[path] PATH · 跳过
+  当前用户名：Muelsyse（来自进程环境 USERPROFILE）—— 同一份快照在不同用户名下类别会不同
+  说明：你**没有选它**（`--only` 把它排除了）
+
+[env] 环境变量 · 会变更
+  行数：missing-machine 0 · missing-user 1 · present 32 · secret-skipped 1
+  真会落地：set-user 1
+  · [env:user:TUOEN_L1_ACCEPT_PROBE] 设置（用户级） TUOEN_L1_ACCEPT_PROBE（scope=user）
+  · [env:ARK_API_KEY] 凭据，跳过 ARK_API_KEY（scope=user）
+
+[wsl] WSL · 跳过
+  说明：你**没有选它**（`--only` 把它排除了）
+
+摘要：4 个 section —— 无变更 0 · 会变更 1 · 需要提权 0 · 需要网络 0 · 不支持 0 · 跳过 3
+
+注意：这份快照里还有 **globals · configs** —— L1 的 `restore` **不还原**它们（只捕获）。
+  这不是「没看见」：它们的内容在快照里（`globals.toml` / `configs.toml`）。还原它们要跑包管理器自己的解析、或者替用户写配置文件 —— 两件事 L1 都明确不做。
+
+人工待办（1 条）—— **无变更不等于你什么都不用做**：
+  · [凭据要自己重配] env:ARK_API_KEY：变量名里有 `KEY` / `TOKEN` / `SECRET` 这类词，且值够长、不像路径 —— 无法排除它是凭据，所以**它没有进快照**（材料从不进快照）。
+    怎么办：自己把这个凭据重新配一遍
+
+以上是计划，**什么都没有写**。
+

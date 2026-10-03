@@ -1,0 +1,67 @@
+PATH 逐条 diff —— 目标快照：C:\Users\Muelsyse\AppData\Local\Temp\tuoen-acceptance-L1-18\tuoen.d\path.toml
+当前用户名：Muelsyse（来自进程环境 USERPROFILE）
+  （同一份快照在不同的当前用户名下**类会不同** —— 用户名依赖的行只有在真的有旧名可换时才归 `fix`，其余按它别的性质归类。）
+
+逐条 49 行（本机侧的行 + 只有目标侧的行）：
+  keep 25 · add 0 · remove 0 · move 0 · fix 24 · case-only 0
+
+  [machine:0] keep identical C:\Program Files (x86)\Common Files\Oracle\Java\java8path
+  [machine:1] fix dangling C:\Program Files (x86)\Common Files\Oracle\Java\javapath —— 疑似错写 → C:\Program Files (x86)\Common Files\Oracle\Java\java8path
+  [machine:2] keep identical C:\Windows\system32
+  [machine:3] keep identical C:\Windows
+  [machine:4] keep identical C:\Windows\System32\Wbem
+  [machine:5] keep identical C:\Windows\System32\WindowsPowerShell\v1.0
+  [machine:6] keep identical C:\Windows\System32\OpenSSH
+  [machine:7] keep identical C:\Users\Muelsyse\AppData\Local\Microsoft\WindowsApps（还同时是：username-hardcoded）
+  [machine:8] fix dangling C:\Software\tool —— 疑似错写 → C:\Software\tools
+  [machine:9] fix duplicate C:\WINDOWS —— 与 machine:3 重复
+  [machine:10] fix duplicate C:\WINDOWS\system32 —— 与 machine:2 重复
+  [machine:11] fix duplicate C:\WINDOWS\System32\Wbem —— 与 machine:4 重复
+  [machine:12] fix duplicate C:\WINDOWS\System32\WindowsPowerShell\v1.0 —— 与 machine:5 重复
+  [machine:13] fix duplicate C:\WINDOWS\System32\OpenSSH —— 与 machine:6 重复
+  [machine:14] keep identical C:\Program Files\dotnet
+  [machine:15] keep identical C:\Program Files\NVIDIA Corporation\NVIDIA App\NvDLISR
+  [machine:16] keep identical C:\Program Files (x86)\NVIDIA Corporation\PhysX\Common
+  [machine:17] keep identical C:\Users\Muelsyse\AppData\Local\nvm（还同时是：username-hardcoded）
+  [machine:18] keep identical C:\nvm4w\nodejs
+  [machine:19] keep identical C:\Program Files\Git\cmd
+  [machine:20] keep identical C:\Dev\base\JDK\JDK8\bin
+  [machine:21] fix empty-segment 
+  [machine:22] fix duplicate C:\WINDOWS\system32 —— 与 machine:2 重复
+  [machine:23] fix duplicate C:\WINDOWS —— 与 machine:3 重复
+  [machine:24] fix duplicate C:\WINDOWS\System32\Wbem —— 与 machine:4 重复
+  [machine:25] fix duplicate C:\WINDOWS\System32\WindowsPowerShell\v1.0 —— 与 machine:5 重复
+  [machine:26] fix duplicate C:\WINDOWS\System32\OpenSSH —— 与 machine:6 重复
+  [machine:27] keep identical C:\Program Files\MySQL\MySQL Shell 8.0\bin
+  [machine:28] fix duplicate C:\Software\tool（还同时是：dangling） —— 与 machine:8 重复 —— 疑似错写 → C:\Software\tools
+  [machine:29] keep identical C:\Dev\IDE\IDEA26\IntelliJ IDEA 2026.1.1\bin
+  [machine:30] fix duplicate C:\Program Files\dotnet —— 与 machine:14 重复
+  [machine:31] keep identical C:\Program Files\Docker\Docker\resources\bin
+  [machine:32] keep identical C:\Program Files\GitHub CLI
+  [user:0] keep identical C:\Users\Muelsyse\.local\toolchains\mingw64\bin（还同时是：username-hardcoded）
+  [user:1] keep identical C:\Dev\agent\dsh-lastest\resources\runtime\cli\bin
+  [user:2] keep identical C:\Users\Muelsyse\.local\bin（还同时是：username-hardcoded）
+  [user:3] keep identical C:\Users\Muelsyse\AppData\Local\Programs\Python\Python312\Scripts（还同时是：username-hardcoded）
+  [user:4] keep identical C:\Users\Muelsyse\AppData\Local\Programs\Python\Python312（还同时是：username-hardcoded）
+  [user:5] keep identical C:\Users\Muelsyse\AppData\Local\Programs\Python\Launcher（还同时是：username-hardcoded）
+  [user:6] fix dangling C:\Users\Muelsyse\AppData\Local\Programs\MVTec\HALCON-25.11-Progress\bin\x64-win64（还同时是：username-hardcoded）
+  [user:7] fix dangling C:\Users\Muelsyse\AppData\Local\Programs\Python\Python311\Scripts（还同时是：username-hardcoded）
+  [user:8] fix dangling C:\Users\Muelsyse\AppData\Local\Programs\Python\Python311（还同时是：username-hardcoded） —— 疑似错写 → C:\Users\Muelsyse\AppData\Local\Programs\Python\Python312
+  [user:9] fix duplicate C:\Program Files\MySQL\MySQL Shell 8.0\bin —— 与 machine:27 重复
+  [user:10] fix duplicate C:\Users\Muelsyse\AppData\Local\Microsoft\WindowsApps（还同时是：username-hardcoded） —— 与 machine:7 重复
+  [user:11] fix duplicate C:\Software\tool（还同时是：dangling） —— 与 machine:8 重复 —— 疑似错写 → C:\Software\tools
+  [user:12] fix duplicate C:\Users\Muelsyse\AppData\Local\nvm（还同时是：username-hardcoded） —— 与 machine:17 重复
+  [user:13] fix duplicate C:\nvm4w\nodejs —— 与 machine:18 重复
+  [user:14] fix duplicate C:\Dev\IDE\IDEA26\IntelliJ IDEA 2026.1.1\bin —— 与 machine:29 重复
+  [user:15] keep identical C:\Dev\IDE\VScode\Microsoft VS Code\bin
+
+硬编码了用户名的条目：12 条（机器级 2 条 · 用户级 10 条）—— 换账号名之后它们会静默失效。
+  （按 `local.hasUsername` 数的，**不是**按 `fix` 类数的：名字就是当前用户名时没有旧名可换，那些行按其余性质归类，这条事实留在 `also` 里。）
+
+用户名重写：没有（没有「旧名可换」的条目）。
+
+拼写疑似：5 条 —— **只报告，永不自动纠错**（改错一个目录名比不改更危险）。
+
+这只是报告，**什么都没写** —— 没有写注册表、没有落盘、没有广播。
+要真的改：`tuoen path apply <snapshot> --only <类> [--pick <id>] [--dry-run]`。
+

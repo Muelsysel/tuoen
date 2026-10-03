@@ -1,0 +1,201 @@
+tuoen doctor —— 环境体检（**只报告，不修改**）。
+
+错误 7 条：
+  · env.duplicated-scope
+    变量 NVM_HOME 同时被用户级与机器级设过 —— 双重管理腐坏：两份快照都说自己是对的，而覆盖/还原只会动其中一份
+    证据：
+      · user NVM_HOME
+      · machine NVM_HOME
+  · env.duplicated-scope
+    变量 NVM_SYMLINK 同时被用户级与机器级设过 —— 双重管理腐坏：两份快照都说自己是对的，而覆盖/还原只会动其中一份
+    证据：
+      · user NVM_SYMLINK
+      · machine NVM_SYMLINK
+  · path.username-hardcoded
+    `PATH` 上有 12 条条目硬编码了 `C:\Users\<名字>\`，换一台机器必然失效；其中 2 条在**机器级**（改它们要管理员权限）。可搬运的写法是用 `%USERPROFILE%` 或 `%LOCALAPPDATA%`
+    证据：
+      · machine#7 C:\Users\Muelsyse\AppData\Local\Microsoft\WindowsApps (machine-scope)
+      · machine#17 C:\Users\Muelsyse\AppData\Local\nvm (machine-scope)
+      · user#0 C:\Users\Muelsyse\.local\toolchains\mingw64\bin
+      · user#2 C:\Users\Muelsyse\.local\bin
+      · user#3 C:\Users\Muelsyse\AppData\Local\Programs\Python\Python312\Scripts\
+      · user#4 C:\Users\Muelsyse\AppData\Local\Programs\Python\Python312\
+      · user#5 C:\Users\Muelsyse\AppData\Local\Programs\Python\Launcher\
+      · user#6 C:\Users\Muelsyse\AppData\Local\Programs\MVTec\HALCON-25.11-Progress\bin\x64-win64
+      · user#7 C:\Users\Muelsyse\AppData\Local\Programs\Python\Python311\Scripts\
+      · user#8 C:\Users\Muelsyse\AppData\Local\Programs\Python\Python311\
+      · user#10 C:\Users\Muelsyse\AppData\Local\Microsoft\WindowsApps
+      · user#12 C:\Users\Muelsyse\AppData\Local\nvm
+  · tool.global-prefix-inside-version-dir
+    node 的全局包前缀 C:\nvm4w\nodejs 落在版本目录 / reparse point 里 —— 切版本会把这批全局安装的包静默藏起来：它们会跟着旧版本一起离开 PATH，而工具自己会说「一个包都没有」
+    证据：
+      · tool=node prefix=C:\nvm4w\nodejs
+      · origin=probe
+      · reparse=symlink-dir
+      · link-target=C:\Users\Muelsyse\AppData\Local\nvm\v24.19.0
+      · version=24.19.0
+  · tool.multi-manager
+    工具 node 同时被多个版本管理器管着（nvm4w / tuoen）—— 每个管理器各管一份：在其中一边切换版本不会动另一边，而报告里每一条都像是「当前的」
+    证据：
+      · node manager=nvm4w
+      · node manager=tuoen
+  · tool.multiple-active
+    工具 java 的不同命令解析到了 2 个不同的目录 ——「同一个工具」是假象：不同子命令来自不同安装，行为会随命令变（版本号不是证据）
+    证据：
+      · tool=java command=java dir=C:\Program Files (x86)\Common Files\Oracle\Java\java8path
+      · tool=java command=javac dir=C:\Dev\base\JDK\JDK8\bin
+  · tool.multiple-active
+    工具 python 的不同命令解析到了 2 个不同的目录 ——「同一个工具」是假象：不同子命令来自不同安装，行为会随命令变（版本号不是证据）
+    证据：
+      · tool=python command=python dir=C:\Users\Muelsyse\AppData\Local\Microsoft\WindowsApps
+      · tool=python command=pip dir=C:\Users\Muelsyse\AppData\Local\Programs\Python\Python312\Scripts\
+
+警告 13 条：
+  · env.missing-target
+    用户级变量 HALCONROOT 指向的目标不存在：它写着 C:\Users\Muelsyse\AppData\Local\Programs\MVTec\HALCON-25.11-Progress，而那个位置上什么都没有（多半是软件卸了、变量留下了）
+    证据：
+      · user HALCONROOT -> C:\Users\Muelsyse\AppData\Local\Programs\MVTec\HALCON-25.11-Progress
+  · env.path-literal
+    变量 NVM_HOME 的注册表类型是 REG_EXPAND_SZ，但它的值里一个 % 都没有 —— 不一定是错的，但类型与内容不一致，值得看一眼
+    证据：
+      · machine NVM_HOME type=expand-sz kind=expand-without-percent value=C:\Users\Muelsyse\AppData\Local\nvm
+  · env.path-literal
+    变量 NVM_HOME 的注册表类型是 REG_EXPAND_SZ，但它的值里一个 % 都没有 —— 不一定是错的，但类型与内容不一致，值得看一眼
+    证据：
+      · user NVM_HOME type=expand-sz kind=expand-without-percent value=C:\Users\Muelsyse\AppData\Local\nvm
+  · env.path-literal
+    变量 NVM_SYMLINK 的注册表类型是 REG_EXPAND_SZ，但它的值里一个 % 都没有 —— 不一定是错的，但类型与内容不一致，值得看一眼
+    证据：
+      · machine NVM_SYMLINK type=expand-sz kind=expand-without-percent value=C:\nvm4w\nodejs
+  · env.path-literal
+    变量 NVM_SYMLINK 的注册表类型是 REG_EXPAND_SZ，但它的值里一个 % 都没有 —— 不一定是错的，但类型与内容不一致，值得看一眼
+    证据：
+      · user NVM_SYMLINK type=expand-sz kind=expand-without-percent value=C:\nvm4w\nodejs
+  · env.path-literal
+    变量 OneDrive 的注册表类型是 REG_EXPAND_SZ，但它的值里一个 % 都没有 —— 不一定是错的，但类型与内容不一致，值得看一眼
+    证据：
+      · user OneDrive type=expand-sz kind=expand-without-percent value=C:\Users\Muelsyse\OneDrive
+  · path.duplicate
+    `PATH` 上有 12 组重复条目（18 条富余）。重复本身不会让命令失效，但它把 `PATH` 往 8191 的悬崖上推，而且让"到底哪个目录在生效"变得看不出来
+    证据：
+      · c:\dev\ide\idea26\intellij idea 2026.1.1\bin x2 (machine#29 user#14)
+      · c:\nvm4w\nodejs x2 (machine#18 user#13)
+      · c:\program files\dotnet x2 (machine#14 machine#30)
+      · c:\program files\mysql\mysql shell 8.0\bin x2 (machine#27 user#9)
+      · c:\software\tool x3 (machine#8 machine#28 user#11)
+      · c:\users\muelsyse\appdata\local\microsoft\windowsapps x2 (machine#7 user#10)
+      · c:\users\muelsyse\appdata\local\nvm x2 (machine#17 user#12)
+      · c:\windows x3 (machine#3 machine#9 machine#23)
+      · c:\windows\system32 x3 (machine#2 machine#10 machine#22)
+      · c:\windows\system32\openssh x3 (machine#6 machine#13 machine#26)
+      · c:\windows\system32\wbem x3 (machine#4 machine#11 machine#24)
+      · c:\windows\system32\windowspowershell\v1.0 x3 (machine#5 machine#12 machine#25)
+  · path.empty-entry
+    `PATH` 里有 1 段空条目。Windows 会把空条目当成"当前目录" —— 那既不是你要的，也意味着从任意当前目录里执行同名程序
+    证据：
+      · machine#21 <empty>
+  · path.missing
+    `PATH` 上有 7 条条目指向不存在的路径
+    证据：
+      · machine#1 C:\Program Files (x86)\Common Files\Oracle\Java\javapath
+      · machine#8 C:\Software\tool
+      · machine#28 C:\Software\tool
+      · user#6 C:\Users\Muelsyse\AppData\Local\Programs\MVTec\HALCON-25.11-Progress\bin\x64-win64
+      · user#7 C:\Users\Muelsyse\AppData\Local\Programs\Python\Python311\Scripts\
+      · user#8 C:\Users\Muelsyse\AppData\Local\Programs\Python\Python311\
+      · user#11 C:\Software\tool\
+  · tool.ghost
+    dotnet 有 2 条注册表记录说它装过，而记录里的路径已经不在 —— 幽灵条目只报告，绝不替你删
+    证据：
+      · tool=dotnet source=registry-arp path=<placeholder>
+      · uninstall-key={2D690786-1257-44F3-AB75-7F55B62B42E9}
+      · tool=dotnet source=registry-arp path=<placeholder>
+      · uninstall-key={33CBD71A-9813-4440-92B8-B06C04852B34}
+  · tool.ghost
+    java 有 1 条注册表记录说它装过，而记录里的路径已经不在 —— 幽灵条目只报告，绝不替你删
+    证据：
+      · tool=java source=registry-arp path=<placeholder>
+      · uninstall-key={4A03706F-666A-4037-7777-5F2748764D10}
+  · tool.ghost
+    python 有 2 条注册表记录说它装过，而记录里的路径已经不在 —— 幽灵条目只报告，绝不替你删
+    证据：
+      · tool=python source=registry-arp path=<placeholder>
+      · uninstall-key={665A0435-D5D5-4A49-9DE0-FBC23C5425ED}
+      · tool=python source=registry-arp path=C:\Users\Muelsyse\AppData\Local\Programs\Python\Python311\
+  · tool.ghost
+    wsl 有 1 条注册表记录说它装过，而记录里的路径已经不在 —— 幽灵条目只报告，绝不替你删
+    证据：
+      · tool=wsl source=registry-arp path=<placeholder>
+      · uninstall-key={497CB23D-8747-4047-A079-DD98E0EDFC18}
+
+提示 9 条：
+  · env.name-with-spaces
+    变量名 IntelliJ IDEA 里有空格 —— 这是合法的，但很多工具会静默跳过它
+    证据：
+      · user IntelliJ IDEA
+  · path.reparse
+    `PATH` 上有 3 条条目是 reparse point（junction / symlink / alias）—— 它们本身不是问题，但它们会跟着别人变：切一次版本，这些目录的内容就换了
+    证据：
+      · machine#0 junction -> C:\Program Files (x86)\Common Files\Oracle\Java\java8path_target_1783390
+      · machine#18 symlink-dir -> C:\Users\Muelsyse\AppData\Local\nvm\v24.19.0
+      · user#13 symlink-dir -> C:\Users\Muelsyse\AppData\Local\nvm\v24.19.0
+  · path.spaces
+    `PATH` 上有 14 条条目含空格（14/48 = 29%）。Windows 处理得了，但所有忘了给路径加引号的脚本会在这里断掉
+    证据：
+      · machine#0 C:\Program Files (x86)\Common Files\Oracle\Java\java8path
+      · machine#1 C:\Program Files (x86)\Common Files\Oracle\Java\javapath
+      · machine#14 C:\Program Files\dotnet
+      · machine#15 C:\Program Files\NVIDIA Corporation\NVIDIA App\NvDLISR
+      · machine#16 C:\Program Files (x86)\NVIDIA Corporation\PhysX\Common
+      · machine#19 C:\Program Files\Git\cmd
+      · machine#27 C:\Program Files\MySQL\MySQL Shell 8.0\bin
+      · machine#29 C:\Dev\IDE\IDEA26\IntelliJ IDEA 2026.1.1\bin
+      · machine#30 C:\Program Files\dotnet\
+      · machine#31 C:\Program Files\Docker\Docker\resources\bin
+      · machine#32 C:\Program Files\GitHub CLI\
+      · user#9 C:\Program Files\MySQL\MySQL Shell 8.0\bin\
+      · user#14 C:\Dev\IDE\IDEA26\IntelliJ IDEA 2026.1.1\bin
+      · user#15 C:\Dev\IDE\VScode\Microsoft VS Code\bin
+  · system.developer-mode
+    Developer Mode 的注册表值**不存在** —— 按未开启处理（未提权时 symlink 会失败）
+    证据：
+      · developer-mode=absent
+  · system.elevated
+    当前进程**没有**管理员权限 —— 这是 tuoen 的默认工作方式，不是问题。机器级 `PATH` 与 `HKLM` 的改动做不了，那类操作会明确报错而不是悄悄失败
+    证据：
+      · elevated=false
+  · system.long-paths
+    长路径**已开启**（`LongPathsEnabled=1`）—— 相对路径可以超过 260 字符
+    证据：
+      · long-paths=true
+  · system.wsl-nonstandard-path
+    WSL 发行版 `Arch-Linux-current` 的 vhdx 不在默认位置（`C:\linux\Arch-Linux-current`）—— 换机器时它不会被跟着搬，要单独搬；搬错了就是"整台机器看着都在，只有这个发行版打不开"
+    证据：
+      · distribution=Arch-Linux-current
+      · base-path=C:\linux\Arch-Linux-current
+      · vhdx-path=C:\linux\Arch-Linux-current\ext4.vhdx
+      · vhdx-exists=yes
+      · non-standard-path=true
+  · tool.unmanaged-directory
+    C:\Dev\Tool\apache-maven-3.9.5 只有文件系统扫描知道它 —— 注册表、PATH、App Paths、任何管理器都没提过它，换一台机器重建不出来
+    证据：
+      · C:\Dev\Tool\apache-maven-3.9.5
+      · looks-like=scan-only
+      · children=8
+      · mentioned-by=filesystem-scan
+      · managed-by=none
+  · tool.unmanaged-directory
+    C:\Dev\base\JDK 被别的机制看到过（filesystem-scan / path-resolution），但没有任何机制负责把它装回来 —— 换一台机器重建不出来
+    证据：
+      · C:\Dev\base\JDK
+      · looks-like=scan-only
+      · children=3
+      · mentioned-by=filesystem-scan,path-resolution
+      · managed-by=none
+
+（本次只读：没有写 `PATH`、没有写注册表、没有动任何工具。）
+（上面有 7 条是「要动手」的，但这次体检本身跑完了 —— 所以退出码是 0。脚本要判据请用 `--json` 里的 `counts.error`。）
+
+错误 7 · 警告 13 · 提示 9
+规模：PATH 条目 49 · 环境变量 32 · 工具 27 · WSL 发行版 2 · shim 0
+

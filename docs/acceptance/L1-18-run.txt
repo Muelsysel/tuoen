@@ -1,0 +1,155 @@
+
+── 0. 构建
+  [skip] release 构建  (-SkipBuild)
+
+── 1. 前置事实（跑之前的那份真相）
+  PATH 口径：机器级 1007 + 用户级 773 = 1781 字符；非空条目 48 条
+  [ok]   两个作用域的 Path 都是 REG_SZ（本机事实，决定了只能验"不展开"那条分支）  user=String machine=String
+  HKCU\Environment：14 个值；Path 773 字符 sha16 a12fc582e90513a3
+  HKLM Path：1007 字符 sha16 d0b5a0db7c9e2a6b
+  nvm4w：user/NVM_HOME=ExpandString|C:\Users\Muelsyse\AppData\Local\nvm | user/NVM_SYMLINK=ExpandString|C:\nvm4w\nodejs | machine/NVM_HOME=ExpandString|C:\Users\Muelsyse\AppData\Local\nvm | machine/NVM_SYMLINK=ExpandString|C:\nvm4w\nodejs
+         junction → C:\Users\Muelsyse\AppData\Local\nvm\v24.19.0
+         settings.txt 66 B sha256 02f3156cdf563d43
+  [ok]   整个 HKCU\Environment 已备份到文件（含类型与原文）  C:\Users\Muelsyse\AppData\Local\Temp\tuoen-acceptance-L1-18\hkcu-environment-backup.json（14 个值）
+  恢复命令（万一脚本中途死掉）：
+    $rows = Get-Content 'C:\Users\Muelsyse\AppData\Local\Temp\tuoen-acceptance-L1-18\hkcu-environment-backup.json' -Raw | ConvertFrom-Json; $k = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true); foreach ($r in $rows) { $k.SetValue($r.Name, $r.Value, [Microsoft.Win32.RegistryValueKind]($r.Kind)) }; $k.Dispose()
+  [ok]   自证还原：把备份原样写回一次后，整个 HKCU\Environment 逐字未变  14 个值写回
+
+── 2. `tuoen capture`（真机，默认全量）
+  [ok]   capture 退出 0  exit=0  3784 ms
+  [ok]   --json 成功载荷无 CJK（中文只进人类输出）
+  [ok]   成功载荷有 data 信封，且四个旧 section 的数字都在
+  [ok]   落盘八个文件（六个 section + schema + skipped）  schema.toml,tools.toml,path.toml,env.toml,wsl.toml,globals.toml,configs.toml,skipped.toml
+  [ok]   脚本自己用 tomllib 能解析出全部八个文件  configs.toml,env.toml,globals.toml,path.toml,schema.toml,skipped.toml,tools.toml,wsl.toml
+  [ok]   schema.sections 是六个 section 的字典序  configs,env,globals,path,tools,wsl
+  ── path.toml 的 [budget] 段（逐字）──
+    raw_user_chars = 773
+    raw_machine_chars = 1007
+    effective_chars = 1781
+    cliff = 8191
+    remaining = 6410
+    level = ok
+  [ok]   [budget] 段在（票据点名要贴）
+  [ok]   effective_chars = 机器级 + 用户级 + 1（脚本自己从注册表算）  产品=1781 脚本=1781
+  [ok]   raw_user_chars / raw_machine_chars 与注册表原文长度逐字相同
+  [ok]   cliff = 8191（cmd.exe 的悬崖，决策 15）
+  [ok]   remaining = cliff − effective_chars（自洽）  remaining=6410
+  [ok]   level = ok（本机还剩 6000+ 字符）  level=ok
+  [ok]   path.toml 的行数 = 非空条目数 + 空条目数（脚本自己数）  rows=49 非空条目=48
+  ── 重复条目：18 行（涉及 13 个不同的值）──
+  [ok]   有重复条目（本机确实有，票据点名要数）  dup=18
+  [ok]   每个归一化后的值的 dup_index 恰好是 0..n−1（出现序号语义，决策 96）
+  [ok]   空条目被标成 empty = true（决策 47：空段落不是一个缺失的目录）  empty=1
+  [ok]   tools / env / wsl 的行数与 #16 的真机口径一致（新 section 没有改动旧输出）  tools=27 env=32 wsl=2
+
+── 3. `tuoen doctor`（真机）
+  [ok]   doctor 退出 0（发现了问题也是 0：严重度是数据，不是失败）  exit=0  468 ms
+  [ok]   人类输出非空并已落盘  C:\Users\Muelsyse\AppData\Local\Temp\tuoen-acceptance-L1-18\doctor-human.txt
+  [ok]   doctor --json 退出 0 且成功载荷无 CJK
+  [ok]   findings 非空（本机是"坏机器"，票据要的就是逐条对照）  count=29
+  [ok]   counts 的三个数与 findings 的实际分布一致（自洽）  error=7 warn=13 info=9
+  19 类发现（逐条与取证报告对照）：env.duplicated-scope · env.missing-target · env.name-with-spaces · env.path-literal · path.duplicate · path.empty-entry · path.missing · path.reparse · path.spaces · path.username-hardcoded · system.developer-mode · system.elevated · system.long-paths · system.wsl-nonstandard-path · tool.ghost · tool.global-prefix-inside-version-dir · tool.multi-manager · tool.multiple-active · tool.unmanaged-directory
+  [ok]   发现的 id 集合与取证报告一致（缺/多都算差异）  缺= 多=
+  [ok]   每一条的 evidence 都是纯 ASCII（决策 137：evidence 是数据，中文只进 message）  非 ASCII 0 条
+  [ok]   message 不进 --json（它天生是中文）
+  [ok]   本机已知的三类问题都在（版本目录里的全局前缀 / 失效条目 / 未开开发者模式）
+
+── 4. `tuoen path diff`（真机，目标 = 本机自己刚 capture 的快照）
+  [ok]   path diff 退出 0（只读，永远 0）  exit=0  19 ms
+  ── 六类计数：{"add":0,"caseOnly":0,"fix":24,"keep":25,"move":0,"remove":0}
+  [ok]   path diff 的行数 = 49（本机口径）  rows=49
+  [ok]   同一台机器上 capture 再 diff：add / remove / move / case-only **必须全是 0**  add=0 remove=0 move=0 caseOnly=0
+  [ok]   keep + fix = 总行数（每一行都被归了类）  keep=25 fix=24
+  [ok]   fix = 24（本机自己的健康问题：重复 / 失效 / 空条目 / 用户名）  fix=24
+  [ok]   snapshot 字段是**用户敲的那个路径原样**  snapshot=C:\Users\Muelsyse\AppData\Local\Temp\tuoen-acceptance-L1-18\tuoen.d\path.toml
+  [ok]   currentUsername 与脚本自己从 USERPROFILE 取的一致  产品=Muelsyse 脚本=Muelsyse
+  拼写疑似 5 条（**只报告、永不纠错**，决策 24）
+
+── 5. `restore --dry-run` 与 `restore`（默认形态）
+  [ok]   两个都退出 0  dry=0 plain=0
+  [ok]   `--dry-run` 与默认形态的载荷**逐字节相同**（决策 150：同一套计划代码）
+  [ok]   计划四个 section 全 no-change（还原到本机 = 接近空的计划）  noChange=4
+  [ok]   wouldChange = 0 且 needsNetwork = 0
+  [ok]   manualActions 三条（nvm4w / uv / 凭据重配）  count=3
+  [ok]   manualActions 的 code 是 third-party-manager ×2 + credential-reconfigure ×1  credential-reconfigure,third-party-manager,third-party-manager
+  [ok]   凭据那条只含**意图**（subject 是变量名，不是值）  subject=env:ARK_API_KEY
+  [ok]   脚本自己确认 ARK_API_KEY 在本机真的存在（否则上面那条是空真）  长度 46（值不打印）
+  [ok]   计划载荷里**没有**那个变量的值（材料从不进快照，决策 147）
+
+── 6. `restore --apply`（计划是空的，所以"真的做"也必须什么都不做）
+  [ok]   空计划上的 --apply 退出 0  exit=0  1408 ms
+  [ok]   apply.wrote = false（计划与现状一致 ⇒ 不写、也不广播）
+  [ok]   apply.sections 是空数组（没有一节被真的动过）
+
+── 7. 非空计划：故意加一个不存在的用户级变量，看"计划 vs 真的执行"
+  [ok]   脚本自己加的 [[var]] 块能被 tomllib 解析（env 行数 +1）  加之前=32 加之后=33
+  [ok]   非空计划里 env 那节 status = would-change  status=would-change
+  计划里的动作 2 条：
+    {"detail":"scope=user","id":"env:user:TUOEN_L1_ACCEPT_PROBE","kind":"set-user","subject":"TUOEN_L1_ACCEPT_PROBE"}
+    {"detail":"scope=user","id":"env:ARK_API_KEY","kind":"skipped-secret","subject":"ARK_API_KEY"}
+  [ok]   计划里恰好 1 条**要写的**动作（set-user），指向那个探针变量  writes=1 subject=TUOEN_L1_ACCEPT_PROBE
+  [ok]   同一节里那条**只报告**的动作也在（skipped-secret：凭据不进快照）  skips=1 subject=ARK_API_KEY
+  [ok]   真的执行退出 0  exit=0  219 ms
+  apply：{"sections":[{"broadcastReplies":0,"id":"env","outcome":"applied","wrote":true}],"wrote":true}
+  [ok]   apply.wrote = true
+  [ok]   apply.sections 里恰好一节（env），且 wrote = true  sections=1 id=env wrote=True
+  [ok]   计划里 1 条**要写的**动作 / 执行了 1 节 —— 逐条对上（票据要的"差异为空"）  writes=1 sections=1 outcome=applied
+  [ok]   注册表里真的出现了那个变量，值与快照逐字相同（不展开读）  读回=l118-20261003080931
+  [ok]   值的类型是 REG_SZ（值里没有 %，所以不该用 REG_EXPAND_SZ）  kind=String
+  [ok]   一个**从注册表重建环境**的新进程能看到它（"新终端里生效"的唯一合法验法）  新进程看到=l118-20261003080931
+  [ok]   第二次计划变成 no-change（幂等：再跑一次是空的）  status=no-change
+  [ok]   删掉探针变量后，整个 HKCU\Environment 与跑之前**逐字相同**（含值名、类型、原文）  值数 14 vs 14
+
+── 8. 幂等：两次 `capture` 除时间戳外逐字节相同
+  [ok]   八个文件两次捕获除 captured_at 外逐字节相同
+
+── 9. 未使用 `setx`（票据点名的证据）
+  [ok]   产品源码里没有带引号的 setx 字面量（grep 无命中）  0 处
+  [ok]   脚本里没有一条会执行 setx 的语句（这个命令只许出现在守卫自己的文字里）
+  [ok]   反向验证：塞一条真的 setx 调用进去，判据必须命中（1 条）  命中 1
+
+── 10. 未触碰 nvm4w 与 tuoen 自己的目录（跑前跑后逐项相同）
+  [ok]   NVM_HOME / NVM_SYMLINK 在两个作用域里的原文与类型逐字未变  after=user/NVM_HOME=ExpandString|C:\Users\Muelsyse\AppData\Local\nvm | user/NVM_SYMLINK=ExpandString|C:\nvm4w\nodejs | machine/NVM_HOME=ExpandString|C:\Users\Muelsyse\AppData\Local\nvm | machine/NVM_SYMLINK=ExpandString|C:\nvm4w\nodejs
+  [ok]   `C:\nvm4w\nodejs` 这个 junction 的**指向**未变  after=C:\Users\Muelsyse\AppData\Local\nvm\v24.19.0
+  [ok]   nvm4w 的 settings.txt 哈希未变  before=02f3156cdf563d43 after=02f3156cdf563d43
+  [ok]   `store/` 目录树逐项相同（没装、没删、没换 current）
+  [ok]   `%APPDATA%\tuoen\cache` 目录树逐项相同
+  [ok]   两个作用域的 Path 原文与类型逐字未变（这一票一次都没写过 PATH）  user sha a12fc582e90513a3 vs a12fc582e90513a3
+
+── 11. 实测数据
+  ── 耗时（真实毫秒，含进程启动）──
+    capture（默认全量，--json）  →  3784 ms
+    doctor（人类输出）  →  468 ms
+    doctor（--json）  →  448 ms
+    path diff（人类输出）  →  19 ms
+    path diff（--json）  →  15 ms
+    restore --dry-run  →  1458 ms
+    restore（默认 = 只出计划）  →  1426 ms
+    restore --apply（空计划）  →  1408 ms
+    restore --only env（非空计划）  →  28 ms
+    restore --only env --apply（真的写）  →  219 ms
+    restore --only env（第二次 = 幂等）  →  12 ms
+    capture（第二次，验幂等）  →  3810 ms
+    PATH 长度：机器级 1007 + 用户级 773 = 1781 字符（跑前跑后相同）
+  [ok]   shim path 打印出一个目录  shimDir=C:\Users\Muelsyse\AppData\Local\tuoen\shims
+  [ok]   shim add node 退出 0  exit=0
+  [ok]   shim 目录里真的出现 node.exe  C:\Users\Muelsyse\AppData\Local\tuoen\shims\node.exe
+  [ok]   store 里有生效的 node.exe（L0 时期装的，这一票没有下载任何东西）  C:\Users\Muelsyse\AppData\Local\tuoen\store\node\current\node.exe
+    shim  node.exe --version ：24 / 25 / 27 / 28 / 111 ms（中位 27 ms）
+    真身  node.exe --version ：18 / 18 / 18 / 19 / 20 ms（中位 18 ms）
+  [ok]   shim 与真身的输出逐字相同（v24.19.0）  shim=v24.19.0 真身=v24.19.0
+  [ok]   shim 的额外开销是"一次进程启动"量级（中位差 < 40 ms）  差 9 ms
+  [note] shim 第一次跑用了 111 ms（刚写出来的 .exe 会被 Defender 扫一遍），后续 25–111 ms
+  shim add node 生成了 4 条：corepack, node, npm, npx
+  [ok]   shim add node 生成四条（node / npm / npx / corepack，实测过的命令表）  corepack,node,npm,npx
+  [ok]   shim remove 四条命令名：退出 0 且文件真的全没了  exit=0 文件还在=False
+  [note] #21 复现记录：shim remove tuoen-definitely-not-a-shim 退出码 = 1（#21 的期望是幂等成功 0）
+  [ok]   shim 目录回到跑之前的样子（这一票没有留下 shim）
+  [ok]   tuoen list 退出 0 且列出 node 24.19.0
+
+── 12. 收尾
+  [ok]   最后再核一次：整个 HKCU\Environment 与跑之前逐字相同  值数 14 vs 14
+  [ok]   最后再核一次：两个作用域的 Path 逐字未变
+
+SUMMARY checks_passed=83 checks_failed=0 checks_skipped=1 verdict=PASS
+工件目录：C:\Users\Muelsyse\AppData\Local\Temp\tuoen-acceptance-L1-18
