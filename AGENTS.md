@@ -307,6 +307,13 @@ Single-context: one `GLOSSARY.md` and one `docs/adr/` at the repo root. See `doc
    `toolVersion`（票据冻结的是 `tool/name/version/source` + 拿不到就整键消失的 `binNames`），
    又按直觉断言快照的包行带 bin 名（它只有 `name`/`version`）—— 两条都会在**产品做对的时候红**。
    "期望值是关于设计的断言"（#16）在 L2 的第三次出现；这次的教训是**字段表也要回去读那一行**。
+6. **往脚本里插一条断言时，先确认它依赖的变量在那一行"已经"被赋值。** 我把
+   `summary.unrestorable` 那条断言插在了 `$p1 = Get-Payload $plan1` **上面** —— 于是它读的是
+   一个还不存在的变量，而 StrictMode 下这是**让整个脚本消失**（连 FAIL 都不打），不是报错。
+   同一族已经第四次出现（`@($null).Count`、空对象枚举、`[0]` 落在空数组、`Get-Item Env:\X`）：
+   **"脚本消失"和"产品错了"看起来一模一样。** 插完断言要回头核一遍变量顺序，并静态扫一遍
+   本文件里所有"用到但没定义"的助手函数（我顺手确认了 `Invoke-Program` 真的被 §2 的 pip 基线
+   跑过，而不是只活在 `-WithNetwork` 那条不常跑的分支里）。
 
 **一条流程性的**：**别在别人正在写文件的中途跑集成门禁。** #17 里出现过两次假红
 （`captured=true` 两分钟后变绿；`check_size_matches_content` 25 秒后自愈）——
