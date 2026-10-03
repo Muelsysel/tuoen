@@ -22,6 +22,9 @@ mod doctor_cmd;
 mod doctor_view;
 mod envelope;
 mod exit;
+mod globals;
+mod globals_cmd;
+mod globals_view;
 mod lock_cmd;
 mod manage;
 mod manage_cmd;
@@ -111,6 +114,11 @@ fn run() -> i32 {
         // `restore` 是唯一**会照着另一台机器改本机**的命令（票据 #16）。
         // 默认只出计划；`--apply` 才动手，而且只碰用户级（决策 136/150）。
         Command::Restore(args) => restore_cmd::run(&args),
+        // 全局包那一族（ticket #23）：**只读地**列两个来源的包。
+        // `globals.toml` 的 `source` 字段与这里的 `source` 是同一个枚举。
+        Command::Globals(command) => match command {
+            crate::globals::GlobalsCommand::List(args) => globals_cmd::run_list(&args),
+        },
     }
 }
 

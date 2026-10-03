@@ -755,6 +755,136 @@ L1 不做 —— 那个开关是**调用者自己**给的，人类输出也会�
 
 ---
 
+### 1.21 L2-21 `shim remove` 的幂等语义：不在就是删完之后的状态（决策 189）
+
+**决策 189：`shim remove` 遇到"本来就不在"的名字是幂等的成功。**
+
+- 退出码 **0**，逐条结果 `status = "absent"`，`code` 与 `message` 都是 `null`（成功载荷里不出现本地化文本，决策 35）。
+- slug 取 **`absent`**，与 `tuoen_platform::NoopReason::Absent` **同词** —— 同一个工具里"本来就不在"只有一种含义，
+  脚本作者不必记两套。刻意**不叫** `not-found`：那个词读起来像错误码，而这件事的结论恰恰是"没有出错，你要的终态已经成立"。
+- 判据是 `symlink_metadata` 的 `ErrorKind::NotFound`，**不是** `Path::exists()`（后者会把"读不了"与"不在"混为一谈）。
+  stat 失败（ACL 拒绝等）走**失败**分支 `stat-failed` —— 答"不知道"比答一个看起来合理的"不在"安全。
+- `removed` / `absent` / `failed` 三个计数由视图层从 `results` **一次算出**（`ShimRemoveView::new`）：
+  `failed == 0` ⟺ 退出码 0；错误码只取**真的没删成**的那一个 —— `absent` 的 `code: null` 不许被当成答案。
+- **删掉了 `shim.remove` 的 `not-found` 状态与错误码** ⇒ 按决策 166（只有删除/改动才递增），
+  **`schemaVersion` 升到 2**。这是一次可见的行为变更：匹配 `code == "not-found"` 的脚本会失效，
+  所以它必须被记录，而不是悄悄改掉。执行时机：等 L2 这一波并发写入落地之后（它会碰所有信封与它们的断言）。
+
+  **递增清单（已经数过，避免漏改）** —— 注意**两个同名常量不是一回事**：要动的是
+  `crates/cli/src/envelope.rs` 的 `SCHEMA_VERSION`（信封的），**不是**
+  `tuoen_core::capture::SCHEMA_VERSION`（`tuoen.d/` 快照的 TOML 格式，另有一套）、也不是
+  `RECORD_SCHEMA_VERSION`（安装记录）、`LOCK_SCHEMA_VERSION`（pin 锁）、`SUPPORTED_SCHEMA_VERSION`（catalog）。
+  要改的地方：`envelope.rs` 的常量本身 + 它模块文档里的 3 个 JSON 例子 + 那条把版本钉死的单测；
+  断言信封版本的 7 个契约测试（`cli_contract.rs`、`capture_contract.rs`、`detect_contract.rs`、
+  `globals_contract.rs`（两处）、`pin_contract.rs`、`view.rs` 的单测）；两个验收脚本
+  （`scripts/acceptance-L1-13.ps1:406`、`scripts/acceptance-L1-14.ps1:294` 断言 `schemaVersion -eq 1`）。
+  `capture_cmd.rs:964` 那条断言用的是 core 的快照版本，**不要动**。
+
+**`shim add` 的行为（查过，判定不改）**：内容逐字节相同时也**重写**并报 `replaced` —— 那是事实描述（它真的原子重写了文件），
+不是 noop；不新增"内容相同就跳过"的分支。`add` 唯一拒绝"已经在了"的形态是落盘位置上的文件**不是我们的 shim**
+（没有槽位魔数）→ `DestinationNotAShim`、退出码 1 —— 不许覆盖别人的文件。
+
+**已知限度（诚实缺口）**：`stat-failed` 分支只有代码审查、没有测量（要真造一个拒绝 stat 的 ACL 才能覆盖，没做）。
+真机证据只有一台机器（本机、非提权、zh-CN），与项目其他验收同一条限度。
+
+**过程教训（给变异测试那一条补第 7 条）**：`Copy-Item` 恢复被变异的文件会**保留备份的 mtime**（比变异后那次构建还旧），
+cargo 因此判定"新鲜"、继续跑**变异的旧二进制** —— 恢复后第一次跑仍然是红的（**假红**）。
+必须 `(Get-Item <file>).LastWriteTime = Get-Date` 之后才是真恢复；**哈希相同不能证明"跑的是恢复后的代码"**。
+
+---
+
+### 1.22 L2-23 全局包的两个来源：机器自己的、与 tuoen 管的（决策 190–193）
+
+**决策 190：`globals` 有两个来源，机器那一侧的行为一个字节都不改。**
+
+- `source = "machine"`（既有行为）：npm 问机器自己的前缀、pip 问机器自己的用户级。
+- `source = "tuoen"`（新增）：npm **同时**走命令行 `--prefix <根>` 与子进程环境 `NPM_CONFIG_PREFIX`（两者必须同值，
+  有一条 `debug_assert_eq!` 把它变成机器检查 —— 指向不同目录会造出"包在这个前缀里"的**假清单**）；
+  pip 走 `PYTHONUSERBASE` + `PIP_USER=1`，且**只用 `pip.exe`**（本机 `where python` 第一条是 0 字节的
+  App Execution Alias：它不是一个可执行文件，执行它会打开应用商店）。
+- **tuoen 那一行只在"有话说"时出现**（`!packages.is_empty() || enumerate_error.is_some()`）；
+  **根一律出**（`roots` 里连不存在的根也出）。**根不存在时一个进程都不起** ——
+  实测：`npm ls -g --prefix <不存在的根>` 会以 **ENOENT(-4058)** 退出（lstat 的是父目录），
+  而 `pip list --user` 返回 `[]` 退出 0；两者都**不创建目录**。给空根编一行会让"管着 0 个包"
+  与"管着这些包"长得一模一样。
+- `unknown` 运行时版本 ⇒ 没有 npm 根、没有行、没有重定向计划，并给一条 `runtime-version-unknown`。
+
+**决策 191：`ProcessRunner` 的 `run_env` 是必需方法，不是带默认实现的可选方法。**
+带默认实现的话，"悄悄忽略 env"的实现会让重定向**静默失效** —— 包落进机器自己的前缀，
+而所有测试照样绿。必需方法把这件事变成编译期问题。`run` 退化成 `run_env(…, &[], …)` 保持逐字节不变；
+`FakeProcessRunner` 记录 `ProcessCall{program, args, env}`（`env` 不参与匹配，决策 185 的三条冻结）。
+
+**决策 192：pip 的 `binNames` 是"逐字（折叠大小写与 `-`/`_`）包名匹配 `Scripts\*.exe`"。**
+不是"读目录里所有 `*.exe`" —— `pip list` 不说哪个脚本属于哪个包，把目录里所有名字贴给每个包等于
+**声称别人的命令**。代价是如实可见的：本机 `pypdf` 在人类输出里印 `?`、在 `--json` 里**整键消失**
+（"拿不到命令名"不是"它没有命令"，两种形态必须长得不一样）。更准的来源是 PEP 376 的
+`*.dist-info\RECORD`（pip 自己写的），那是 **#25** 的事；注意 RECORD 里的路径相对 site-packages，
+**层数随布局变**（全机实测 `../../Scripts/x.exe`），绝不许硬编码层数。
+
+**决策 193：`capture --json` 这次是纯加法，`insideVersionDir` 的语义冻结。**
+新增 `byTool[].source`、`enumerateErrors[].source` 与**新键** `insideVersionDirMachine`。
+老的 `insideVersionDir` 含义一个字节都没变（仍是"所有 `prefix_inside_version_dir == Some(true)` 的行"，
+只是行变多了）—— 改它的含义是一次**改语义**，那要递增 `schemaVersion`（决策 166），
+所以新问题由**新键**承担。人类输出里那句警告也按来源拆成两句：机器那句照旧（那是它自己把前缀
+放在版本目录里，会被静默隐藏），tuoen 那句说明这是**决策 26 的有意设计**。
+
+**真机证据（Lead 亲自做的，把本票自认"最弱的一环"补上了）。** 票里说"CLI 契约测试里没有能回答
+`node -v` 的真 PE，`--prefix` 的真实生效只由 core 单测的 argv 断言背书"。补法是**不装任何东西到系统里**：
+把 `LOCALAPPDATA` 指到一个临时目录、在那里预先离线装一个包（`npm install -g --prefix <临时根> --offline pnpm@11.21.0`
+→ 2645 ms，`added 1 package in 2s`，用的是 `%APPDATA%\tuoen\cache` 里已有的那份），再让 `tuoen globals list --json`
+以为那就是它的家。结果：`roots` 里两个根都指向**临时**目录；包 **machine = 10 / tuoen = 1**；
+tuoen 那行是 `npm pnpm@11.21.0 binNames=pn,pnpm,pnpx,pnx`；**机器侧 npm 仍是 7 条**（两问互不干扰）。
+也就是说 `--prefix` 真的让 npm 看见了那个树、`source` 真的由"我们问了谁"决定、
+`binNames` 真的来自包自己的 `bin` 字段。跑完临时目录删净，真机上 `%LOCALAPPDATA%\tuoen\globals` **仍然不存在**。
+
+**这一票的诚实缺口**：`--no-version` 与 `globals list` 的交互没验（该命令固定 `probe_versions = true`，
+因为 npm 的根名**就是**版本目录名）；`insideVersionDir`/`insideVersionDirMachine` 的拆分只在单测里确定性钉住，
+契约测试里改成只钉 `insideVersionDirMachine == 0` 与 `>=` 关系（第一版钉 `== 1` 是**机器相关的断言**，
+正是 #8 那条规矩禁止的形状）。
+
+---
+### 1.23 L2-26 `tuoen shell` 的重定向：根名是"原样输出"，而"原样"要补回来（决策 194–196）
+
+**决策 194（跨票接缝）：npm 的根名是运行时的"原样"版本输出，而 `detect` 削过前缀。**
+
+`ToolSpec::version_prefixes = ["v"]` 把 `node -v` 的 `v24.19.0` 削成 `24.19.0`（锁里存的也是削过的值），
+而根名要的是原样（决策 172）。**CLI 必须把那个前缀补回来** —— 不补的后果是
+**一个一个字都不报错的假话**：用户经 `tuoen shell` 装的每一个全局包落进 `…\npm\24.19.0\`，
+而 `capture` / `globals list` 去 `…\npm\v24.19.0\` 找它们，"我刚装的包不见了"。
+
+两条附则：**前缀从 `version_prefixes` 取，不许写死 `v`**（写死等于把规则压成"node 恰好以 v 开头"）；
+**判 `unknown` 必须排在补前缀之前**（顺序反了就是 `vunknown` —— 一个看起来完全合理、却永远命中不了的目录名，
+于是所有答不出版本的机器共用一个根）。
+
+**防线是一条跨两侧的不变量用例**（`crates/cli/src/shell_cmd.rs` 的 `mod tests`）：
+对 `KNOWN_TOOLS` 里**每一个** spec，"**削掉再补回必须是恒等**"，期望值从 `version_prefixes` 推出来而不是写死。
+变异验证（真跑）：把前缀写死成 `"v"` → 1 条红，消息是
+`python：detect 从 \`Python 24.19.0\` 削掉 \`"Python "\` 得到 \`24.19.0\`，补回来必须是原样`
+（`left: Ok("v24.19.0")` / `right: Ok("Python 24.19.0")`）。
+
+**决策 195：`shell` 的环境块只有一个构造点。** `child_env(&ShellPlan)` 是**唯一**拼环境的地方
+（`PATH` + `Path` + `TUOEN_SHELL_DEPTH` + 三个重定向变量），`--dry-run` 的预览与真启动**共用同一份**。
+"为什么没设"打到 **stderr** —— stdout 属于子进程，`--json` 的契约一字未改。`NpmSkip` 的两态
+（`NoNodeInPlan` / `UnknownVersion`）**分开说两句话**，不许合并。算不出根（`LOCALAPPDATA` 缺失或相对）
+⇒ **三个变量一个都不设** + 说清原因：那是"用户以为装进 tuoen 的根、其实装进机器自己的 prefix"这条护栏。
+**刻意不 `env_remove`** 继承来的三个变量 —— 不设 ≠ 擦掉用户自己的设置。
+
+**决策 196：守卫的判据要看"会不会执行"，而不是"有没有这个词"。**
+L1-17 的 `setx` 守卫扫 `scripts/**`；我新写的 L2 验收脚本里有一行节标题
+`Section '8. 红线：setx / HKCU\Environment / …'`，去掉注释后仍然匹配 `setx\s+/` ——
+于是**别的脚本的标题**把它弄红了（真机回归跑出来的唯一一条 FAIL）。修法：判据先把
+**字符串字面量**与注释都挖掉，再找 `setx(\.exe)?\s+[%$/A-Za-z]`。反向验证七种形态：
+`setx FOO bar` / `& setx /M PATH x` / `setx $env:FOO 1` / `setx.exe FOO bar` 全部命中；
+注释里的、引号里的、节标题里的全部不命中；全部脚本 58 行提到 `setx`、**0** 行会执行。
+这是 #17 那条"守卫会自己命中自己"的**跨文件**版本：**一条判据的适用范围变大时，它必须重新检查自己的形状。**
+
+**这一票的诚实缺口（作者自报，全部接受）**：① 交互式（不带 `--exec`）子 shell 的三个变量**没有端到端断言过**
+（与 `--exec` 共用 `child_env`/`spawn_shell`，但那是从代码结构推出的）；② `--shell powershell` 没在真机跑过那三个变量；
+③ 嵌套 `tuoen shell`（深度 1→2）无用例；④ "根存在但为空"没测（本机是"根不存在"）；
+⑤ 真装一个包（落进 tuoen 的根）没测 —— 那超出本票；⑥ `FixtureProcess` 用不上（`spawn_inherit` 是自由函数），
+替代判据是"真子进程把自己的环境印出来" + 纯函数逐字断言，更强。
+
+---
 ## 2. 平台硬约束（来自本机实测，非推断）
 
 这些是**必须绕着走的地面事实**，实现时不得假设相反情况。

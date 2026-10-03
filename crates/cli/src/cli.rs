@@ -9,6 +9,7 @@ use crate::capture::CaptureArgs;
 use crate::catalog::CatalogCommand;
 use crate::detect::DetectArgs;
 use crate::doctor::DoctorArgs;
+use crate::globals::GlobalsCommand;
 use crate::lock_cmd::LockArgs;
 use crate::manage::{InstallArgs, UninstallArgs, UseArgs};
 use crate::path::PathCommand;
@@ -499,6 +500,31 @@ stdout 上没有第二个写者。"#
 `--json` 的 `data` 就是计划那四个键（`snapshot` / `sections` / `manualActions` /
 `summary`），`--apply` 时多一个 `apply` 对象。`snapshot` 是**用户敲的那个路径原样**。"#)]
     Restore(RestoreArgs),
+
+    /// 看两个来源的全局包（工具自己的 + tuoen 管的）。
+    #[command(
+        subcommand,
+        long_about = r#"看两个来源的全局包。
+
+**这一族现在是只读的**：只有 `list`。`add` / `remove` 是后面的票 —— 那时它才会
+第一次往 tuoen 自己的根里装东西。所以现在**不带子命令是用法的错**（退出码 2），
+而不是"默认列出"：给一条以后要长大的命令定默认动作，代价落在写入侧（与
+`tuoen path` 那里不同，那里"看"是最安全的默认动作，而且那一族永远只做那五件事）。
+
+  list    列出两个来源的全局包
+
+## 两个来源是什么
+
+  machine  工具自己说它的全局位置在哪、里面有什么
+  tuoen    `%LOCALAPPDATA%\tuoen\globals\` 里由 tuoen 管的那些
+
+tuoen 装包时只改**子进程环境**（`NPM_CONFIG_PREFIX` / `PYTHONUSERBASE`），
+一个字节都不写进 `.npmrc` / `pip.ini` / 注册表（决策 27）。所以用户自己终端里的
+`npm ls -g` 说的是真话，而它看不到 tuoen 管的那些 —— 两个来源必须都报。
+
+`--json` 的形状是冻结的（`{roots, packages}`，`data` 信封里有 `schemaVersion`）。"#
+    )]
+    Globals(GlobalsCommand),
 }
 
 /// `tuoen path` 的参数。

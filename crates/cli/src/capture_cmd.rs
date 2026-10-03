@@ -387,21 +387,43 @@ impl From<&WslFile> for WslCounts {
 pub struct GlobalsCounts {
     /// 有几个工具回答了（一行一个工具）。**枚举失败的工具也算**：
     /// 失败的是"问到几个包"，不是"有没有这个工具"（决策 175）。
+    ///
+    /// # 为什么它仍然叫 `tools` 而不是"几行"
+    ///
+    /// ticket #23 之后一个工具可能有**两行**（`machine` + `tuoen`），而这个数字从
+    /// #17 起就是"一个工具一行"。它的语义**一个字节都没变**：一行是一个工具。
+    /// "有几行"是 `byTool` 的长度，那才是新问题的答案。
     pub tools: usize,
     /// 包总数（各行的 `packages` 相加）。
     pub packages: usize,
     /// 每个工具一行，**按工具名升序**（顺序稳定才能比逐字节）。
     #[serde(rename = "byTool")]
     pub by_tool: Vec<GlobalsRow>,
-    /// 枚举失败的行（工具名 + 稳定 slug）。
+    /// 枚举失败的行（工具名 + 来源 + 稳定 slug）。
     #[serde(rename = "enumerateErrors")]
     pub enumerate_errors: Vec<EnumerateFailure>,
     /// 全局前缀落在**按版本隔离**目录里的行数（决策 173 的那四支判据）。
     ///
     /// 它值得一个数字：切一个 Node 版本会**静默隐藏**这些包 ——
     /// "清单是齐的"这句话在那个前提下不成立。
+    ///
+    /// # 这个键的语义从 #17 起**一个字节都没变**
+    ///
+    /// 它一直是"有多少行满足那条判据"。ticket #23 之后行变多了（一个工具最多两行），
+    /// 于是这个数也跟着变大 —— 而那正是实情：tuoen 自己的 npm 根**故意**按运行时
+    /// 版本分目录（`…\globals\npm\v24.19.0`，决策 26），它天然满足那条判据。
+    /// 改它的含义（例如只数 `machine`）会是一次**改语义**的变更，那要递增
+    /// `schemaVersion`（决策 166）—— 所以那件事由下面那个**新键**承担。
     #[serde(rename = "insideVersionDir")]
     pub inside_version_dir: usize,
+    /// 上面那个数字里**属于机器自己那一份**的行数。
+    ///
+    /// 这个键存在的唯一理由：`insideVersionDir` 那句话原本的意思是"**别人**
+    /// （版本管理器）会把它换掉，所以这份清单只对当下这个版本成立"。两个含义
+    /// 混在一个数里，那句警告就从"提醒"变成"噪声" —— 于是谁想知道"我该担心几行"，
+    /// 看这个键；谁想知道"两边的总数"，看上面那个。
+    #[serde(rename = "insideVersionDirMachine")]
+    pub inside_version_dir_machine: usize,
 }
 
 /// 一个工具的包数（`globals.toml` 的一行）。
@@ -409,6 +431,8 @@ pub struct GlobalsCounts {
 pub struct GlobalsRow {
     /// 工具名（稳定 slug：`npm` / `pip`）。
     pub tool: String,
+    /// 这一行是谁的清单（稳定 slug：`machine` / `tuoen`）。
+    pub source: String,
     /// 运行时版本，**原样**（`v24.19.0` / `3.12` / `unknown`）。
     #[serde(rename = "toolVersion")]
     pub tool_version: String,
@@ -416,12 +440,18 @@ pub struct GlobalsRow {
     pub packages: usize,
 }
 
-/// 一个枚举失败的工具。`error` 是稳定 slug（`command-failed` / `timed-out` /
+/// 一个枚举失败的行。`error` 是稳定 slug（`command-failed` / `timed-out` /
 /// `bad-json` / `unsupported-output`）。
 #[derive(Debug, Serialize)]
 pub struct EnumerateFailure {
     /// 哪个工具。
     pub tool: String,
+    /// 哪个来源的那一行失败了（`machine` / `tuoen`）。
+    ///
+    /// 没有它的话，"npm 枚举失败"在两个来源下是同一句话，而修法完全不同：
+    /// 机器那一份失败要看用户的 npm 配置，我们那一份失败要看
+    /// `%LOCALAPPDATA%\tuoen\globals` 的权限。
+    pub source: String,
     /// 失败的原因 slug。
     pub error: String,
 }
@@ -436,6 +466,7 @@ impl From<&GlobalsFile> for GlobalsCounts {
                 .iter()
                 .map(|row| GlobalsRow {
                     tool: row.tool.clone(),
+                    source: row.source.clone(),
                     tool_version: row.tool_version.clone(),
                     packages: row.packages.len(),
                 })
@@ -446,6 +477,7 @@ impl From<&GlobalsFile> for GlobalsCounts {
                 .filter_map(|row| {
                     row.enumerate_error.as_ref().map(|error| EnumerateFailure {
                         tool: row.tool.clone(),
+                        source: row.source.clone(),
                         error: error.clone(),
                     })
                 })
@@ -454,6 +486,14 @@ impl From<&GlobalsFile> for GlobalsCounts {
                 .global
                 .iter()
                 .filter(|row| row.prefix_inside_version_dir == Some(true))
+                .count(),
+            inside_version_dir_machine: file
+                .global
+                .iter()
+                .filter(|row| {
+                    row.source == tuoen_core::GlobalsSource::Machine.slug()
+                        && row.prefix_inside_version_dir == Some(true)
+                })
                 .count(),
         }
     }
@@ -695,9 +735,10 @@ fn print_wsl_section(wsl: Option<&WslCounts>) {
 
 /// `globals.toml` 那一段。
 ///
-/// 三句话是这个 section 的全部价值：**有几个包**、**它们挂在哪个运行时版本下**、
-/// **哪个工具没答上来**。第三句最容易被省掉 —— 省掉之后"清单是齐的"就是一句
-/// 无法验证的话（决策 175 要的正是"行照样写出去，失败照样说出来"）。
+/// 四句话是这个 section 的全部价值：**有几个包**、**它们挂在哪个运行时版本下**、
+/// **它们是哪个来源的**、**哪个工具没答上来**。最后一句最容易被省掉 ——
+/// 省掉之后"清单是齐的"就是一句无法验证的话（决策 175 要的正是"行照样写出去，
+/// 失败照样说出来"）。
 fn print_globals_section(globals: Option<&GlobalsCounts>) {
     let Some(globals) = globals else {
         println!("globals.toml —— 这次没捕获 `globals`（`--only` 里没有它）。");
@@ -711,27 +752,37 @@ fn print_globals_section(globals: Option<&GlobalsCounts>) {
         println!();
         return;
     }
-    println!("  工具 {} 个，包 {} 个：", globals.tools, globals.packages);
+    println!("  清单 {} 行，包 {} 个：", globals.tools, globals.packages);
     for row in &globals.by_tool {
         println!(
-            "  · {} {} —— {} 个包",
-            row.tool, row.tool_version, row.packages
+            "  · {} [{}] {} —— {} 个包",
+            row.tool, row.source, row.tool_version, row.packages
         );
     }
-    if globals.inside_version_dir > 0 {
+    // "按版本隔离"那句话**按来源拆开**（ticket #23）：机器那一份是警告，
+    // 我们那一份是设计 —— 把两者印成同一句话，警告就变成了噪声。
+    if globals.inside_version_dir_machine > 0 {
         println!(
-            "  ⚠ 其中 {} 个工具的全局前缀落在**按版本隔离**的目录里：换一个运行时版本，",
-            globals.inside_version_dir
+            "  ⚠ 机器自己的清单里有 {} 个工具的全局前缀落在**按版本隔离**的目录里：",
+            globals.inside_version_dir_machine
         );
-        println!("    这些包会被**静默隐藏**（它们还装着，只是不在那个版本下）。");
+        println!(
+            "    换一个运行时版本，这些包会被**静默隐藏**（它们还装着，只是不在那个版本下）。"
+        );
+    }
+    if globals.inside_version_dir > globals.inside_version_dir_machine {
+        println!("  · tuoen 自己的根落在按版本隔离的目录里 —— 那是**设计**（决策 26）：");
+        println!(
+            "    npm 的根是 `<base>\\npm\\<node -v 原样>`，所以两个 Node 版本各有一套全局包，互不污染。"
+        );
     }
     if globals.enumerate_errors.is_empty() {
         println!("  枚举失败：没有。");
     } else {
         for failure in &globals.enumerate_errors {
             println!(
-                "  ⚠ {} 枚举失败（{}）—— 这一行没有包清单，但工具本身在。",
-                failure.tool, failure.error
+                "  ⚠ {} [{}] 枚举失败（{}）—— 这一行没有包清单，但工具本身在。",
+                failure.tool, failure.source, failure.error
             );
         }
     }
@@ -991,10 +1042,15 @@ mod tests {
     }
 
     /// 一个工具一行，包总数是**各行相加**，失败的行照样算一行（决策 175）。
+    ///
+    /// ticket #23 之后一行还要带 `source`：这份固定装置是"两个来源都在"的形状
+    /// （机器那一份两条，tuoen 那一份一条），这样 `insideVersionDir` 与
+    /// `insideVersionDirMachine` 的差别才**测得出来**。
     fn a_globals() -> GlobalsFile {
         let mut file = GlobalsFile::new("2026-10-02T12:00:00Z");
         file.global.push(tuoen_core::capture::GlobalRow {
             tool: "npm".to_owned(),
+            source: "machine".to_owned(),
             tool_version: "v24.19.0".to_owned(),
             prefix: Some(r"C:\nvm4w\nodejs".to_owned()),
             prefix_inside_version_dir: Some(true),
@@ -1011,7 +1067,18 @@ mod tests {
             enumerate_error: None,
         });
         file.global.push(tuoen_core::capture::GlobalRow {
+            tool: "npm".to_owned(),
+            source: "tuoen".to_owned(),
+            tool_version: "v24.19.0".to_owned(),
+            // 我们自己的 npm 根**故意**按版本分目录（决策 26）⇒ 这一支也是 `true`。
+            prefix: Some(r"C:\Users\x\AppData\Local\tuoen\globals\npm\v24.19.0".to_owned()),
+            prefix_inside_version_dir: Some(true),
+            packages: Vec::new(),
+            enumerate_error: None,
+        });
+        file.global.push(tuoen_core::capture::GlobalRow {
             tool: "pip".to_owned(),
+            source: "machine".to_owned(),
             tool_version: "unknown".to_owned(),
             // 拿不到前缀 → 两个键**一起不出**（决策 174 的同生共死）。
             prefix: None,
@@ -1025,37 +1092,51 @@ mod tests {
     #[test]
     fn the_globals_counts_add_up_and_name_the_tool_that_did_not_answer() {
         let counts = GlobalsCounts::from(&a_globals());
-        assert_eq!(counts.tools, 2, "枚举失败的工具**也算一行**（决策 175）");
+        assert_eq!(counts.tools, 3, "枚举失败的行**也算一行**（决策 175）");
         assert_eq!(counts.packages, 2, "包总数是各行相加");
-        let by_tool: Vec<(&str, usize)> = counts
+        let by_tool: Vec<(&str, &str, usize)> = counts
             .by_tool
             .iter()
-            .map(|row| (row.tool.as_str(), row.packages))
+            .map(|row| (row.tool.as_str(), row.source.as_str(), row.packages))
             .collect();
-        assert_eq!(by_tool, vec![("npm", 2), ("pip", 0)]);
+        assert_eq!(
+            by_tool,
+            vec![
+                ("npm", "machine", 2),
+                ("npm", "tuoen", 0),
+                ("pip", "machine", 0)
+            ],
+            "同一个工具的两个来源是**两行**：来源是行的一部分"
+        );
         assert_eq!(
             counts
                 .enumerate_errors
                 .iter()
-                .map(|row| (row.tool.as_str(), row.error.as_str()))
+                .map(|row| (row.tool.as_str(), row.source.as_str(), row.error.as_str()))
                 .collect::<Vec<_>>(),
-            vec![("pip", "timed-out")],
-            "没答上来的工具必须被点名 —— 否则「清单是齐的」是一句无法验证的话"
+            vec![("pip", "machine", "timed-out")],
+            "没答上来的行必须被点名（带来源）—— 否则「清单是齐的」是一句无法验证的话"
         );
         assert_eq!(
-            counts.inside_version_dir, 1,
-            "只有 `Some(true)` 才算：拿不到前缀不是 `false`"
+            counts.inside_version_dir, 2,
+            "两行都落在按版本隔离的目录里（机器那一份 + 我们那一份）"
+        );
+        assert_eq!(
+            counts.inside_version_dir_machine, 1,
+            "**只有 machine 那一行**是「会被版本管理器换掉」的警告 —— tuoen 那一行是设计"
         );
 
         // 序列化之后键名是 camelCase，且**新键一个都不许带中文**。
         let json = serde_json::to_string(&counts).expect("序列化");
         for key in [
-            "\"tools\":2",
+            "\"tools\":3",
             "\"packages\":2",
             "\"byTool\":",
             "\"toolVersion\":\"v24.19.0\"",
-            "\"enumerateErrors\":[{\"tool\":\"pip\",\"error\":\"timed-out\"}]",
-            "\"insideVersionDir\":1",
+            "\"source\":\"tuoen\"",
+            "\"enumerateErrors\":[{\"tool\":\"pip\",\"source\":\"machine\",\"error\":\"timed-out\"}]",
+            "\"insideVersionDir\":2",
+            "\"insideVersionDirMachine\":1",
         ] {
             assert!(json.contains(key), "缺少 {key}：{json}");
         }

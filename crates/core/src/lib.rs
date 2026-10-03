@@ -9,6 +9,7 @@
 pub mod capture;
 pub mod detect;
 pub mod doctor;
+pub mod globals;
 pub mod list;
 pub mod pathdiff;
 pub mod pin;
@@ -23,6 +24,11 @@ pub use capture::{
 pub use detect::{Confidence, DetectedTool, DetectionSource, DetectionSummary};
 pub use doctor::{
     Counts, DoctorOptions, DoctorReport, FactsSummary, Finding, MachineFacts, Severity, diagnose,
+};
+pub use globals::{
+    GlobalsListing, GlobalsNote, GlobalsNoteCode, GlobalsPackageRow, GlobalsRoot, GlobalsRootError,
+    GlobalsRootRow, GlobalsSource, GlobalsTool, NPM_PREFIX_VAR, PIP_USER_VAR, PYTHONUSERBASE_VAR,
+    list_globals,
 };
 pub use list::{ListResult, ToolRecord, ToolSource};
 pub use pathdiff::{

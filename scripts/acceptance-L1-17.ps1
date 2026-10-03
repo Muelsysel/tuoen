@@ -902,7 +902,14 @@ $setxScript = @(Select-String -Path (Join-Path $repo 'scripts\*.ps1') -Pattern '
 # （`setx FOO bar` / `setx /M …` / `setx $env:FOO …`）。纯文字里提到这个命令不算 —— 守卫自己
 # 必须能写出它禁止的东西，否则这段代码没法存在。`[s]etx` 这个写法保证它不命中自己。
 $setxSuspect = @($setxScript | Where-Object {
-        (($_.Line -replace '#.*$', '') -match '[s]etx\s+[%/A-Za-z]')
+        # 判据落在"**会执行**的语句"上：先把**字符串字面量**与注释挖掉，再看 `setx` 后面
+        # 是否跟着参数的样子。纯文字里提到这个命令不算 —— 守卫自己必须能写出它禁止的东西。
+        # 挖字符串这一步是补的：L2 的验收脚本里有一行节标题 `Section '8. 红线：setx / …'`，
+        # 去掉注释后仍然匹配 `setx\s+/`，于是**别的脚本**的标题把这条守卫弄红了
+        # （#17 那条"守卫会自己命中自己"的同一个坑，只是这次跨文件）。
+        $bare = ($_.Line -replace "'[^']*'", ' ') -replace '"[^"]*"', ' '
+        # setx.exe 与 setx $env:FOO … 也要算（前者带扩展名、后者第一个参数是变量）——[%$/A-Za-z]。
+        (($bare -replace '#.*$', '') -match '[s]etx(\.exe)?\s+[%$/A-Za-z]')
     })
 Check '脚本里没有一条会执行 setx 的语句（这个命令只许出现在守卫自己的文字里）' `
     ($setxSuspect.Count -eq 0) (($setxSuspect | ForEach-Object { "$(Split-Path -Leaf $_.Path):$($_.LineNumber)" }) -join ', ')

@@ -36,8 +36,13 @@ pub mod status {
     pub const NOT_A_SHIM: &str = "not-a-shim";
     /// `shim remove`：删掉了。
     pub const REMOVED: &str = "removed";
-    /// `shim remove`：那个名字没有对应的文件。
-    pub const NOT_FOUND: &str = "not-found";
+    /// `shim remove`：那个名字**本来就不在** —— 这不是失败，是幂等的成功。
+    ///
+    /// 取值与 `tuoen_platform::NoopReason::Absent` 的 slug 一致（`path remove` 那边
+    /// 同一件事说的是同一个词）：**同一个工具里"本来就不在"只有一种含义**。
+    /// 名字里的 `ABSENT` 而不是 `NOT_FOUND` 是刻意的 —— `not-found` 读起来像一个错误码，
+    /// 而这件事的结论恰恰是"没有出错，你要的终态已经成立"。
+    pub const ABSENT: &str = "absent";
     /// `shim remove`：名字本身不合法（分隔符 / 冒号 / 保留设备名……）。
     pub const BAD_NAME: &str = "bad-name";
 }
@@ -235,6 +240,17 @@ pub struct ShimRemoveView {
     pub shim_dir: String,
     /// 用户给的每一个名字一条，**顺序与命令行一致**。
     pub results: Vec<ShimRemoveEntryView>,
+    /// 真的删掉了几条。
+    pub removed: usize,
+    /// 有几个名字**本来就不在** —— 那是幂等的成功，不是失败（退出码仍然是 0）。
+    ///
+    /// 单独给一个计数，是为了让 `--json` 的消费者**不用扫 `results` 就能回答**
+    /// "这次到底删掉了什么、哪些是本来就不在的"。三个计数与 `results` 由
+    /// [`ShimRemoveView::new`] 一次算出，所以它们不可能互相矛盾。
+    pub absent: usize,
+    /// 有几个名字**没删成**（名字不合法 / 那是个不属于我们的文件 / 读不了 / 删不掉）。
+    /// 它是退出码的唯一依据：`failed == 0` ⟺ 退出码 0。
+    pub failed: usize,
     /// 删完之后，**同一个工具**还留在盘上的命令（命令名，已排序）。
     ///
     /// 存在的理由是 `add` 与 `remove` 的粒度不一样：`add node` 一次生成 4 条，
@@ -271,43 +287,62 @@ impl ShimRemoveView {
 }
 
 impl ShimRemoveView {
-    /// 第一个没删成的名字的错误码 —— 部分失败时它就是整个信封的错误码。
+    /// 从逐条结果装出视图，**顺手把三个计数算出来**。
+    ///
+    /// 让调用方自己数的话，`removed` / `absent` / `failed` 与 `results` 迟早会不一致 ——
+    /// 而 `failed` 正是退出码的唯一依据，一个数错的 `failed` 会让退出码说反话。
+    #[must_use]
+    pub fn new(
+        shim_dir: String,
+        results: Vec<ShimRemoveEntryView>,
+        siblings_left: Vec<String>,
+        tool_id: Option<String>,
+    ) -> Self {
+        let count = |wanted: &str| {
+            results
+                .iter()
+                .filter(|entry| entry.status == wanted)
+                .count()
+        };
+        Self {
+            shim_dir,
+            removed: count(status::REMOVED),
+            absent: count(status::ABSENT),
+            failed: results.iter().filter(|entry| !entry.is_done()).count(),
+            results,
+            siblings_left,
+            tool_id,
+        }
+    }
+
+    /// 第一个**没删成**的名字的错误码 —— 部分失败时它就是整个信封的错误码。
+    ///
+    /// **`absent` 不算没删成**：它的 `code` 是 `None`，而"本来就不在"与"删不掉"
+    /// 是两种结论完全相反的事（前者退出码 0，后者非 0）。
     #[must_use]
     pub fn first_failure_code(&self) -> Option<&'static str> {
         self.results
             .iter()
-            .find(|entry| entry.status != status::REMOVED)
-            .and_then(|entry| entry.code)
-    }
-
-    /// 没删成的那些名字的条数。
-    #[must_use]
-    pub fn failed(&self) -> usize {
-        self.results
-            .iter()
-            .filter(|entry| entry.status != status::REMOVED)
-            .count()
+            .filter(|entry| !entry.is_done())
+            .find_map(|entry| entry.code)
     }
 
     /// 部分失败时的中文汇总（进失败信封的 `error.message`）。
     ///
     /// **必须带上每一个名字的**具体原因**，而不是只说"N 个没删成"：
     /// `--json` 的消费者读不到人类输出，而"哪一个、为什么"正是它要的东西。
+    /// **本来就不在的那些不进这里** —— 它们不是失败，一句"没删成"会把结论说反。
     #[must_use]
     pub fn failure_summary(&self) -> String {
         let mut message = String::new();
-        for entry in self
-            .results
-            .iter()
-            .filter(|entry| entry.status != status::REMOVED)
-        {
+        for entry in self.results.iter().filter(|entry| !entry.is_done()) {
             message.push_str(&format!(
                 "`{}` 没删成：{}\n",
                 entry.name,
                 entry.message.as_deref().unwrap_or("（没有说明）")
             ));
         }
-        let removed = self.results.len() - self.failed();
+        let removed = self.removed;
         if removed > 0 {
             message.push_str(&format!(
                 "**已经删掉的那 {removed} 条不会恢复**（删除是逐条的）。"
@@ -326,17 +361,31 @@ pub struct ShimRemoveEntryView {
     pub file: Option<String>,
     /// 实际看/删的路径；名字不合法时是 `null`。
     pub path: Option<String>,
-    /// 稳定 slug：`removed` / `not-found` / `not-a-shim` / `bad-name` / `failed`。
+    /// 稳定 slug：`removed` / `absent` / `not-a-shim` / `bad-name` / `failed`。
+    ///
+    /// 前两个是**成功**（`absent` 是"本来就不在"，幂等），后三个是**没删成**。
     pub status: &'static str,
     /// 删掉时的文件字节数。
     pub bytes: Option<u64>,
-    /// 没删成时的稳定错误码。
+    /// 没删成时的稳定错误码。**成功的两种结局都是 `null`**（空操作没有错误码）。
     pub code: Option<&'static str>,
-    /// 没删成时的中文消息。
+    /// 没删成时的中文消息。**`absent` 也是 `null`** —— 中文只在人类输出里
+    /// （决策 35：成功载荷里不出现本地化文本）。
     pub message: Option<String>,
     /// 这个失败是不是"用户自己改得对"的那一类。
     #[serde(rename = "userError")]
     pub user_error: Option<bool>,
+}
+
+impl ShimRemoveEntryView {
+    /// 这个名字处理**完了**吗 —— 删掉了，或者本来就不在。
+    ///
+    /// 这个判据只有一处定义：退出码、三个计数、失败汇总页都从这里出发。
+    /// 分开写的话，"本来就不在"会在某一处被当成失败 —— 而那是本票要修的 bug 本身。
+    #[must_use]
+    pub fn is_done(&self) -> bool {
+        self.status == status::REMOVED || self.status == status::ABSENT
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -536,14 +585,19 @@ pub fn print_list_human(view: &ShimListView) {
 }
 
 /// `tuoen shim remove` 的人类输出。
+///
+/// **三种结局要长得不一样**：真的删了（`✓`）、本来就不在（`·`，而且明说"什么都没有改"）、
+/// 没删成（`✗` + 原因）。第二类以前借用的是失败那一行的形状 —— 于是一句
+/// "要删的东西本来就不在"看起来像出了错，而它恰恰是成功的终态。
+///
+/// 每一行都由一个**纯函数**产出来（[`removed_line`] / [`absent_line`] /
+/// [`summary_line`]），测试断言的是那些函数本身，而不是重新拼一遍它们的格式串。
 pub fn print_remove_human(view: &ShimRemoveView) {
     for entry in &view.results {
         if entry.status == status::REMOVED {
-            println!(
-                "✓ 已删除 {}（{} 字节）",
-                entry.file.as_deref().unwrap_or(&entry.name),
-                entry.bytes.unwrap_or(0)
-            );
+            println!("{}", removed_line(entry));
+        } else if entry.status == status::ABSENT {
+            println!("{}", absent_line(entry));
         } else {
             println!("✗ {}", entry.message.as_deref().unwrap_or("（没有说明）"));
             if entry.user_error == Some(false) {
@@ -552,26 +606,81 @@ pub fn print_remove_human(view: &ShimRemoveView) {
         }
     }
 
-    let removed = view
-        .results
-        .iter()
-        .filter(|entry| entry.status == status::REMOVED)
-        .count();
-    let failed = view.results.len() - removed;
     println!();
-    if failed == 0 {
-        println!("{} 条已删除。", removed);
-    } else {
-        println!("{} 个名字里有 {failed} 个没删成。", view.results.len());
-        if removed > 0 {
-            println!("已经删掉的那 {removed} 条**不会恢复**（删除是逐条的）。");
-        }
-        println!("用 `tuoen shim list` 看现在还剩什么。");
-    }
+    println!("{}", summary_line(view));
     if let Some(hint) = view.siblings_hint() {
         println!();
         println!("{hint}");
     }
+}
+
+/// 一条"真的删掉了"的正文。
+#[must_use]
+pub fn removed_line(entry: &ShimRemoveEntryView) -> String {
+    format!(
+        "✓ 已删除 {}（{} 字节）",
+        entry.file.as_deref().unwrap_or(&entry.name),
+        entry.bytes.unwrap_or(0)
+    )
+}
+
+/// 一条"本来就不在"的正文。
+///
+/// **不是一个错误行**：要删的东西不在，就是删完之后的状态 —— 这句话必须说出来，
+/// 否则"退出码 0 但输出里只有一个 ✗"会让人以为哪里坏了。
+#[must_use]
+pub fn absent_line(entry: &ShimRemoveEntryView) -> String {
+    format!(
+        "· `{}` 本来就不在{} —— **什么都没有改**。",
+        entry.name,
+        looked_at(entry)
+    )
+}
+
+/// 收尾那一行（逐条结果之后、兄弟提示之前）。
+#[must_use]
+pub fn summary_line(view: &ShimRemoveView) -> String {
+    if view.failed > 0 {
+        let mut text = format!(
+            "{} 个名字里有 {} 个没删成。",
+            view.results.len(),
+            view.failed
+        );
+        if view.removed > 0 {
+            text.push_str(&format!(
+                "\n已经删掉的那 {} 条**不会恢复**（删除是逐条的）。",
+                view.removed
+            ));
+        }
+        if view.absent > 0 {
+            text.push_str(&format!(
+                "\n另外 {} 个名字本来就不在 —— 那不算没删成，它们已经是终态。",
+                view.absent
+            ));
+        }
+        text.push_str("\n用 `tuoen shim list` 看现在还剩什么。");
+        return text;
+    }
+
+    match (view.removed, view.absent) {
+        (removed, 0) => format!("{removed} 条已删除。"),
+        (0, absent) => format!(
+            "{absent} 个名字本来就不在 —— **这不是错误**：\
+             要删的东西不在，就是删完之后的状态（幂等）。\n用 `tuoen shim list` 看现在有哪些。"
+        ),
+        (removed, absent) => format!(
+            "{removed} 条已删除，{absent} 个名字本来就不在（那也不是错误）。\
+             \n用 `tuoen shim list` 看现在有哪些。"
+        ),
+    }
+}
+
+/// `（找的是 `…`）` —— 我们到底看了哪个文件。没有路径（名字被拒）时什么都不印。
+fn looked_at(entry: &ShimRemoveEntryView) -> String {
+    entry
+        .path
+        .as_deref()
+        .map_or_else(String::new, |path| format!("（找的是 `{path}`）"))
 }
 
 /// `tuoen shim path` 的人类输出：**恰好一行，就是那个路径**。
@@ -651,7 +760,7 @@ mod tests {
             status::OK,
             status::NOT_A_SHIM,
             status::REMOVED,
-            status::NOT_FOUND,
+            status::ABSENT,
             status::BAD_NAME,
         ] {
             assert!(
@@ -714,39 +823,138 @@ mod tests {
     fn the_remove_failure_summary_names_every_name_and_its_own_reason() {
         // `--json` 的消费者读不到人类输出，所以失败信封里的消息必须**逐个点名**，
         // 而不是只说"N 个没删成"。
-        let view = ShimRemoveView {
-            shim_dir: r"C:\s\shims".to_owned(),
-            siblings_left: Vec::new(),
-            tool_id: None,
-            results: vec![
+        let view = ShimRemoveView::new(
+            r"C:\s\shims".to_owned(),
+            vec![
+                removed_entry("node"),
+                absent_entry("ghost"),
                 ShimRemoveEntryView {
-                    name: "node".to_owned(),
-                    file: Some("node.exe".to_owned()),
-                    path: Some(r"C:\s\shims\node.exe".to_owned()),
-                    status: status::REMOVED,
-                    bytes: Some(1024),
-                    code: None,
-                    message: None,
-                    user_error: None,
-                },
-                ShimRemoveEntryView {
-                    name: "ghost".to_owned(),
-                    file: Some("ghost.exe".to_owned()),
-                    path: Some(r"C:\s\shims\ghost.exe".to_owned()),
-                    status: status::NOT_FOUND,
-                    bytes: None,
-                    code: Some("not-found"),
-                    message: Some("shim `ghost` 不存在".to_owned()),
+                    name: "broken".to_owned(),
+                    file: Some("broken.exe".to_owned()),
+                    path: Some(r"C:\s\shims\broken.exe".to_owned()),
+                    status: status::NOT_A_SHIM,
+                    bytes: Some(7),
+                    code: Some("not-a-shim"),
+                    message: Some("`broken.exe` 不是 tuoen 生成的 shim，**没有删除**。".to_owned()),
                     user_error: Some(true),
                 },
             ],
-        };
-        assert_eq!(view.failed(), 1);
-        assert_eq!(view.first_failure_code(), Some("not-found"));
+            Vec::new(),
+            None,
+        );
+        assert_eq!(view.failed, 1, "`absent` 不算没删成");
+        assert_eq!(view.removed, 1);
+        assert_eq!(view.absent, 1);
+        assert_eq!(
+            view.first_failure_code(),
+            Some("not-a-shim"),
+            "错误码必须来自**真正**没删成的那一个，而不是它前面那个「本来就不在」的"
+        );
         let summary = view.failure_summary();
-        assert!(summary.contains("`ghost` 没删成"), "{summary}");
-        assert!(summary.contains("不存在"), "要带上具体原因：{summary}");
+        assert!(summary.contains("`broken` 没删成"), "{summary}");
+        assert!(summary.contains("不是 tuoen 生成的 shim"), "{summary}");
         assert!(summary.contains("不会恢复"), "要说明没有回滚：{summary}");
+        assert!(
+            !summary.contains("`ghost`"),
+            "「本来就不在」不是失败，不能被写进失败汇总：{summary}"
+        );
+    }
+
+    /// 一条"删成功了"的结果。
+    fn removed_entry(name: &str) -> ShimRemoveEntryView {
+        ShimRemoveEntryView {
+            name: name.to_owned(),
+            file: Some(format!("{name}.exe")),
+            path: Some(format!(r"C:\s\shims\{name}.exe")),
+            status: status::REMOVED,
+            bytes: Some(1024),
+            code: None,
+            message: None,
+            user_error: None,
+        }
+    }
+
+    /// 一条"本来就不在"的结果 —— **成功的空操作**，所以没有错误码、没有中文消息。
+    fn absent_entry(name: &str) -> ShimRemoveEntryView {
+        ShimRemoveEntryView {
+            name: name.to_owned(),
+            file: Some(format!("{name}.exe")),
+            path: Some(format!(r"C:\s\shims\{name}.exe")),
+            status: status::ABSENT,
+            bytes: None,
+            code: None,
+            message: None,
+            user_error: None,
+        }
+    }
+
+    #[test]
+    fn an_absent_name_is_a_success_and_its_slug_is_visible_in_the_json() {
+        // **本票的核心**：`shim remove <不存在的名字>` 是**幂等的成功**（退出码 0）。
+        // 而"本来就不在"这件事必须在 `--json` 里看得见 —— 靠 `status` 与 `absent` 计数，
+        // **不靠中文消息**（成功载荷里不许有 CJK，见上一个用例）。
+        let view = ShimRemoveView::new(
+            r"C:\s\shims".to_owned(),
+            vec![absent_entry("ghost")],
+            Vec::new(),
+            None,
+        );
+        assert_eq!(view.failed, 0, "「本来就不在」不是失败");
+        assert_eq!(view.absent, 1);
+        assert_eq!(view.removed, 0);
+        assert_eq!(view.first_failure_code(), None);
+
+        let json = serde_json::to_string(&view).expect("serialise");
+        assert!(json.contains(r#""status":"absent""#), "{json}");
+        assert!(json.contains(r#""absent":1"#), "{json}");
+        assert!(json.contains(r#""failed":0"#), "{json}");
+        assert!(
+            !has_cjk(&json),
+            "成功载荷里不该有 CJK —— 所以「本来就不在」的中文只在人类输出里：{json}"
+        );
+    }
+
+    #[test]
+    fn the_human_lines_of_an_absent_name_and_of_a_removal_are_different() {
+        // 逐字钉住人话。**断言的是产出那些行的那两个函数**，不是在这里重拼一遍格式串 ——
+        // 重拼的断言在文案改了之后照样通过，而那正是"什么都没比"。
+        let absent = absent_line(&absent_entry("ghost"));
+        assert!(absent.contains("本来就不在"), "{absent}");
+        assert!(
+            absent.contains(r"C:\s\shims\ghost.exe"),
+            "要点出我们看的是哪个文件：{absent}"
+        );
+        assert!(absent.contains("什么都没有改"), "{absent}");
+        assert!(
+            !absent.starts_with('✗'),
+            "「本来就不在」不是失败，不能用失败的记号：{absent}"
+        );
+
+        let removed = removed_line(&removed_entry("node"));
+        assert!(removed.starts_with('✓'), "{removed}");
+        assert!(removed.contains("已删除"), "{removed}");
+
+        // 收尾行：全部"本来就不在"时，**必须**明说这不是错误（本票要修的就是这句话）。
+        let all_absent = ShimRemoveView::new(
+            r"C:\s\shims".to_owned(),
+            vec![absent_entry("ghost")],
+            Vec::new(),
+            None,
+        );
+        let summary = summary_line(&all_absent);
+        assert!(summary.contains("这不是错误"), "{summary}");
+        assert!(summary.contains("幂等"), "{summary}");
+        assert!(!summary.contains("没删成"), "{summary}");
+        assert!(!summary.contains("不会恢复"), "{summary}");
+
+        // 真的删掉时不能说"本来就不在"。
+        let all_removed = ShimRemoveView::new(
+            r"C:\s\shims".to_owned(),
+            vec![removed_entry("node")],
+            Vec::new(),
+            None,
+        );
+        assert_eq!(summary_line(&all_removed), "1 条已删除。");
     }
 
     /// 删完之后"还剩哪几条兄弟"的那句提示。
@@ -757,12 +965,12 @@ mod tests {
     /// **可以直接抄的完整命令**，而不是只列出几个名字让他自己拼。
     #[test]
     fn the_sibling_hint_gives_a_command_that_can_be_copied_verbatim() {
-        let view = ShimRemoveView {
-            shim_dir: r"C:\s\shims".to_owned(),
-            results: Vec::new(),
-            siblings_left: vec!["corepack".to_owned(), "npm".to_owned(), "npx".to_owned()],
-            tool_id: Some("node".to_owned()),
-        };
+        let view = ShimRemoveView::new(
+            r"C:\s\shims".to_owned(),
+            Vec::new(),
+            vec!["corepack".to_owned(), "npm".to_owned(), "npx".to_owned()],
+            Some("node".to_owned()),
+        );
         let hint = view.siblings_hint().expect("有兄弟就必须有提示");
         assert!(hint.contains("3 条"), "要报条数：{hint}");
         assert!(hint.contains("corepack、npm、npx"), "要点名：{hint}");
@@ -773,11 +981,7 @@ mod tests {
         assert!(hint.contains("命令名"), "要说清为什么只删了一条：{hint}");
 
         // 一条不剩时不说话 —— 删干净了还跟一句"注意"是噪声。
-        let clean = ShimRemoveView {
-            siblings_left: Vec::new(),
-            tool_id: None,
-            ..view
-        };
+        let clean = ShimRemoveView::new(r"C:\s\shims".to_owned(), Vec::new(), Vec::new(), None);
         assert_eq!(clean.siblings_hint(), None);
     }
 

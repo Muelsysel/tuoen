@@ -11,8 +11,12 @@
 //! 2. **逐条落盘，不回滚**：一条命令失败**不会**删掉已经成功的那几条。把刚生成好的东西
 //!    删掉，只会让"现在磁盘上到底是什么"更难解释。失败会报出来、退出码非 0，
 //!    而**已经发生的事实**照样出现在输出里（`--json` 里是一个**带 `data` 的失败信封**）。
-//! 3. **`remove` 的退出码语义**：只要有**一个**名字没删成，退出码就是 1（`not-found`
-//!    也算没删成 —— 你要删的东西不在，这条命令没有完成它被要求做的事）。
+//! 3. **`remove` 的退出码语义**：只要有**一个**名字**没删成**，退出码就是 1。
+//!    "没删成"只有四种：名字不合法、文件存在但不是我们的 shim、读不了它、删不掉它。
+//!    **"本来就不在"不是没删成** —— 要删的东西不在，就是删完之后的状态，所以那是
+//!    **幂等的成功**（退出码 0，输出里明说"本来就不在"）。这与 `tuoen path remove`
+//!    对"本来就不在"的处理是同一套语义：**同一个工具里两套语义会让脚本作者踩坑**
+//!    （票据 #21；我们自己的验收脚本就踩了，`docs/acceptance/L1-18-l1-real-machine.md` §7）。
 //!    删除同样是逐条的，前面删掉的那些不会因为后面失败而恢复。
 //!
 //! ## 三件这一层**不做**的事
@@ -543,14 +547,12 @@ fn slot_magic_offsets(bytes: &[u8]) -> impl Iterator<Item = usize> + '_ {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// 跑 `tuoen shim remove`。返回退出码。
+///
+/// **退出码只看"有没有没删成的名字"**（`view.failed`）：真的删掉了是成功，
+/// 而"本来就不在"同样是成功 —— 后者是幂等的那一半，见模块文档第 3 条。
 pub fn run_remove(args: &ShimRemoveArgs) -> i32 {
     match remove(args) {
-        Ok(view)
-            if view
-                .results
-                .iter()
-                .all(|entry| entry.status == status::REMOVED) =>
-        {
+        Ok(view) if view.failed == 0 => {
             if args.json {
                 crate::print_json(&Envelope::ok("shim.remove", &view));
             } else {
@@ -593,12 +595,13 @@ pub fn remove(args: &ShimRemoveArgs) -> Result<ShimRemoveView, ShimCliError> {
         .map(|raw| remove_one(&shim_dir, raw))
         .collect();
     let (siblings_left, tool_id) = siblings_left_behind(&shim_dir, &results);
-    Ok(ShimRemoveView {
-        shim_dir: shim_dir.display().to_string(),
+    // 计数由视图层从 `results` 里一次算出来 —— 在这里自己数就等于第二份判据。
+    Ok(ShimRemoveView::new(
+        shim_dir.display().to_string(),
         results,
         siblings_left,
         tool_id,
-    })
+    ))
 }
 
 /// 删完之后，**同一个工具**还有哪几条留在盘上。
@@ -641,11 +644,18 @@ fn siblings_left_behind(
 
 /// 删一个名字。
 ///
-/// 四种拒绝，每一种都**什么都不删**：
-/// * 名字不合法（分隔符 / 冒号 / 控制字符 / 保留设备名）—— 它不是 shim 目录里的一个文件名；
-/// * 文件不存在；
-/// * 文件存在但**不是我们的 shim**（没有槽位魔数）；
-/// * 读不了它（**读不了就等于确认不了它是我们的**，于是不删）。
+/// 五种结局，其中**两种是成功的**：
+/// * 删掉了 —— **成功**；
+/// * 文件**本来就不在** —— **成功**（幂等：要删的东西不在，就是删完之后的状态）；
+/// * 名字不合法（分隔符 / 冒号 / 控制字符 / 保留设备名）—— **没删成**，它根本不是一个文件名；
+/// * 文件存在但**不是我们的 shim**（没有槽位魔数）—— **没删成**；
+/// * 读不了它（**读不了就等于确认不了它是我们的**，于是不删）—— **没删成**。
+///
+/// 后四种里每一种都**什么都不删**。
+///
+/// "本来就不在"的判据是 `symlink_metadata` 报 `NotFound`，**不是 `Path::exists()`**：
+/// 后者把"stat 不了"（权限、坏掉的重解析点……）也答成 `false`，于是那一次失败会被
+/// 说成"它本来就不在"、退出码 0 —— 那正是本票明令不许做的事（**不许把真错误吞成 0**）。
 fn remove_one(shim_dir: &Path, raw: &str) -> ShimRemoveEntryView {
     let name = strip_exe_suffix(raw.trim());
     if let Err(error) = check_shim_name(name) {
@@ -664,19 +674,40 @@ fn remove_one(shim_dir: &Path, raw: &str) -> ShimRemoveEntryView {
     let file = format!("{name}.exe");
     let path = shim_dir.join(&file);
     let path_text = path.display().to_string();
-    if !path.exists() {
-        return ShimRemoveEntryView {
-            name: raw.to_owned(),
-            file: Some(file),
-            path: Some(path_text.clone()),
-            status: status::NOT_FOUND,
-            bytes: None,
-            code: Some("not-found"),
-            message: Some(format!(
-                "shim `{name}` 不存在（找的是 `{path_text}`）。用 `tuoen shim list` 看现在有哪些。"
-            )),
-            user_error: Some(true),
-        };
+    match std::fs::symlink_metadata(&path) {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            // **成功的空操作。** 没有错误码、没有中文消息 —— 成功载荷里不许有本地化文本
+            // （决策 35），所以"本来就不在"这句话由视图层从 `status` 推出来。
+            return ShimRemoveEntryView {
+                name: raw.to_owned(),
+                file: Some(file),
+                path: Some(path_text),
+                status: status::ABSENT,
+                bytes: None,
+                code: None,
+                message: None,
+                user_error: None,
+            };
+        }
+        Err(source) => {
+            // **不能把这一条说成"本来就不在"**：我们没看到它的状态，所以关于它在不在
+            // 什么都不知道。答"不知道"（失败）比答一个看起来合理的"不在"（成功）安全。
+            return ShimRemoveEntryView {
+                name: raw.to_owned(),
+                file: Some(file),
+                path: Some(path_text),
+                status: status::FAILED,
+                bytes: None,
+                code: Some("stat-failed"),
+                message: Some(format!(
+                    "看不了 `{}` 的状态：{source}\n\
+                     所以既不能确认它不在，也不能确认它是我们的 shim —— **没有删除**。",
+                    path.display()
+                )),
+                user_error: Some(false),
+            };
+        }
     }
 
     let Ok(contents) = std::fs::read(&path) else {
@@ -899,17 +930,17 @@ mod tests {
         }
     }
 
-    /// 一条"没删成"的结果。
-    fn not_found(name: &str) -> ShimRemoveEntryView {
+    /// 一条"本来就不在"的结果 —— **成功的空操作**（没有错误码、没有中文消息）。
+    fn absent(name: &str) -> ShimRemoveEntryView {
         ShimRemoveEntryView {
             name: name.to_owned(),
             file: Some(format!("{name}.exe")),
             path: None,
-            status: status::NOT_FOUND,
+            status: status::ABSENT,
             bytes: None,
-            code: Some("not-found"),
+            code: None,
             message: None,
-            user_error: Some(true),
+            user_error: None,
         }
     }
 
@@ -950,14 +981,54 @@ mod tests {
 
     #[test]
     fn a_name_we_did_not_remove_never_produces_a_hint() {
-        // **只对真的删成功的那几个名字说话。** 没删成的（不存在、名字不合法……）
+        // **只对真的删成功的那几个名字说话。** 没删成的、以及"本来就不在"的，
         // 一条兄弟都不该报 —— 否则"什么都没删掉"也会跟一句"还剩 N 条"。
         let dir = tuoen_platform::test_support::TempDir::new("shim-siblings-failed");
         std::fs::write(dir.path().join("npm.exe"), b"x").expect("write");
 
-        let (left, tool) = siblings_left_behind(dir.path(), &[not_found("node")]);
-        assert!(left.is_empty(), "没删成的名字不该触发兄弟提示");
+        // 这里用 `absent` 而不是一条失败：**它现在是本票最典型的"什么都没发生"**，
+        // 而"什么都没发生"最容易顺手带出一句假的"还剩 npm 没删"。
+        let (left, tool) = siblings_left_behind(dir.path(), &[absent("node")]);
+        assert!(left.is_empty(), "「本来就不在」不该触发兄弟提示");
         assert!(tool.is_none());
+    }
+
+    #[test]
+    fn removing_a_name_that_is_not_there_is_a_success_with_no_error_code() {
+        // **本票的核心判据，落在最里层的那个函数上。**
+        // 一个从来没有过的名字：不是失败（`ABSENT`），也没有错误码/中文消息 ——
+        // 后两条是"它在 `--json` 的成功载荷里"的前提（决策 35：成功载荷无 CJK）。
+        let dir = tuoen_platform::test_support::TempDir::new("shim-remove-absent");
+        let entry = remove_one(dir.path(), "ghost");
+        assert_eq!(entry.status, status::ABSENT, "「本来就不在」不是失败");
+        assert_eq!(entry.code, None, "空操作没有错误码");
+        assert_eq!(entry.message, None, "中文只在人类输出里");
+        assert_eq!(entry.user_error, None);
+        assert!(entry.is_done(), "它是处理完了的那一种");
+        assert_eq!(
+            entry.file.as_deref(),
+            Some("ghost.exe"),
+            "仍然要说清找的是哪个文件"
+        );
+    }
+
+    #[test]
+    fn removing_a_foreign_file_is_still_a_failure_that_deletes_nothing() {
+        // 反例（防"把真错误也吞成 0"）：盘上真的有一个 `broken.exe`，而它不是我们的 ——
+        // 那么"没删成"与"本来就不在"必须是两种结论。
+        let dir = tuoen_platform::test_support::TempDir::new("shim-remove-foreign");
+        std::fs::write(dir.path().join("broken.exe"), b"not a tuoen shim").expect("write");
+
+        let entry = remove_one(dir.path(), "broken");
+        assert_eq!(entry.status, status::NOT_A_SHIM);
+        assert_eq!(entry.code, Some("not-a-shim"));
+        assert!(!entry.is_done(), "没删成的那一种");
+        assert!(
+            dir.path().join("broken.exe").is_file(),
+            "不是我们的东西一个字节都不能动"
+        );
+        // 同一个目录里，一个不存在的名字与它结论相反。
+        assert_eq!(remove_one(dir.path(), "ghost").status, status::ABSENT);
     }
 
     #[test]

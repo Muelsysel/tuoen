@@ -720,33 +720,93 @@ fn remove_refuses_a_file_that_is_not_ours() {
 }
 
 #[test]
-fn remove_of_a_missing_name_is_its_own_error() {
+fn remove_of_a_missing_name_is_an_idempotent_success_and_says_so() {
+    // **本票（#21）的核心用例。**
+    //
+    // 以前这里断言的是"退出码 1 + 错误码 not-found"：`shim remove` 把"你要删的东西
+    // 不在"当成失败，而同一个工具里的 `path remove` 把同一件事当成**成功的空操作**。
+    // 两套语义并存，踩坑的是脚本作者 —— 我们自己的验收脚本就踩了
+    // （`docs/acceptance/L1-18-l1-real-machine.md` §7.3）。
+    //
+    // 现在：退出码 0，**人话明说"本来就不在"**，`--json` 里靠 `status: "absent"`
+    // 与计数 `absent` 看得出来，而且**一个字节都没改**。
     let home = IsolatedHome::new("shim-remove-missing");
     let dir = shims_dir(&home);
     std::fs::create_dir_all(&dir).expect("造 shim 目录");
     std::fs::write(dir.join("notes.txt"), b"just a note").expect("写笔记");
+    let before = list_files(&dir);
 
     let output = run_shim(&home, &["shim", "remove", "ghost", "--json"]);
-    assert_eq!(output.status.code(), Some(1));
-    let error = json(&output).error.expect("失败必须有 error");
     assert_eq!(
-        error.code, "not-found",
-        "「你要删的东西不在」是它自己的一种失败，不是「不是我们的 shim」"
+        output.status.code(),
+        Some(0),
+        "「本来就不在」是幂等的成功，不是失败：{}",
+        describe(&output)
     );
-    // 失败信封的消息必须**点名**是哪一个、为什么 —— `--json` 的消费者读不到人类输出。
-    assert!(
-        error.message.contains("ghost"),
-        "要指出是哪个名字：{}",
-        error.message
+    let envelope = json(&output);
+    assert!(envelope.ok, "成功信封：{:?}", envelope.error);
+    assert!(envelope.error.is_none(), "成功的空操作没有错误");
+    let data = envelope.data.expect("成功必须有 data");
+    assert_eq!(
+        data["results"][0]["status"],
+        value!("absent"),
+        "**`--json` 里必须看得出它本来就不在**，而这一条不能靠中文消息：{data}"
     );
-    assert!(
-        error.message.contains("shim list"),
-        "要给出下一步（看有哪些）：{}",
-        error.message
+    assert_eq!(data["results"][0]["code"], value!(null), "空操作没有错误码");
+    assert_eq!(
+        data["results"][0]["message"],
+        value!(null),
+        "成功载荷里不许有本地化文本（决策 35）"
     );
+    assert_eq!(
+        data["results"][0]["path"],
+        value!(dir.join("ghost.exe").display().to_string()),
+        "仍然要说清我们找的是哪个文件：{data}"
+    );
+    assert_eq!(data["removed"], value!(0));
+    assert_eq!(data["absent"], value!(1));
+    assert_eq!(data["failed"], value!(0));
+    assert_eq!(
+        data["siblingsLeft"],
+        value!([]),
+        "什么都没删掉，就不该有「还剩哪几条」的提示：{data}"
+    );
+
+    // **一个字节都没改**：目录里连那份笔记都还在。
+    assert_eq!(list_files(&dir), before, "空操作不许动任何东西");
+
+    // 人话也必须说，而且不能长得像失败。
+    let human = run_shim(&home, &["shim", "remove", "ghost"]);
+    assert_eq!(human.status.code(), Some(0));
+    let text = stdout(&human);
+    assert!(text.contains("ghost"), "要点名是哪一个：{text}");
+    assert!(text.contains("本来就不在"), "要明说它本来就不在：{text}");
+    assert!(text.contains("什么都没有改"), "要明说没有改动：{text}");
+    assert!(text.contains("不是错误"), "要明说这不是错误：{text}");
     assert!(
-        dir.join("notes.txt").is_file(),
-        "`remove ghost` 不该顺手删掉别的文件"
+        !text.contains("没删成"),
+        "「本来就不在」不是没删成 —— 一句话说反会把结论说反：{text}"
+    );
+    assert!(!text.contains("✗"), "不能借用失败那一行的记号：{text}");
+}
+
+#[test]
+fn removing_a_name_on_a_machine_with_no_shim_dir_writes_nothing_at_all() {
+    // 幂等的另一半：**连目录都不该被创建**。
+    // shim 目录不存在 = 我们一条命令都没发布，那么"删掉一个名字"的终态已经成立。
+    let home = IsolatedHome::new("shim-remove-missing-no-dir");
+    assert!(
+        !shims_dir(&home).exists(),
+        "前提：这台机器上还没有 shim 目录"
+    );
+
+    let output = run_shim(&home, &["shim", "remove", "ghost", "--json"]);
+    assert_eq!(output.status.code(), Some(0), "{}", describe(&output));
+    assert_eq!(json(&output).data.expect("data")["absent"], value!(1));
+    assert!(
+        !shims_dir(&home).exists(),
+        "成功的空操作**不许**顺手创建 `{}`",
+        shims_dir(&home).display()
     );
 }
 
@@ -789,26 +849,38 @@ fn remove_deletes_our_shims_and_keeps_going_after_a_failure() {
     let added = run_shim(&home, &["shim", "add", "node", "--json"]);
     assert_eq!(added.status.code(), Some(0), "{}", stderr(&added));
 
-    // 第一个名字是我们的、第二个不是：删掉的**不回滚**，而退出码仍然非 0。
-    let output = run_shim(&home, &["shim", "remove", "node", "ghost", "--json"]);
+    // 盘上放一个**不是我们的** `.exe`：第一个名字是我们的、第二个不是 ——
+    // 删掉的**不回滚**，而退出码仍然非 0（这一条才是"没删成"的真正形态：
+    // 「本来就不在」不再是失败，见 `remove_of_a_missing_name_is_an_idempotent_success_and_says_so`）。
+    let dir = shims_dir(&home);
+    std::fs::write(dir.join("broken.exe"), b"not a tuoen shim").expect("写乱文件");
+
+    let output = run_shim(&home, &["shim", "remove", "node", "broken", "--json"]);
     assert_eq!(output.status.code(), Some(1), "有一个没删成 → 非 0");
     let envelope = json(&output);
     assert!(!envelope.ok, "有东西没做成就不该报成功");
+    let error = envelope.error.expect("失败必须有 error");
+    assert_eq!(
+        error.code, "not-a-shim",
+        "错误码必须来自真的没删成的那一个：{}",
+        error.message
+    );
     let data = envelope.data.expect("部分失败也要有 data");
     assert_eq!(data["results"][0]["status"], value!("removed"));
+    assert_eq!(data["removed"], value!(1));
+    assert_eq!(data["failed"], value!(1));
+    assert_eq!(data["absent"], value!(0));
     assert!(
         data["results"][0]["bytes"].as_u64().unwrap_or(0) > 0,
         "要说清删掉了多少字节：{data}"
     );
-    assert_eq!(data["results"][1]["status"], value!("not-found"));
+    assert_eq!(data["results"][1]["status"], value!("not-a-shim"));
     assert!(
-        !shims_dir(&home).join("node.exe").exists(),
+        !dir.join("node.exe").exists(),
         "删掉的那条**不回滚** —— 它已经不在磁盘上了"
     );
-    assert!(
-        shims_dir(&home).join("npm.exe").is_file(),
-        "没点名的那些不该被动"
-    );
+    assert!(dir.join("npm.exe").is_file(), "没点名的那些不该被动");
+    assert!(dir.join("broken.exe").is_file(), "不属于我们的文件绝不能删");
 
     // 全部删成时是干净的成功信封。
     let all = run_shim(
@@ -823,7 +895,55 @@ fn remove_deletes_our_shims_and_keeps_going_after_a_failure() {
         envelope.data.expect("data")["results"][0]["status"],
         value!("removed")
     );
-    assert_eq!(list_files(&shims_dir(&home)), Vec::<String>::new());
+    assert_eq!(
+        list_files(&dir),
+        vec!["broken.exe"],
+        "只剩那个不属于我们的文件"
+    );
+}
+
+#[test]
+fn a_mixed_remove_reports_the_real_failure_not_the_absent_name() {
+    // **顺序最容易骗人的一种局面**：`ghost`（本来就不在，现在是成功）排在
+    // `broken`（真的没删成）**前面**。凡是"取第一个非 removed 的状态"的实现都会
+    // 在这里把错误码报成 `not-found`/`remove-failed` —— 一句与事实不符的结论。
+    let home = IsolatedHome::new("shim-remove-mixed");
+    let dir = shims_dir(&home);
+    std::fs::create_dir_all(&dir).expect("造 shim 目录");
+    std::fs::write(dir.join("broken.exe"), b"not a tuoen shim").expect("写乱文件");
+
+    let output = run_shim(&home, &["shim", "remove", "ghost", "broken", "--json"]);
+    assert_eq!(output.status.code(), Some(1), "{}", describe(&output));
+    let envelope = json(&output);
+    assert!(!envelope.ok);
+    let error = envelope.error.expect("失败必须有 error");
+    assert_eq!(
+        error.code, "not-a-shim",
+        "错误码必须是**真的**没删成的那一个，而不是它前面那个「本来就不在」的"
+    );
+    assert!(
+        !error.message.contains("ghost"),
+        "「本来就不在」不是失败，不该出现在失败汇总里：{}",
+        error.message
+    );
+    assert!(error.message.contains("broken"), "{}", error.message);
+
+    let data = envelope.data.expect("部分失败也要有 data");
+    assert_eq!(data["results"][0]["status"], value!("absent"));
+    assert_eq!(data["results"][1]["status"], value!("not-a-shim"));
+    assert_eq!(data["removed"], value!(0));
+    assert_eq!(data["absent"], value!(1));
+    assert_eq!(data["failed"], value!(1));
+
+    // 人话那一侧也一样：不能把 `ghost` 说成没删成。
+    let human = run_shim(&home, &["shim", "remove", "ghost", "broken"]);
+    let text = stdout(&human);
+    assert!(text.contains("本来就不在"), "{text}");
+    assert!(text.contains("2 个名字里有 1 个没删成"), "{text}");
+    assert!(
+        text.contains("另外 1 个名字本来就不在"),
+        "两种结局都要说，而且要说清谁是哪种：{text}"
+    );
 }
 
 #[test]
@@ -896,6 +1016,9 @@ fn the_shim_family_is_byte_stable_in_the_same_state() {
         vec!["shim", "path", "--json"],
         vec!["shim", "list", "--json"],
         vec!["shim", "add", "node", "--dry-run", "--json"],
+        // 一个**什么都不改**的删除（名字本来就不在）：它必须逐字节稳定 ——
+        // 而"什么都不改"的命令正是最容易顺手带上一点机器状态的那一类。
+        vec!["shim", "remove", "ghost", "--json"],
     ] {
         assert_eq!(
             stdout(&run_shim(&home, &args)),
@@ -917,6 +1040,9 @@ fn success_payloads_contain_no_localised_text() {
         vec!["shim", "add", "node", "--dry-run", "--json"],
         vec!["shim", "add", "node", "--json"],
         vec!["shim", "remove", "node", "--json"],
+        // 「本来就不在」现在是**成功**，所以它的载荷也在这一条契约的管辖范围内：
+        // 一句中文说明（"它本来就不在"）必须留在人类输出里，不能进 JSON。
+        vec!["shim", "remove", "ghost", "--json"],
     ] {
         let output = run_shim(&home, &args);
         let text = stdout(&output);
@@ -936,8 +1062,11 @@ fn error_codes_are_ascii_while_error_messages_may_be_chinese() {
         (vec!["shim", "add", "node", "--json"], "no-active-version"),
         (vec!["shim", "add", "nope", "--json"], "unknown-tool"),
         (vec!["shim", "add", "node@", "--json"], "empty-version"),
-        (vec!["shim", "remove", "ghost", "--json"], "not-found"),
         (vec!["shim", "remove", "CON", "--json"], "bad-name"),
+        // 「本来就不在」（`ghost`）**故意不在这里**：它现在是一个成功信封，
+        // 由 `remove_of_a_missing_name_is_an_idempotent_success_and_says_so` 钉住。
+        // 一条永远为真的断言比没有断言更坏 —— 而这里留一行说明是为了让下一个
+        // 想往里加 `not-found` 的人先看到它为什么不在。
     ];
     for (args, expected) in cases {
         let envelope = json(&run_shim(&home, &args));
@@ -1001,6 +1130,9 @@ fn the_real_tuoen_home_was_not_touched_by_this_files_tests() {
         vec!["shim", "add", "node", "--json"],
         vec!["shim", "list", "--json"],
         vec!["shim", "remove", "node", "--json"],
+        // **#21 的真机复现形状**：一个不存在的名字现在是**成功**，而且**什么都不该碰** ——
+        // 包括真实的 `%LOCALAPPDATA%\tuoen`（那个目录里连 `shims` 都不该出现）。
+        vec!["shim", "remove", "tuoen-definitely-not-a-shim", "--json"],
     ] {
         let output = run_shim(&home, &args);
         assert!(output.status.success(), "{args:?}：{}", stderr(&output));

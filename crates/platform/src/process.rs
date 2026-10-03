@@ -73,11 +73,40 @@ impl ProcessOutcome {
 }
 
 /// 跑进程的抽象。
+///
+/// # 为什么有 [`ProcessRunner::run_env`] 这个入口（票据 #23）
+///
+/// 决策 27 只允许**通过进程环境变量**重定向包管理器（`NPM_CONFIG_PREFIX` /
+/// `PYTHONUSERBASE` / `PIP_USER`）：绝不写 `.npmrc` / `pip.ini` / 注册表。
+/// 于是"把几个变量塞进子进程的环境块"必须是这一层的能力。
+///
+/// **它刻意是必需方法，而不是"带默认实现的便利方法"**：一个有默认实现的版本
+/// 只要忘记覆盖就会**静默忽略** `env`，而忽略的表现是"包被装进了机器自己的
+/// prefix / 用户自己的 site-packages 里"—— 决策 26 里最贵的那类错（它不报错，
+/// 直到换运行时版本的那一天）。必需方法把这件事变成编译期问题。
 pub trait ProcessRunner {
-    /// 跑 `program args`，最多等 `timeout`。
+    /// 跑 `program args`，最多等 `timeout`。**不改子进程的环境。**
     ///
     /// **实现必须保证**：无论子进程做什么，本调用都会在 `timeout` 之后的一个有界时间内返回。
-    fn run(&self, program: &Path, args: &[&str], timeout: Duration) -> ProcessOutcome;
+    fn run(&self, program: &Path, args: &[&str], timeout: Duration) -> ProcessOutcome {
+        self.run_env(program, args, &[], timeout)
+    }
+
+    /// 跑 `program args`，并把 `env` 里的变量**覆盖/新增**进子进程的环境块。
+    ///
+    /// 语义与 [`crate::spawn_inherit`] 的 `env` 参数一致，**两者必须一致**：
+    ///
+    /// * 作用在**继承来的**环境块上（**不** `env_clear`：`PATH`、`PATHEXT` 这些
+    ///   子进程本来就要有，清掉它们等于让每个工具都找不到）；
+    /// * 变量名大小写不敏感（Windows 的查找规则），值**原样**写进去 ——
+    ///   不做任何 `%VAR%` 展开（展开是不可逆的信息损失，见 `AGENTS.md` 规矩二）。
+    fn run_env(
+        &self,
+        program: &Path,
+        args: &[&str],
+        env: &[(String, String)],
+        timeout: Duration,
+    ) -> ProcessOutcome;
 }
 
 /// 真实实现：`std::process::Command` + 自建超时。
@@ -149,13 +178,24 @@ impl Capture {
 }
 
 impl ProcessRunner for SystemProcessRunner {
-    fn run(&self, program: &Path, args: &[&str], timeout: Duration) -> ProcessOutcome {
+    fn run_env(
+        &self,
+        program: &Path,
+        args: &[&str],
+        env: &[(String, String)],
+        timeout: Duration,
+    ) -> ProcessOutcome {
         let mut command = Command::new(program);
         command
             .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        // 空 `env` 时这一圈什么都不做 —— 于是 `run` 的行为与它存在之前**逐字节相同**
+        // （`Command` 默认继承父进程的环境块）。
+        for (name, value) in env {
+            command.env(name, value);
+        }
         let mut child = match command.spawn() {
             Ok(child) => child,
             Err(err) => return ProcessOutcome::not_spawned(err.to_string()),

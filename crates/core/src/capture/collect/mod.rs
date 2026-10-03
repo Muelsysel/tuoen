@@ -68,10 +68,33 @@ pub(crate) struct Command {
 }
 
 impl Command {
-    /// 跑一次。**超时是调用方给的**：枚举用 [`globals::GLOBALS_TIMEOUT`]（60 秒），
-    /// 版本探测用 `probe_timeout`（决策 170：两者必须分开）。
-    pub(crate) fn run(&self, ctx: &DetectContext<'_>, timeout: Duration) -> ProcessOutcome {
-        ctx.runner.run(Path::new(self.program), self.args, timeout)
+    /// 跑一次，**追加参数 + 覆盖子进程环境**。
+    ///
+    /// 这两件事只在一处发生：tuoen 自己的全局根（ticket #23）。我们既不写
+    /// `.npmrc` 也不写 `pip.ini`（决策 27），于是"把包装到我们的根里 / 从我们的
+    /// 根里读"**只能**靠进程环境变量（`NPM_CONFIG_PREFIX` / `PYTHONUSERBASE`）
+    /// 与命令行开关（`npm ls --prefix`）。
+    ///
+    /// 不需要这两样时传空表：`run(&[], &[], timeout)` 与 #17 的 `run(timeout)`
+    /// 逐字节等价（调用点只传空表，所以"原来的行为"没有第二条代码路径）。
+    ///
+    /// # 为什么参数是 `&[String]` 而不是拼进 [`Command::args`]
+    ///
+    /// [`Command`] 的 `args` 是**编译期常量**（模块文档第 7 条：外部命令只在一张
+    /// 常量表里定义，调用点不许拼字符串）。根里含用户的 `%LOCALAPPDATA%`
+    /// 与运行时版本号，拼不进常量 —— 所以它们只能是"追加在常量载荷后面的
+    /// 两段值"，而这段值从哪来由 [`globals`] 一处决定。
+    pub(crate) fn run_with(
+        &self,
+        ctx: &DetectContext<'_>,
+        extra_args: &[String],
+        env: &[(String, String)],
+        timeout: Duration,
+    ) -> ProcessOutcome {
+        let mut args: Vec<&str> = self.args.to_vec();
+        args.extend(extra_args.iter().map(String::as_str));
+        ctx.runner
+            .run_env(Path::new(self.program), &args, env, timeout)
     }
 
     /// 跑一次并只要 stdout —— 而且**只在真的成功时**才算数。
@@ -79,7 +102,18 @@ impl Command {
     /// `spawned == false` / `timed_out` / 非零退出都返回 `None`：这三个都是
     /// "这个工具没回答"，而把它们当成"它回答了空字符串"会让我们**编**出一个值。
     pub(crate) fn run_text(&self, ctx: &DetectContext<'_>, timeout: Duration) -> Option<String> {
-        let outcome = self.run(ctx, timeout);
+        self.run_text_with(ctx, &[], &[], timeout)
+    }
+
+    /// [`Command::run_text`] 的带参数/带环境版本（见 [`Command::run_with`]）。
+    pub(crate) fn run_text_with(
+        &self,
+        ctx: &DetectContext<'_>,
+        extra_args: &[String],
+        env: &[(String, String)],
+        timeout: Duration,
+    ) -> Option<String> {
+        let outcome = self.run_with(ctx, extra_args, env, timeout);
         if !outcome.spawned || outcome.timed_out || outcome.exit_code != Some(0) {
             return None;
         }

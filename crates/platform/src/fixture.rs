@@ -676,6 +676,19 @@ pub struct ProcessCall {
     pub program: String,
     /// 参数。
     pub args: Vec<String>,
+    /// 这次调用**额外塞进子进程环境**的变量（顺序即调用方给的顺序）。
+    ///
+    /// # 为什么假运行器要记它（票据 #23）
+    ///
+    /// 决策 27 只允许用环境变量重定向包管理器，而"我们到底给子进程设了什么"
+    /// 是一个**只有调用方知道**的事实：真机上它被 `CreateProcess` 吞进环境块，
+    /// 事后没有任何地方能读回来。固定装置是唯一能逐字断言它的地方 ——
+    /// 所以 [`ProcessRunner::run_env`] 的 `env` 参数原样进这里。
+    ///
+    /// **注意它记录的是"我们设置的覆盖项"，不是子进程看到的完整环境块**：
+    /// 继承来的那些（`PATH`、`PATHEXT`、`USERPROFILE`…）不在里面，也不该在里面
+    /// （那会把开发机的状态带进断言）。
+    pub env: Vec<(String, String)>,
 }
 
 /// 读固定装置的假进程运行器。
@@ -728,12 +741,24 @@ impl FakeProcessRunner {
 }
 
 impl ProcessRunner for FakeProcessRunner {
-    fn run(&self, program: &Path, args: &[&str], _timeout: Duration) -> ProcessOutcome {
+    /// 记录 `program` / `args` / `env`，然后按决策 185 的规则取一条声明。
+    ///
+    /// **`env` 不参与匹配**：匹配规则是"program 相等 + args 前缀"（决策 185 冻结的
+    /// 三条），把环境也变成匹配维度会让"这条为什么没命中"多出一个说不清的理由。
+    /// 环境是**断言的对象**（[`ProcessCall::env`]），不是选择条目的判据。
+    fn run_env(
+        &self,
+        program: &Path,
+        args: &[&str],
+        env: &[(String, String)],
+        _timeout: Duration,
+    ) -> ProcessOutcome {
         let wanted = normalize_path(&program.to_string_lossy());
         let called: Vec<String> = args.iter().map(|arg| (*arg).to_owned()).collect();
         self.calls.borrow_mut().push(ProcessCall {
             program: program.to_string_lossy().into_owned(),
             args: called.clone(),
+            env: env.to_vec(),
         });
 
         // 决策 185 的四条规则（见 `FakeProcessRunner` 的文档）。"严格更长才替换"这一步

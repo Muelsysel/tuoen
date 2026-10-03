@@ -470,10 +470,20 @@ impl GlobalsFile {
 /// `(python 3.12)`。本机的活陷阱：`npm config get prefix` 实测是一个
 /// `SymbolicLink` → `…\nvm\v24.19.0`，切 Node 版本会**静默隐藏**这些包 ——
 /// 清单不带版本，这个事实就无处附着（决策 172）。判不出来时写 `"unknown"`。
+///
+/// # 为什么 `source` 是必填的
+///
+/// 同一个工具会有**两份**清单：用户当下真正在用的那套全局位置（`machine`），
+/// 与 `%LOCALAPPDATA%\tuoen\globals\` 里由我们按运行时版本隔离出来的那个根
+/// （`tuoen`，决策 26）。**两行**，不是一行 —— 合并会丢掉"这个包该装进哪个根"，
+/// 而 `restore` 正是靠它决定往哪儿装的。加键是加法变更，不递增 `schemaVersion`
+/// （决策 166）；它是必填（不是 `Option`）因为"不知道这一行是谁的"不是一种形态。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GlobalRow {
     /// 工具名。稳定 slug：`npm` | `pip`（取值空间是自由的，加 pnpm/yarn 不改格式）。
     pub tool: String,
+    /// 这一行是**谁的**清单。稳定 slug：`machine` | `tuoen`。
+    pub source: String,
     /// 运行时版本，**原样**（`v24.19.0` / `3.12`）；判不出来 = `"unknown"`。
     pub tool_version: String,
     /// 全局前缀，**原样**；拿不到就不出这个键。

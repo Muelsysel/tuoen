@@ -40,10 +40,41 @@
 //! 只写 `tuoen.lock`（解析成功且非 `--dry-run` 时）。**绝不**翻转任何 junction、
 //! **绝不**改父进程的环境、**绝不**动 store 里的东西 —— 这是决策 119 的硬要求，
 //! `crates/cli/tests/pin_contract.rs` 用"跑前跑后逐项相同"证明它。
+//!
+//! # 全局包重定向：三个变量，只进子进程的环境块（决策 26 / 27 / 154 / 172 / 187）
+//!
+//! 子 shell 的环境块里多三个变量：`NPM_CONFIG_PREFIX` / `PYTHONUSERBASE` / `PIP_USER=1`
+//! （[`child_env`]）。用户在 `tuoen shell` 里敲的 `npm i -g` / `pip install --user`
+//! 于是**自动**落进 tuoen 自己的根，而他自己终端里的 `npm ls -g` 照旧说真话。
+//!
+//! 三条不能破的边界：
+//!
+//! * **绝不写 `HKCU\Environment`，绝不写 `.npmrc` / `pip.ini` / 任何用户配置文件**
+//!   （决策 27：写 `.npmrc` 会覆盖用户自己的配置；pnpm 曾因 `.npmrc` 展开 `${ENV}`
+//!   导致密钥外泄而不得不停掉那个行为）。所以这一节只碰 `spawn_inherit` 的 `env` 参数。
+//! * **判不出来时不猜，而且要说出来**（决策 172）：node 的版本是 `unknown`（或计划里
+//!   根本没有 node）时**不设** `NPM_CONFIG_PREFIX` —— 那个 slug 同时表示"这台机器上
+//!   没有这个运行时"与"这一次没有去问"，两种情况下我们都不知道目录名该是什么。
+//!   原因打到 stderr（[`print_globals_notes`]），不静默。
+//! * **根与变量名的构造只有一处**（[`tuoen_core::globals`]）。这一层只做映射：
+//!   "哪个值进哪个变量"，以及"说不出来时说什么"。
+//!
+//! # 这一层不启动任何进程（除了子 shell 本身）
+//!
+//! 重定向**不需要问任何工具**：根是算出来的（`%LOCALAPPDATA%` + 常量），版本来自
+//! 计划（锁里就有）。所以这里不存在"问一下 `python` 现在装在哪"那种调用 ——
+//! 本机 `where python` 的第一条是 `…\WindowsApps\python.exe`，一个 **0 字节的
+//! App Execution Alias**，执行它拿到的是应用商店，不是 Python。要问 Python 只能走
+//! `pip.exe`（或 `…\python.exe -m pip`），而 `python` 这个名字**不许**出现在构造出的
+//! 命令行里 —— 守卫在本文件的 `mod tests`（`launch_command` 的产出 + 源码字面量两层）。
 
 use std::path::{Path, PathBuf};
 
 use tuoen_core::detect::{DetectedTool, KNOWN_TOOLS};
+use tuoen_core::globals::{
+    GlobalsRoot, GlobalsRootError, GlobalsTool, NPM_PREFIX_VAR, PIP_USER_VAR, PYTHONUSERBASE_VAR,
+    UNKNOWN_VERSION,
+};
 use tuoen_core::pin;
 use tuoen_core::pin::{
     LOCK_FILE_NAME, LockFile, MAX_SHELL_DEPTH, MissingTool, PIN_FILE_NAME, PinError, PinFile,
@@ -384,6 +415,224 @@ fn current_dir() -> Result<PathBuf, Failure> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 子进程的环境块（全局包重定向，决策 26 / 27 / 172）
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// `KNOWN_TOOLS` 里 node 的 **id**（不是显示名、不是命令名）。
+const NODE_TOOL: &str = "node";
+
+/// 子进程环境块的**全部内容**，加上"某个变量故意没设"的那些原因。
+///
+/// # 为什么环境块只有一个构造点
+///
+/// 与 `AGENTS.md` 铁律 2 同一条理由：两个构造点迟早会给出两个答案，而这里的两个
+/// 答案分别意味着"装进了 tuoen 的根"与"装进了机器自己的 prefix"—— 后者**不报错**，
+/// 用户要等到换运行时版本的那一天才会发现（决策 26 里最贵的那类错）。
+#[derive(Debug, PartialEq, Eq)]
+struct ChildEnv {
+    /// 覆盖/新增进子进程环境块的变量。**顺序稳定**（用例可以直接断言整张表）。
+    vars: Vec<(String, String)>,
+    /// 故意没设的变量各一句"为什么"（决策 172：宁可不说，不许说错）。
+    ///
+    /// 它们只走 stderr（[`print_globals_notes`]）：`--json` 的成功载荷在 stdout 上，
+    /// 而这几句是给人看的中文 —— 与 `print_warnings` 同一条规矩。
+    notes: Vec<String>,
+}
+
+/// 子进程的环境块 = `PATH`（两个拼法）+ 深度 + 全局包重定向。
+///
+/// 只构造一次，预览（`--dry-run`）与真启动看到的是同一份。
+fn child_env(plan: &ShellPlan) -> ChildEnv {
+    // `PATH` 与 `Path` **两个键都要设**：Windows 的环境变量查找不区分大小写，
+    // 但 `std::process::Command` 是按 `OsString` 存的 —— 只设一个的话，
+    // 另一个会留着父进程的原值（本仓库既有做法见 `scripts/acceptance-L1-12.ps1`）。
+    let path_after = plan.path_after().to_owned();
+    let mut env = ChildEnv {
+        vars: vec![
+            ("PATH".to_owned(), path_after.clone()),
+            ("Path".to_owned(), path_after),
+            (
+                SHELL_DEPTH_VAR.to_owned(),
+                plan.depth().saturating_add(1).to_string(),
+            ),
+        ],
+        notes: Vec::new(),
+    };
+
+    match GlobalsRoot::from_process_env() {
+        Ok(root) => {
+            let (vars, notes) = redirect_vars(&root, plan.tools());
+            env.vars.extend(vars);
+            env.notes.extend(notes);
+        }
+        // 根算不出来**不是**"当作没有重定向"就完事：那正是"用户以为装进了 tuoen 的根、
+        // 其实装进了机器自己的 prefix"这个形态。所以三个变量一个都不设，把原因说出来。
+        Err(error) => env.notes.push(root_unavailable_note(&error)),
+    }
+
+    env
+}
+
+/// npm 那一侧**为什么没有** `NPM_CONFIG_PREFIX`。
+///
+/// 两种"不知道"分开：它们的修法完全不同（装一个运行时 vs 在 `tuoen.toml` 里写一行），
+/// 而合并成一句会让用户去修一个没坏的东西。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NpmSkip {
+    /// 这一次的计划里没有 node 这一行（`tuoen.toml` 没 pin 它）。
+    NoNodeInPlan,
+    /// node 在计划里，但版本是 `unknown`（或空串）。
+    ///
+    /// 决策 172：`unknown` 同时表示"没有这个运行时"与"这一次没问"。
+    UnknownVersion,
+}
+
+/// 一个版本字符串 → npm 根的**那一层目录名**（`node -v` 的**原样**输出）。
+///
+/// # 为什么要补那个 `v`
+///
+/// 根的形状是 `…\globals\npm\v24.19.0`：目录名是**运行时自己报的那串**（决策 172
+/// 的"值原样"）。而 `ResolvedTool::version` 是**削过前缀**的版本 ——
+/// `ToolSpec::version_prefixes = ["v"]`（`crates/core/src/detect/spec.rs`）把
+/// `node -v` 的 `v24.19.0` 削成 `24.19.0`，锁里存的也是削过的那个。
+///
+/// 少补这一步的后果是**一个一个字都不报错**的假话：用户在 `tuoen shell` 里装的
+/// 每一个全局包都落进 `…\npm\24.19.0\`，而 `capture` / `globals list` 去
+/// `…\npm\v24.19.0\` 找它们（`crates/core/src/capture/collect/globals.rs` 那边用的是
+/// `node -v` 的原样输出），于是"我刚装的包不见了"。
+///
+/// # 判"能不能给根"必须排在补 `v` **之前**
+///
+/// `unknown` 在名单上（core 的 [`UNKNOWN_VERSION`]，决策 172）。顺序反过来会把它补成
+/// `vunknown` —— 一个**看起来完全合理的目录名**，而 core 对它无话可说（它不知道那
+/// 是"判不出来"），于是所有答不出版本的机器共用一个根。
+///
+/// 已经带着那个前缀的值**原样用**：我们既不删、也不补第二个（`vv24.19.0` 同样是一个
+/// 永远命中不了任何东西的目录名）。
+///
+/// 补的那个前缀从**工具的 `version_prefixes`** 取（`tuoen_core::detect::spec`），
+/// **不写死 `v`**：根名的规则是"工具的**原样**版本输出"，而"原样" = 前缀 + 削过的版本。
+/// 写死 `v` 会把这条规则压成"node 恰好以 v 开头" —— 今天对（表里只有 node 走这条路），
+/// 但规则一旦被压扁，下一个工具就会踩空。`mod tests` 里有一条跨两侧的不变量用例钉着它。
+fn npm_version_segment(version: &str, prefixes: &[&str]) -> Result<String, NpmSkip> {
+    let version = version.trim();
+    if version.is_empty() || version == UNKNOWN_VERSION {
+        return Err(NpmSkip::UnknownVersion);
+    }
+    let already = prefixes.iter().any(|prefix| {
+        !prefix.is_empty()
+            && version
+                .get(..prefix.len())
+                .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
+    });
+    if already {
+        return Ok(version.to_owned());
+    }
+    let prefix = prefixes.first().copied().unwrap_or("");
+    Ok(format!("{prefix}{version}"))
+}
+
+/// 计划 → npm 那一个重定向变量。`Err` = 说不出根（[`NpmSkip`]）。
+fn npm_redirect(
+    root: &GlobalsRoot,
+    tools: &[ResolvedTool],
+) -> Result<Vec<(String, String)>, NpmSkip> {
+    let Some(node) = tools.iter().find(|tool| tool.name == NODE_TOOL) else {
+        return Err(NpmSkip::NoNodeInPlan);
+    };
+    // 变量名与值的构造只有一处（core 的 `GlobalsRoot::redirect_env`）：
+    // 这一层只负责把 `ResolvedTool::version` 换成"运行时自己报的那串" ——
+    // 补的前缀从工具的 `version_prefixes` 取（`detect` 当初就是按它削的）。
+    let prefixes = tuoen_core::detect::spec::spec_for_id(NODE_TOOL)
+        .map(|spec| spec.version_prefixes)
+        .unwrap_or(&[]);
+    Ok(root.redirect_env(
+        GlobalsTool::Npm,
+        &npm_version_segment(&node.version, prefixes)?,
+    ))
+}
+
+/// 三个重定向变量 + 没设的那些为什么。
+///
+/// **纯函数**：只吃一个根与一张工具表 —— 不读磁盘、不起进程、不碰注册表。
+/// 于是"这三个变量的值是什么"可以在固定装置上逐字断言（本文件的 `mod tests`），
+/// 而它的调用方 [`child_env`] 才是唯一碰进程环境的那一处。
+fn redirect_vars(
+    root: &GlobalsRoot,
+    tools: &[ResolvedTool],
+) -> (Vec<(String, String)>, Vec<String>) {
+    let mut vars = Vec::new();
+    let mut notes = Vec::new();
+
+    match npm_redirect(root, tools) {
+        Ok(npm) => vars.extend(npm),
+        Err(skip) => notes.push(npm_skip_note(skip)),
+    }
+
+    // pip 那一侧**与版本无关**（`Python312\` 那一层由 pip 自己插），所以照设。
+    // 传进去的那个入参在 pip 这一支被忽略（见 `GlobalsRoot::redirect_env` 的文档）——
+    // 传 `UNKNOWN_VERSION` 是因为我们手里可能根本没有版本，而不是"我们假装知道"。
+    vars.extend(root.redirect_env(GlobalsTool::Pip, UNKNOWN_VERSION));
+
+    (vars, notes)
+}
+
+/// 连根都算不出来时的那一句。
+fn root_unavailable_note(error: &GlobalsRootError) -> String {
+    format!(
+        "tuoen: 算不出 tuoen 的全局包根，所以 `{NPM_PREFIX_VAR}` / `{PYTHONUSERBASE_VAR}` / \
+         `{PIP_USER_VAR}` **一个都没设**：\n  {error}\n  \
+         这一次 `npm i -g` / `pip install --user` 会落进**机器自己的**全局位置，\
+         不是 tuoen 的根。"
+    )
+}
+
+/// npm 那一侧没设时的那一句。
+///
+/// 两种"不知道"各说各的（[`NpmSkip`]）：把"计划里没有 node"说成"版本判不出来"
+/// 会让用户去修一个没坏的东西，反过来会让用户以为机器上装了 node。
+fn npm_skip_note(skip: NpmSkip) -> String {
+    let (why, next) = match skip {
+        NpmSkip::NoNodeInPlan => (
+            "这一次的计划里没有 node —— 没有版本字符串可以拿来按运行时版本隔离（决策 26）"
+                .to_owned(),
+            "在 `tuoen.toml` 的 `[tools]` 里 pin 一个 node 版本，tuoen 就能把 npm 的全局包管起来"
+                .to_owned(),
+        ),
+        NpmSkip::UnknownVersion => (
+            format!(
+                "node 的版本判不出来（`{UNKNOWN_VERSION}`）—— 它同时表示「这台机器上没有\
+                 这个运行时」与「这一次没有去问」"
+            ),
+            format!(
+                "`{UNKNOWN_VERSION}` 不是一个能当目录名的版本（那会让所有答不出版本的机器\
+                 共用一个根，决策 26），所以这里不猜"
+            ),
+        ),
+    };
+    format!(
+        "tuoen: {why}，所以**没有设** `{NPM_PREFIX_VAR}`：{next}。\n  \
+         `{PYTHONUSERBASE_VAR}` / `{PIP_USER_VAR}` 与版本无关，照设；\
+         这一次 `npm i -g` 会落进机器自己的前缀（在子 shell 里 `npm config get prefix` 看得见）。"
+    )
+}
+
+/// 把"某个变量故意没设"的原因打到 **stderr**。
+///
+/// 与 `print_warnings` 同一条规矩：`--json` 的成功载荷在 stdout 上，而交互式 shell
+/// 还要用那个 fd —— 这几句只能进 stderr。
+fn print_globals_notes(notes: &[String]) {
+    if notes.is_empty() {
+        return;
+    }
+    eprintln!();
+    for note in notes {
+        eprintln!("{note}");
+    }
+    eprintln!();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // 执行
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -405,6 +654,12 @@ fn run_plan_at(
     // 一份跑不了的计划的预览会让人以为它跑得了。
     print_warnings(planned.plan.warnings());
 
+    // 环境块**只构造一次**：预览与实际启动看到的是同一份。
+    let env = child_env(&planned.plan);
+    // "某个变量故意没设"的原因在两条路上都要说出来（决策 172 的"宁可不说，不许说错"
+    // 里那半个"说"字）：一条静默不设的路径会让用户以为包装进了 tuoen 的根。
+    print_globals_notes(&env.notes);
+
     if dry_run {
         let view = ShellPlanView::new(&planned.plan, spec, planned.lock_written, trust);
         if json {
@@ -415,7 +670,7 @@ fn run_plan_at(
         return exit::SUCCESS;
     }
 
-    spawn_shell(&planned.plan, spec)
+    spawn_shell(&planned.plan, spec, &env.vars)
 }
 
 /// 子 shell 的一个 argv 元素。
@@ -498,7 +753,11 @@ fn system32(relative: &[&str]) -> PathBuf {
 }
 
 /// 起子 shell，把它的退出码**原样**带回来。
-fn spawn_shell(plan: &ShellPlan, spec: &ShellSpec) -> i32 {
+///
+/// `env` 是 [`child_env`] 算出来的那一份（`PATH` + 深度 + 全局包重定向）——
+/// **不在这里现拼**：环境块与命令行一样，构造点多了就会出现"报告里是这一次、
+/// 执行的是那一次"。
+fn spawn_shell(plan: &ShellPlan, spec: &ShellSpec, env: &[(String, String)]) -> i32 {
     let (program, args) = launch_command(spec);
     // 普通参数交给 `std::process::Command` 加引号；`Raw` 原样交给子进程
     // （只有 `cmd.exe /C` 的载荷走这一条 —— 它的解析规则不是 MSVCRT 的规则）。
@@ -517,22 +776,9 @@ fn spawn_shell(plan: &ShellPlan, spec: &ShellSpec) -> i32 {
         })
         .collect();
 
-    let path_after = plan.path_after().to_owned();
-    // `PATH` 与 `Path` **两个键都要设**：Windows 的环境变量查找不区分大小写，
-    // 但 `std::process::Command` 是按 `OsString` 存的 —— 只设一个的话，
-    // 另一个会留着父进程的原值（本仓库既有做法见 `scripts/acceptance-L1-12.ps1`）。
-    let env = vec![
-        ("PATH".to_owned(), path_after.clone()),
-        ("Path".to_owned(), path_after),
-        (
-            SHELL_DEPTH_VAR.to_owned(),
-            plan.depth().saturating_add(1).to_string(),
-        ),
-    ];
-
     // `cwd` 显式传 `plan.cwd()`：它与当前目录是同一个值，但**把这件事说出来**
     // 比"靠继承恰好一致"强 —— 计划是为这个目录算的，子 shell 就该在这个目录里。
-    match tuoen_platform::spawn_inherit(&program, &argv, &raw, &env, &[], Some(plan.cwd())) {
+    match tuoen_platform::spawn_inherit(&program, &argv, &raw, env, &[], Some(plan.cwd())) {
         Ok(code) => code,
         Err(error) => {
             eprintln!("tuoen: 起不了子 shell `{}`：{error}", program.display());
@@ -545,6 +791,14 @@ fn spawn_shell(plan: &ShellPlan, spec: &ShellSpec) -> i32 {
 mod tests {
     use super::*;
     use crate::shell::ShellChoice;
+
+    /// node 的版本前缀 —— 从 `detect` 的表里取，**不写死 `v`**。
+    /// 与下面那条跨两侧的不变量用例用同一个来源，所以"表变了而这里没变"会当场红。
+    fn node_prefixes() -> &'static [&'static str] {
+        tuoen_core::detect::spec::spec_for_id(NODE_TOOL)
+            .map(|spec| spec.version_prefixes)
+            .unwrap_or(&[])
+    }
 
     #[test]
     fn the_two_shells_build_the_documented_command_lines() {
@@ -617,6 +871,265 @@ mod tests {
             }
             .code(),
             "shell-depth"
+        );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // 全局包重定向（决策 26 / 27 / 172）
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// 一个假的家目录：**根是算出来的**（`from_base`），所以这些用例不碰
+    /// 真实的 `%LOCALAPPDATA%`，也不需要磁盘上有任何东西。
+    const FAKE_LOCAL: &str = r"C:\Users\dev\AppData\Local";
+
+    fn root() -> GlobalsRoot {
+        GlobalsRoot::from_base(PathBuf::from(FAKE_LOCAL).join("tuoen").join("globals"))
+    }
+
+    /// 一条解析结果。字段里只有 `name` / `version` 与这一票有关，其余按形状填。
+    fn resolved(name: &str, version: &str) -> ResolvedTool {
+        ResolvedTool {
+            name: name.to_owned(),
+            spec: "24".to_owned(),
+            version: version.to_owned(),
+            source: "tuoen".to_owned(),
+            manager: None,
+            path: PathBuf::from(r"C:\tools\node"),
+            hash: None,
+        }
+    }
+
+    /// 三个变量的**名字与值**都是契约（决策 26 / 27 / 172）：逐字断言整张表。
+    #[test]
+    fn the_redirect_variables_are_the_frozen_triple() {
+        let (vars, notes) = redirect_vars(&root(), &[resolved("node", "24.19.0")]);
+
+        assert_eq!(
+            vars,
+            vec![
+                (
+                    "NPM_CONFIG_PREFIX".to_owned(),
+                    // **带 `v`**：目录名是 `node -v` 的原样输出（`v24.19.0`），
+                    // 不是 `ResolvedTool::version` 那个削过前缀的 `24.19.0`。
+                    format!(r"{FAKE_LOCAL}\tuoen\globals\npm\v24.19.0")
+                ),
+                (
+                    "PYTHONUSERBASE".to_owned(),
+                    format!(r"{FAKE_LOCAL}\tuoen\globals\pip")
+                ),
+                ("PIP_USER".to_owned(), "1".to_owned()),
+            ],
+            "三个变量的名字与值都是契约"
+        );
+        assert!(
+            notes.is_empty(),
+            "版本好好的，就不该有任何'为什么没设'：{notes:?}"
+        );
+    }
+
+    /// 版本判不出来 → **不设** `NPM_CONFIG_PREFIX`，但 pip 那两个照设，而且要说出来。
+    ///
+    /// 反面对照在 [`the_redirect_variables_are_the_frozen_triple`] 里：同一个函数、
+    /// 同一个根，只有一个字段不同 —— 所以这条不是在"总能过"。
+    #[test]
+    fn an_unknown_version_keeps_pip_and_says_why_npm_is_skipped() {
+        let (vars, notes) = redirect_vars(&root(), &[resolved("node", UNKNOWN_VERSION)]);
+
+        assert_eq!(
+            vars,
+            vec![
+                (
+                    "PYTHONUSERBASE".to_owned(),
+                    format!(r"{FAKE_LOCAL}\tuoen\globals\pip")
+                ),
+                ("PIP_USER".to_owned(), "1".to_owned()),
+            ],
+            "`unknown` 之下 npm 一个变量都不该设，pip 的两个照设（决策 172）"
+        );
+        assert_eq!(notes.len(), 1, "要说出来：{notes:?}");
+        let note = &notes[0];
+        assert!(note.contains(NPM_PREFIX_VAR), "{note}");
+        assert!(note.contains(UNKNOWN_VERSION), "{note}");
+        assert!(
+            note.contains(PYTHONUSERBASE_VAR) && note.contains(PIP_USER_VAR),
+            "要说清'没设的是哪一个、照设的是哪两个'：{note}"
+        );
+    }
+
+    /// 空白的版本字符串同样说不出根（`npm_prefix("")` 是 `None`；全是空格的
+    /// 值会拼出一个叫 `"   "` 的目录 —— 两者都**不许**猜）。
+    #[test]
+    fn a_blank_version_is_as_unknown_as_the_slug() {
+        for version in ["", "   ", "\t"] {
+            assert_eq!(
+                npm_version_segment(version, node_prefixes()),
+                Err(NpmSkip::UnknownVersion),
+                "`{version}` 不该被补成 `v{version}`"
+            );
+        }
+        let (vars, notes) = redirect_vars(&root(), &[resolved("node", "  ")]);
+        assert!(
+            vars.iter().all(|(name, _)| name != NPM_PREFIX_VAR),
+            "{vars:?}"
+        );
+        assert_eq!(notes.len(), 1, "{notes:?}");
+    }
+
+    /// 计划里**根本没有** node → 另一句话（两种"不知道"不许合并）。
+    #[test]
+    fn a_plan_without_node_says_a_different_sentence() {
+        let (vars, notes) = redirect_vars(&root(), &[]);
+        assert_eq!(
+            vars,
+            vec![
+                (
+                    "PYTHONUSERBASE".to_owned(),
+                    format!(r"{FAKE_LOCAL}\tuoen\globals\pip")
+                ),
+                ("PIP_USER".to_owned(), "1".to_owned()),
+            ],
+            "{vars:?}"
+        );
+        assert_eq!(notes.len(), 1, "{notes:?}");
+
+        let without_node = npm_skip_note(NpmSkip::NoNodeInPlan);
+        let unknown = npm_skip_note(NpmSkip::UnknownVersion);
+        assert_eq!(notes[0], without_node, "该说的是'没有 node'那一句");
+        assert_ne!(
+            without_node, unknown,
+            "两种'不知道'的修法完全不同，不许印同一句话"
+        );
+        // 另一条工具在计划里时同样是"没有 node"（判据是工具 id，不是"表空不空"）。
+        assert_eq!(
+            redirect_vars(&root(), &[resolved("python", "3.12")]).1,
+            vec![without_node],
+            "pin 了别的工具不等于 pin 了 node"
+        );
+    }
+
+    /// 补前缀的那一步逐条钉住（这一票最容易写错的一行）。
+    #[test]
+    fn the_version_segment_restores_the_v_that_detect_stripped() {
+        assert_eq!(
+            npm_version_segment("24.19.0", node_prefixes()).as_deref(),
+            Ok("v24.19.0")
+        );
+        // 已经带 `v` 的原样用 —— 不许变成 `vv24.19.0`。
+        assert_eq!(
+            npm_version_segment("v24.19.0", node_prefixes()).as_deref(),
+            Ok("v24.19.0")
+        );
+        assert_eq!(
+            npm_version_segment("V24.19.0", node_prefixes()).as_deref(),
+            Ok("V24.19.0")
+        );
+        assert_eq!(
+            npm_version_segment(" 24.19.0 ", node_prefixes()).as_deref(),
+            Ok("v24.19.0")
+        );
+        // `unknown` 在补前缀**之前**被拦下（顺序反了就是 `vunknown`）。
+        assert_eq!(
+            npm_version_segment(UNKNOWN_VERSION, node_prefixes()),
+            Err(NpmSkip::UnknownVersion)
+        );
+    }
+
+    /// **跨两侧的不变量**：根名的规则是"工具的**原样**版本输出"。
+    ///
+    /// `detect` 把 `node -v` 的 `v24.19.0` 削成 `24.19.0`（`ToolSpec::version_prefixes`），
+    /// 锁里存的也是削过的值；根名却要用原样 —— 于是这一层必须补回来。
+    /// "**削掉再补回必须是恒等**"，否则用户在 `tuoen shell` 里装的每一个全局包都落进
+    /// `…\npm\24.19.0\`，而 `capture` / `globals list` 去 `…\npm\v24.19.0\` 找它们：
+    /// 一个**一个字都不报错**的假话（这一票的真实风险就是它）。
+    ///
+    /// 期望值从 `ToolSpec::version_prefixes` 推出来，**不写死 `v`** —— 哪天表里出现一个
+    /// 前缀不是 `v` 的工具（或者一个没有前缀的工具），这条用例会说出来。
+    #[test]
+    fn stripping_then_restoring_the_prefix_is_the_identity() {
+        for spec in tuoen_core::detect::spec::KNOWN_TOOLS {
+            let prefix = spec.version_prefixes.first().copied().unwrap_or("");
+            let raw = format!("{prefix}24.19.0");
+            let stripped = spec.strip_prefixes(&raw);
+            assert_eq!(
+                npm_version_segment(stripped, spec.version_prefixes).as_deref(),
+                Ok(raw.as_str()),
+                "{}：detect 从 `{raw}` 削掉 `{prefix:?}` 得到 `{stripped}`，补回来必须是原样",
+                spec.id
+            );
+            // 反向：判不出来时**永远不产生根**（`vunknown` 那种"看起来合理"的名字最糟）。
+            assert_eq!(
+                npm_version_segment(UNKNOWN_VERSION, spec.version_prefixes),
+                Err(NpmSkip::UnknownVersion),
+                "{}：unknown 不许被补成 `{prefix}unknown`",
+                spec.id
+            );
+        }
+    }
+
+    /// pip 那一对**与 node 的版本无关**：三种形态下逐字相同。
+    #[test]
+    fn the_pip_pair_never_depends_on_the_runtime_version() {
+        let pip_only = |tools: &[ResolvedTool]| {
+            redirect_vars(&root(), tools)
+                .0
+                .into_iter()
+                .filter(|(name, _)| name == PYTHONUSERBASE_VAR || name == PIP_USER_VAR)
+                .collect::<Vec<_>>()
+        };
+        let with_version = pip_only(&[resolved("node", "24.19.0")]);
+        assert_eq!(with_version.len(), 2, "{with_version:?}");
+        assert_eq!(with_version, pip_only(&[resolved("node", UNKNOWN_VERSION)]));
+        assert_eq!(with_version, pip_only(&[]));
+    }
+
+    /// **`python` 这个名字不许出现在构造出的命令行里**（本机 `where python` 的第一条
+    /// 是 `…\WindowsApps\python.exe`，一个 0 字节的 App Execution Alias —— 执行它拿到
+    /// 的是应用商店，不是 Python）。判据有两层：
+    ///
+    /// 1. `launch_command` 产出的 program 与每一个 argv 里都没有这个名字；
+    /// 2. **源码里没有以引号开头的 `python` 字面量** —— 那是"某一天有人在这里加一条
+    ///    `Command::new("python")`"唯一的机器可查的痕迹（本仓库对 `setx` 用的是
+    ///    同一种守卫）。
+    #[test]
+    fn the_python_name_never_appears_in_the_constructed_command_line() {
+        for kind in [ShellKind::Cmd, ShellKind::PowerShell] {
+            for exec in [None, Some("pip list --user --format=json".to_owned())] {
+                let (program, args) = launch_command(&ShellSpec {
+                    kind,
+                    exec: exec.clone(),
+                });
+                let mut parts = vec![program.display().to_string()];
+                for arg in &args {
+                    match arg {
+                        ShellArg::Quoted(text) | ShellArg::Raw(text) => parts.push(text.clone()),
+                    }
+                }
+                for part in &parts {
+                    assert!(
+                        !part.to_lowercase().contains("python"),
+                        "构造出的命令行里出现了 `python`（{kind:?} / {exec:?}）：{parts:?}"
+                    );
+                }
+            }
+        }
+
+        // 第二层：源码守卫。**只扫 `#[cfg(test)]` 之前的那一半** —— 否则这条用例
+        // 会命中它自己的字面量（`AGENTS.md` #17 的第 5 条：扫字面量的守卫会自己
+        // 命中自己）。
+        let source = include_str!("shell_cmd.rs");
+        let production = source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("`split` 至少给一段");
+        assert!(
+            production.len() < source.len(),
+            "没有找到 `#[cfg(test)]` —— 守卫会退化成'扫全文'，必须当场红"
+        );
+        assert!(
+            !production.contains("\"python"),
+            "`shell_cmd.rs` 的生产代码里出现了以引号开头的 `python` 字面量：\
+             要问 Python 就走 `pip.exe`（或 `…\\python.exe -m pip`），\
+             绝不许走 `python` 这个名字"
         );
     }
 }
