@@ -1,0 +1,56 @@
+# 决策 173 的 **③ 支单独为真**：prefix 是一个**普通目录**（① 假、④ 假），
+# 它的祖先也没有一个是 reparse point（② 假）—— 只有路径里那一段 `v24.19.0`
+# 说明"它落在按版本隔离的目录里"。
+#
+# 为什么值得单独一份：一个**只判 reparse**（①/④）的实现在这里会把 true 判成 false，
+# 而这一份机器上没有任何 reparse point，所以它只会因为 ③ 支而红。
+#
+# pip 那一行是对照：`C:\Python312` 四支全假 → false。
+
+[env]
+USERPROFILE = 'C:\Users\dev'
+LOCALAPPDATA = 'C:\Users\dev\AppData\Local'
+APPDATA = 'C:\Users\dev\AppData\Roaming'
+Path = 'C:\nvm\v24.19.0\nodejs;C:\Python312;C:\Windows\System32'
+
+[[dirs]]
+path = 'C:\nvm\v24.19.0\nodejs'
+entries = [
+    { path = 'npm.cmd', size = 3421 },
+    { path = 'node.exe', size = 84000000 },
+    { path = 'node_modules', size = 0 },
+]
+
+[[dirs]]
+path = 'C:\Python312'
+entries = [{ path = 'pip.exe', size = 108456 }]
+
+[[processes]]
+program = 'node.exe'
+args = ['-v']
+stdout = "v24.19.0\n"
+exit_code = 0
+
+[[processes]]
+program = 'cmd.exe'
+args = ['/C', 'npm.cmd', 'config', 'get', 'prefix']
+stdout = "C:\\nvm\\v24.19.0\\nodejs\n"
+exit_code = 0
+
+[[processes]]
+program = 'cmd.exe'
+args = ['/C', 'npm.cmd', 'ls', '-g', '--json', '--depth=0', '--offline']
+stdout = "{\n  \"name\": \"global\",\n  \"dependencies\": {\n    \"@deepseek-ai/dsh\": { \"version\": \"0.4.1\" },\n    \"typescript\": { \"version\": \"5.9.2\" }\n  }\n}\n"
+exit_code = 0
+
+[[processes]]
+program = 'pip.exe'
+args = ['--version']
+stdout = "pip 24.0 from C:\\Python312\\Lib\\site-packages\\pip (python 3.12)\n"
+exit_code = 0
+
+[[processes]]
+program = 'pip.exe'
+args = ['list', '--format=json', '--disable-pip-version-check']
+stdout = "[\n  { \"name\": \"pip\", \"version\": \"24.0\" },\n  { \"name\": \"wheel\", \"version\": \"0.45.1\" }\n]\n"
+exit_code = 0

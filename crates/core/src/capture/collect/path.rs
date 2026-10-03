@@ -598,6 +598,8 @@ mod tests {
             // 采集器自己不启动任何进程；这里留着是为了说明它读的是注入的假机器。
             processes: vec![FixtureProcess {
                 program: r"C:\nvm4w\nodejs\node.exe".to_owned(),
+                // 空 = 通配（决策 185 的匹配规则）。
+                args: Vec::new(),
                 stdout: "v24.19.0\n".to_owned(),
                 stderr: String::new(),
                 exit_code: Some(0),

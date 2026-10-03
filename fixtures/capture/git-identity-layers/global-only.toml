@@ -1,0 +1,36 @@
+# 场景：决策 183 —— 身份**只在全局级**
+#
+# 与 `system-only.toml` 恰好相反：系统级那一份存在、也有键，但**没有身份键**；
+# 身份只在 `~/.gitconfig` 里 ⇒ identity_source = "global"。
+
+[env]
+USERPROFILE = 'C:\Users\dev'
+APPDATA = 'C:\Users\dev\AppData\Roaming'
+LOCALAPPDATA = 'C:\Users\dev\AppData\Local'
+Path = 'C:\Windows\System32;C:\Program Files\Git\cmd'
+
+[[dirs]]
+path = 'C:\Program Files\Git\cmd'
+entries = [{ path = 'git.exe', size = 3527680 }]
+
+[[dirs]]
+path = 'C:\Program Files\Git\etc'
+entries = [{ path = 'gitconfig', size = 86, content = "[core]\n\tautocrlf = true\n[credential]\n\thelper = manager\n[init]\n\tdefaultbranch = master\n" }]
+
+[[dirs]]
+path = 'C:\Users\dev'
+entries = [
+    { path = '.gitconfig', size = 44, content = "[user]\n\tname = Dev\n\temail = dev@example.com\n" },
+]
+
+[[processes]]
+program = 'git.exe'
+args = ['config', '--system', '--list', '--show-origin']
+stdout = "file:C:/Program Files/Git/etc/gitconfig\tcore.autocrlf=true\nfile:C:/Program Files/Git/etc/gitconfig\tcredential.helper=manager\nfile:C:/Program Files/Git/etc/gitconfig\tinit.defaultbranch=master\n"
+exit_code = 0
+
+[[processes]]
+program = 'git.exe'
+args = ['config', '--global', '--list', '--show-origin']
+stdout = "file:C:/Users/dev/.gitconfig\tuser.name=Dev\nfile:C:/Users/dev/.gitconfig\tuser.email=dev@example.com\n"
+exit_code = 0

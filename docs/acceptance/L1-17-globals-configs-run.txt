@@ -1,0 +1,156 @@
+
+── 0. 构建
+  [skip] release 构建  (-SkipBuild)
+
+── 1. 独立事实（脚本自己从注册表 / 磁盘 / 工具问出来）
+  PATH 口径：机器级 1007 + 用户级 773 = 1781 字符（注册表原文，不展开）
+  真实配置文件存在 4/7 个
+         142  ac7272fdafa9  C:\Users\Muelsyse\.gitconfig
+          88  7d60677a53c3  C:\Users\Muelsyse\.npmrc
+         494  65c6110bc25b  C:\Users\Muelsyse\.m2\settings.xml
+         353  f173396ef80b  C:\Users\Muelsyse\.docker\config.json
+  git 系统级配置：C:/Program Files/Git/etc/gitconfig
+  git 全局级配置：C:/Users/Muelsyse/.gitconfig
+  git 身份：两层都没有 user.name / user.email（本机事实）
+  [ok]   独立事实：本机 .m2/settings.xml 里真的有一个 glpat- 形状的材料（本票的靶子）  长度 40（值不打印）
+  独立枚举：node=v24.19.0 npmPrefix=C:\nvm4w\nodejs npm 包=7 个；python=3.12 pip 包=3 个
+  缓存目录存在 6/6 个
+  JetBrains 产品目录 1 个；密钥材料文件 3 个
+
+── 2. `tuoen capture --only configs`（真机）
+  [ok]   capture --only configs 退出 0  exit=0
+  [ok]   --json 成功载荷无 CJK（中文只进人类输出）
+  落盘：configs.toml, schema.toml, skipped.toml
+  [ok]   只写 configs.toml / schema.toml / skipped.toml  configs.toml,schema.toml,skipped.toml
+  [ok]   schema.sections 只有 configs  configs
+  [ok]   configs.toml 至少有 1 行（否则下面那些"每一行都…"的断言是空真）  rows=10
+  [ok]   .m2/settings.xml 有一条记录
+  [ok]   .m2/settings.xml 被跳过（captured = false）
+  [ok]   .m2/settings.xml 的 skip_reason 具体 = contains-credential-shape  skip_reason=contains-credential-shape
+  [ok]   .m2/settings.xml 的行里没有 content_hash / bytes（跳过的行不许假装读过）
+  [ok]   配置文件有记录：.gitconfig
+  [ok]   .gitconfig 的 kind = git  kind=git
+  [ok]   .gitconfig 被捕获（captured = true）
+  [ok]   .gitconfig 的 content_hash 与脚本自己算的一致  产品=sha256:ac7272fdafa92ab003dfe4339176cf457e947e89e85e9565305fb4419910c2e8
+  [ok]   .gitconfig 的 bytes 与磁盘一致
+  [ok]   配置文件有记录：.npmrc
+  [ok]   .npmrc 的 kind = npm  kind=npm
+  [ok]   .npmrc 被捕获（captured = true）
+  [ok]   .npmrc 的 content_hash 与脚本自己算的一致  产品=sha256:7d60677a53c355abb28f91c1034019149bfc7de8878455a078004cc6d404331a
+  [ok]   .npmrc 的 bytes 与磁盘一致
+  [ok]   配置文件有记录：settings.xml
+  [ok]   settings.xml 的 kind = maven  kind=maven
+  [ok]   settings.xml 被跳过
+  [ok]   配置文件有记录：config.json
+  [ok]   config.json 的 kind = docker  kind=docker
+  [ok]   config.json 被捕获（captured = true）
+  [ok]   config.json 的 content_hash 与脚本自己算的一致  产品=sha256:f173396ef80b3c0bf4f8a5f6f944d3e426cee041ae3a2a8a07602ff6846a9f1a
+  [ok]   config.json 的 bytes 与磁盘一致
+  [ok]   git 系统级配置文件也在清单里（只快照 ~/.gitconfig 会丢掉整个 Git 身份）
+  [ok]   git 系统级那一行标注 layer = system  layer=system
+  [ok]   git 系统级的 content_hash 与脚本自己算的一致
+  [ok]   git 全局级那一行标注 layer = global  layer=global
+  [ok]   configs.toml 里有 [git] 表
+  [ok]   [git].identity_source = missing（脚本自己从 git 问出来的）  产品=missing
+  [ok]   [git].system_config 指向 git 自己报的那个文件  产品=C:/Program Files/Git/etc/gitconfig
+  [ok]   [git].global_config 指向 git 自己报的那个文件  产品=C:/Users/Muelsyse/.gitconfig
+  [ok]   [git] 缺身份时不出 user_name / user_email 键（缺失就明确说缺失）  identity_source,system_config,global_config
+  [ok]   跳过清单至少有 1 条（否则下面那些"每一条跳过项都…"的断言是空真）  rows=11
+  [ok]   缓存目录在跳过清单里：store
+  [ok]   缓存目录在跳过清单里：npm-cache
+  [ok]   缓存目录在跳过清单里：Cache
+  [ok]   缓存目录在跳过清单里：cache
+  [ok]   缓存目录在跳过清单里：codex-runtimes
+  [ok]   缓存目录在跳过清单里：repository
+  [ok]   缓存目录的跳过项不许带体积（我们不走进 8 GB 的目录）
+  [ok]   known_hosts 在跳过清单里
+  [ok]   known_hosts 的 kind = host-keys-not-captured  kind=host-keys-not-captured
+  [ok]   JetBrains 密钥材料在跳过清单里：c.kdbx
+  [ok]   JetBrains 密钥材料在跳过清单里：c.pwd
+  [ok]   JetBrains 密钥材料在跳过清单里：idea.key
+  [ok]   JetBrains 产品目录有标记行：IntelliJIdea2026.1
+  [ok]   标记行 IntelliJIdea2026.1：captured = true 且没有 bytes / content_hash（目录不是文件）
+  [ok]   标记行 IntelliJIdea2026.1：kind = jetbrains  kind=jetbrains
+  [ok]   每一行都满足：captured ⟺ 有哈希（jetbrains 标记行除外）、跳过 ⟺ 有具体原因
+  [ok]   跳过的行都有中文原因（reason 字段）
+  [ok]   跳过项不许写材料（reason 里不出现 glpat- / 令牌片段）
+
+── 3. `tuoen capture --only globals`（真机）
+  [ok]   capture --only globals 退出 0  exit=0
+  [ok]   --json 成功载荷无 CJK
+  落盘：globals.toml, schema.toml
+  [ok]   只写 globals.toml / schema.toml（globals 不产生跳过项，所以没有 skipped.toml）  globals.toml,schema.toml
+  [ok]   schema.sections 只有 globals  globals
+  [ok]   globals.toml 至少有 1 行（空真防线）  rows=2
+  [ok]   globals.toml 里有 npm 行
+  [ok]   npm 行永远有 tool_version 键（按 TOML 原文的键判）
+  [ok]   npm 的 tool_version = v24.19.0（脚本自己跑 node -v）  产品=v24.19.0
+  [ok]   npm 的 prefix = C:\nvm4w\nodejs（脚本自己跑 npm config get prefix）  产品=C:\nvm4w\nodejs
+  [ok]   npm 的 prefix_inside_version_dir = true（本机 prefix 是符号链接，指向 …\nvm\v24.19.0）  产品=True
+  [ok]   npm 行没有 enumerate_error（本机枚举成功）  error=
+  [ok]   npm 包集合与脚本自己跑 npm ls -g 得到的一致（7 个）  产品=@deepseek-ai/dsh,@openai/codex,billion-context,corepack,npm,pnpm,tokentracker-cli 脚本=@deepseek-ai/dsh,@openai/codex,billion-context,corepack,npm,pnpm,tokentracker-cli
+  [ok]   npm 包按 name 排序（确定性是幂等性的一部分）
+  [ok]   每个 npm 包的版本与脚本自己解析出来的一致
+  [ok]   globals.toml 里有 pip 行
+  [ok]   pip 的 tool_version = 3.12（脚本自己从 pip --version 里取）  产品=3.12
+  [ok]   pip 的 prefix = C:\Users\Muelsyse\AppData\Local\Programs\Python\Python312（脚本自己从路径形状反推）  产品=C:\Users\Muelsyse\AppData\Local\Programs\Python\Python312
+  [ok]   pip 的 prefix_inside_version_dir 与 prefix 同生共死（有 prefix 就有这个键）
+  [ok]   pip 的 prefix_inside_version_dir = false（Python312 不是版本目录形状）  产品=False
+  [ok]   pip 包集合与脚本自己跑 pip list 得到的一致（3 个）  产品=pip,pypdf,pypinyin 脚本=pip,pypdf,pypinyin
+  [ok]   只对 npm / pip 出清单（决策 171：pnpm / yarn 不在本票的工具表里）  npm,pip
+  [ok]   npm 清单与票据的取证报告一致（7 个包）  票据=@deepseek-ai/dsh,@openai/codex,billion-context,corepack,npm,pnpm,tokentracker-cli 实际=@deepseek-ai/dsh,@openai/codex,billion-context,corepack,npm,pnpm,tokentracker-cli
+
+── 4. 全量捕获（六个 section）与 restore 的说明
+  [ok]   capture（全量）退出 0  exit=0
+  落盘：configs.toml, env.toml, globals.toml, path.toml, schema.toml, skipped.toml, tools.toml, wsl.toml
+  [ok]   全量捕获写出七个文件（六个 section + skipped）  configs.toml,env.toml,globals.toml,path.toml,schema.toml,skipped.toml,tools.toml,wsl.toml
+  [ok]   schema.sections 是六个 section 的字典序（决策 165 的复核期修正）  configs,env,globals,path,tools,wsl
+  [ok]   tools 仍然有 27 行（#16 的真机口径：新终端 PATH）  rows=27
+  [ok]   path 仍然有 49 行  rows=49
+  [ok]   env 仍然有 32 行  rows=32
+  [ok]   restore 能读带 globals/configs 的快照（退出 0）  exit=0
+  [ok]   restore 的载荷里说明有不可还原的 section（globals + configs）  unrestorable=configs,globals
+  [ok]   restore 的 sections 仍然只有四条  count=4
+  [ok]   restore 的人类输出里提到不可还原（中文只进人类输出）
+
+── 5. 幂等：两次捕获除时间戳外逐字节相同
+  [ok]   两次捕获的 globals.toml 逐字节相同（除 captured_at）
+  [ok]   两次捕获的 configs.toml 逐字节相同（除 captured_at）
+  [ok]   两次捕获的 skipped.toml 逐字节相同（除 captured_at）
+  [ok]   content_hash 幂等：同一文件两次捕获同哈希
+
+── 6. 安全红线：材料不泄漏（本票的第二个红线）
+  [ok]   真实 PAT 的片段不出现在任何产出文件里（含前 8 字符与全长窗口）
+  [ok]   产出文件里没有任何 glpat- 的正文（形状名后面只许跟标点/空格）
+  [ok]   仓库里没有 glpat- 字面量（GitHub push protection 防线）  0 处
+
+── 7. 零副作用：这台机器一个字节都没变
+  [ok]   HKCU\Environment\Path 的原文与类型逐字未变  sha a12fc582e90513a3 vs a12fc582e90513a3
+  [ok]   HKLM\…\Path 的原文与类型逐字未变
+  [ok]   整个 HKCU\Environment 逐字未变（值名 + 类型 + 原文）  值数 14 vs 14
+  [ok]   所有真实配置文件的哈希逐字未变
+  [ok]   %LOCALAPPDATA%\tuoen 目录树逐项相同
+  [ok]   %APPDATA%\tuoen 目录树逐项相同
+  [ok]   JetBrains 目录树逐项相同（我们只读它）
+  [ok]   没有在用户目录里留下 globals.toml / configs.toml
+  [ok]   产品源码里没有带引号的 setx 字面量  0 处
+  [ok]   脚本里没有一条会执行 setx 的语句（这个命令只许出现在守卫自己的文字里）
+
+── 8. 参数面与错误路径
+  [ok]   --only nonsense → 退出 2（拼错的 section 必须当场被拒）  exit=2
+  [ok]   --help 列出 globals 与 configs
+  [ok]   --only globals --only configs 可以同时给  exit=0
+  [ok]   两个 section 同时捕获时只写这两个 + skipped  configs.toml,globals.toml,schema.toml,skipped.toml
+  [ok]   --no-version 退出 0  exit=0
+  [ok]   --no-version 下 npm 的 tool_version 键仍在、值是 unknown（决策 172：键没有"省略"这个选项）  键=True 值=unknown
+  [ok]   --no-version 下 npm 的 prefix 照旧（它不来自版本探测）  产品=C:\nvm4w\nodejs
+  [ok]   --no-version 下 npm 的包清单照旧（包枚举不是版本探测）  产品=7 脚本=7
+  [ok]   --no-version 下 pip 的 tool_version 键仍在、值是 unknown  键=True 值=unknown
+  [ok]   --no-version 下 pip 的 prefix 整键消失（它来自 pip --version）  键=packages,tool,tool_version
+  [ok]   --no-version 下 pip 的 prefix_inside_version_dir 一起消失（同生共死）  键=packages,tool,tool_version
+  [ok]   --no-version 下 pip 的包清单照旧（pip list 不是版本探测）  产品=3 脚本=3
+
+── 9. 收尾
+
+SUMMARY checks_passed=117 checks_failed=0 checks_skipped=1 verdict=PASS
+工件目录：C:\Users\Muelsyse\AppData\Local\Temp\tuoen-acceptance-L1-17

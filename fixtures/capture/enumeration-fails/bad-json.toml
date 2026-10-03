@@ -1,0 +1,46 @@
+# 场景：决策 175 —— 枚举输出**不是 JSON** → `enumerate_error = "bad-json"`
+#
+# 退出码是 0（命令跑成功了），但 stdout 不是 JSON：真实机器上 npm 会在 JSON 之前
+# 打一行 `npm WARN`（代理、离线缓存、`--force` 之类），于是"跑成功了但读不懂"是
+# 一个**独立于退出码**的失败形态 —— 它必须与 `command-failed` 分开报。
+
+[env]
+USERPROFILE = 'C:\Users\dev'
+APPDATA = 'C:\Users\dev\AppData\Roaming'
+LOCALAPPDATA = 'C:\Users\dev\AppData\Local'
+Path = 'C:\Windows\System32;C:\nvm4w\nodejs'
+
+[[paths]]
+path = 'C:\nvm4w\nodejs'
+is_dir = true
+reparse = 'symlink-dir'
+link_target = 'C:\Users\dev\AppData\Local\nvm\v24.19.0'
+
+[[dirs]]
+path = 'C:\nvm4w\nodejs'
+entries = [
+    { path = 'node.exe', size = 84043264 },
+    { path = 'npm.cmd', size = 340 },
+]
+
+[[dirs]]
+path = 'C:\Users\dev\AppData\Local\nvm\v24.19.0'
+entries = [{ path = 'node.exe', size = 84043264 }]
+
+[[processes]]
+program = 'node.exe'
+args = ['-v']
+stdout = "v24.19.0\n"
+exit_code = 0
+
+[[processes]]
+program = 'cmd.exe'
+args = ['/C', 'npm.cmd', 'config', 'get', 'prefix']
+stdout = "C:\\nvm4w\\nodejs\n"
+exit_code = 0
+
+[[processes]]
+program = 'cmd.exe'
+args = ['/C', 'npm.cmd', 'ls', '-g', '--json', '--depth=0', '--offline']
+stdout = "npm WARN config production Use `--omit=dev` instead.\n"
+exit_code = 0

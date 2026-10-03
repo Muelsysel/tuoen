@@ -1,0 +1,121 @@
+# 场景：幂等 —— 同一份装置、同一个 `captured_at`，跑两次必须**逐字节相同**
+#
+# 这一份故意做得**杂**：两种工具（npm + pip）、四种配置文件、三种跳过项
+# （缓存目录 / 私钥 / 已知主机）、一个 JetBrains 产品目录标记行。
+# 只测一种东西的幂等是廉价的：顺序抖动、`BTreeMap` 之外的 `HashMap` 迭代、
+# 时间戳、随机 id —— 这些都会在"条目够多、种类够杂"时才露出来。
+#
+# 测试自己从这份文件数：包数、跳过项数、以及每个 `content` 的 sha256。
+# 两次捕获的 **文件文本** 逐字节相同、每个 `content_hash` 两次相同。
+
+[env]
+USERPROFILE = 'C:\Users\dev'
+APPDATA = 'C:\Users\dev\AppData\Roaming'
+LOCALAPPDATA = 'C:\Users\dev\AppData\Local'
+Path = 'C:\Windows\System32;C:\nvm4w\nodejs;C:\Python312\Scripts;C:\Program Files\Git\cmd'
+
+[[paths]]
+path = 'C:\nvm4w\nodejs'
+is_dir = true
+reparse = 'symlink-dir'
+link_target = 'C:\Users\dev\AppData\Local\nvm\v24.19.0'
+
+[[dirs]]
+path = 'C:\nvm4w\nodejs'
+entries = [
+    { path = 'node.exe', size = 84043264 },
+    { path = 'npm.cmd', size = 340 },
+]
+
+[[dirs]]
+path = 'C:\Users\dev\AppData\Local\nvm\v24.19.0'
+entries = [{ path = 'node.exe', size = 84043264 }]
+
+[[dirs]]
+path = 'C:\Python312'
+entries = [{ path = 'python.exe', size = 102400 }]
+
+[[dirs]]
+path = 'C:\Python312\Scripts'
+entries = [{ path = 'pip.exe', size = 108544 }]
+
+[[dirs]]
+path = 'C:\Program Files\Git\cmd'
+entries = [{ path = 'git.exe', size = 3527680 }]
+
+[[dirs]]
+path = 'C:\Users\dev\AppData\Local\npm-cache'
+
+[[dirs]]
+path = 'C:\Users\dev\.ssh'
+entries = [
+    { path = 'config', size = 32, content = "Host *\n  ServerAliveInterval 60\n" },
+    { path = 'id_ed25519', size = 464 },
+    { path = 'known_hosts', size = 52, content = "intranet-build.example ssh-ed25519 AAAAC3NzaC1lZDI1\n" },
+]
+
+[[dirs]]
+path = 'C:\Users\dev\AppData\Roaming\JetBrains'
+entries = [{ path = 'IntelliJIdea2026.1', is_dir = true }]
+
+[[dirs]]
+path = 'C:\Users\dev\AppData\Roaming\JetBrains\IntelliJIdea2026.1'
+entries = [{ path = 'c.kdbx', size = 2682 }]
+
+[[dirs]]
+path = 'C:\Users\dev'
+entries = [
+    { path = '.gitconfig', size = 73, content = "[credential]\n\thelper = manager\n[http]\n\tproxy = http://proxy.example:8080\n" },
+    { path = '.npmrc', size = 54, content = "allow-scripts=true\nregistry=https://registry.example/\n" },
+]
+
+[[dirs]]
+path = 'C:\Users\dev\.m2'
+entries = [
+    { path = 'settings.xml', size = 127, content = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<settings>\n  <localRepository>C:/Users/dev/.m2/repository</localRepository>\n</settings>\n" },
+]
+
+# npm 行：node.exe -v → cmd.exe /C npm.cmd config get prefix → cmd.exe /C npm.cmd ls …
+[[processes]]
+program = 'node.exe'
+args = ['-v']
+stdout = "v24.19.0\n"
+exit_code = 0
+
+[[processes]]
+program = 'cmd.exe'
+args = ['/C', 'npm.cmd', 'config', 'get', 'prefix']
+stdout = "C:\\nvm4w\\nodejs\n"
+exit_code = 0
+
+[[processes]]
+program = 'cmd.exe'
+args = ['/C', 'npm.cmd', 'ls', '-g', '--json', '--depth=0', '--offline']
+stdout = "{\n  \"name\": \"lib\",\n  \"dependencies\": {\n    \"@deepseek-ai/dsh\": { \"version\": \"1.4.2\" },\n    \"npm\": { \"version\": \"11.4.2\" },\n    \"typescript\": { \"version\": \"5.7.2\" }\n  }\n}\n"
+exit_code = 0
+
+# pip 行：pip.exe --version → pip.exe list …
+[[processes]]
+program = 'pip.exe'
+args = ['--version']
+stdout = "pip 24.0 from C:\\Python312\\Lib\\site-packages\\pip (python 3.12)\n"
+exit_code = 0
+
+[[processes]]
+program = 'pip.exe'
+args = ['list', '--format=json', '--disable-pip-version-check']
+stdout = "[\n  { \"name\": \"pip\", \"version\": \"24.0\" },\n  { \"name\": \"requests\", \"version\": \"2.32.3\" }\n]\n"
+exit_code = 0
+
+# configs：git 身份两层都没有
+[[processes]]
+program = 'git.exe'
+args = ['config', '--system', '--list', '--show-origin']
+stdout = "file:C:/Program Files/Git/etc/gitconfig\tcore.autocrlf=true\n"
+exit_code = 0
+
+[[processes]]
+program = 'git.exe'
+args = ['config', '--global', '--list', '--show-origin']
+stdout = "file:C:/Users/dev/.gitconfig\tcredential.helper=manager\n"
+exit_code = 0

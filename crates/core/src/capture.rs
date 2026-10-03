@@ -20,6 +20,8 @@
 //!   ├─ path.toml      PATH 结构
 //!   ├─ env.toml       持久环境变量（用户级 + 机器级）
 //!   ├─ wsl.toml       WSL 发行版与实际 vhdx 路径
+//!   ├─ globals.toml   全局包清单（npm / pip）
+//!   ├─ configs.toml   配置文件清单（只哈希、不存内容）
 //!   └─ skipped.toml   看见了但没写的东西，以及为什么
 //! ```
 //!
@@ -47,8 +49,9 @@ pub mod secrets;
 pub mod test_support;
 
 pub use files::{
-    EntryRefRow, EnvFile, EnvVarRow, Existence, PathBudgetRow, PathFile, PathRow, SCHEMA_VERSION,
-    SchemaFile, SkipEntry, SkippedFile, TargetExistence, ToolRow, ToolsFile, WslFile, WslRow,
+    ConfigRow, ConfigsFile, EntryRefRow, EnvFile, EnvVarRow, Existence, GitFacts, GlobalPackage,
+    GlobalRow, GlobalsFile, PathBudgetRow, PathFile, PathRow, SCHEMA_VERSION, SchemaFile,
+    SkipEntry, SkippedFile, TargetExistence, ToolRow, ToolsFile, WslFile, WslRow,
 };
 
 use std::path::{Path, PathBuf};
@@ -69,11 +72,26 @@ pub enum Section {
     Env,
     /// `wsl.toml`。
     Wsl,
+    /// `globals.toml`。
+    Globals,
+    /// `configs.toml`。
+    Configs,
 }
 
 impl Section {
     /// 全部 section，**顺序即写入顺序**。
-    pub const ALL: [Self; 4] = [Self::Tools, Self::Path, Self::Env, Self::Wsl];
+    ///
+    /// 新 section **追加在末尾**（决策 165）：顺序决定 `schema.toml` 里 `sections`
+    /// 数组的顺序与磁盘写入顺序，而"同一台机器跑两次逐字节相同"依赖顺序稳定 ——
+    /// 追加在末尾让**老快照**的顺序一个字都不变。
+    pub const ALL: [Self; 6] = [
+        Self::Tools,
+        Self::Path,
+        Self::Env,
+        Self::Wsl,
+        Self::Globals,
+        Self::Configs,
+    ];
 
     /// 稳定 slug（`--json` 与 `schema.toml` 里的取值，不本地化）。
     #[must_use]
@@ -83,6 +101,8 @@ impl Section {
             Self::Path => "path",
             Self::Env => "env",
             Self::Wsl => "wsl",
+            Self::Globals => "globals",
+            Self::Configs => "configs",
         }
     }
 
@@ -94,6 +114,8 @@ impl Section {
             Self::Path => "path.toml",
             Self::Env => "env.toml",
             Self::Wsl => "wsl.toml",
+            Self::Globals => "globals.toml",
+            Self::Configs => "configs.toml",
         }
     }
 
@@ -179,8 +201,12 @@ pub struct CaptureBundle {
     pub env: Option<EnvFile>,
     /// `wsl.toml`。
     pub wsl: Option<WslFile>,
-    /// `skipped.toml`。**只有真的扫过环境变量时才有** —— 没扫过就没有"跳过了什么"
-    /// 可报，凭空写一个空清单会让"这份快照不完整"看起来像"没有东西被跳过"。
+    /// `globals.toml`。
+    pub globals: Option<GlobalsFile>,
+    /// `configs.toml`。
+    pub configs: Option<ConfigsFile>,
+    /// `skipped.toml`。**只有真的扫过环境变量或配置文件时才有** —— 没扫过就没有
+    /// "跳过了什么"可报，凭空写一个空清单会让"这份快照不完整"看起来像"没有东西被跳过"。
     pub skipped: Option<SkippedFile>,
 }
 
@@ -200,6 +226,12 @@ impl CaptureBundle {
         }
         if self.wsl.is_some() {
             names.push("wsl.toml");
+        }
+        if self.globals.is_some() {
+            names.push("globals.toml");
+        }
+        if self.configs.is_some() {
+            names.push("configs.toml");
         }
         if self.skipped.is_some() {
             names.push("skipped.toml");
@@ -270,8 +302,16 @@ pub fn capture(
         path: None,
         env: None,
         wsl: None,
+        globals: None,
+        configs: None,
         skipped: None,
     };
+
+    // 跳过项**攒起来最后写一次**：`skipped.toml` 是一句跨 section 的话（"这份快照
+    // 完整吗"），而它的触发条件是"`env` 或 `configs` 被扫过"（决策 179）。
+    // 先攒后写也让写入顺序与 section 的处理顺序无关 —— 顺序稳定才能比逐字节。
+    let mut skips: Vec<SkipEntry> = Vec::new();
+    let mut scanned_skips = false;
 
     for section in &sections {
         match section {
@@ -286,20 +326,34 @@ pub fn capture(
                 ));
             }
             Section::Env => {
-                let (env, skips) = collect::collect_env(ctx, &opts.captured_at);
+                let (env, env_skips) = collect::collect_env(ctx, &opts.captured_at);
                 bundle.env = Some(env);
-                // 扫过就写这个文件，**空清单也是信息**：它说明"扫了，没跳过东西"。
-                // 没扫过（`--only path`）就没有这个文件，因为那时"跳过了什么"无从谈起。
-                let mut skipped = SkippedFile::new(&opts.captured_at);
-                for entry in skips {
-                    skipped.push(entry);
-                }
-                bundle.skipped = Some(skipped);
+                scanned_skips = true;
+                skips.extend(env_skips);
             }
             Section::Wsl => {
                 bundle.wsl = Some(collect::collect_wsl(ctx, &opts.captured_at));
             }
+            Section::Globals => {
+                bundle.globals = Some(collect::collect_globals(ctx, &opts.captured_at));
+            }
+            Section::Configs => {
+                let (configs, config_skips) = collect::collect_configs(ctx, &opts.captured_at);
+                bundle.configs = Some(configs);
+                scanned_skips = true;
+                skips.extend(config_skips);
+            }
         }
+    }
+
+    if scanned_skips {
+        // 扫过就写这个文件，**空清单也是信息**：它说明"扫了，没跳过东西"。
+        // 没扫过（`--only path`）就没有这个文件，因为那时"跳过了什么"无从谈起。
+        let mut file = SkippedFile::new(&opts.captured_at);
+        for entry in skips {
+            file.push(entry);
+        }
+        bundle.skipped = Some(file);
     }
 
     Ok(bundle)
@@ -341,7 +395,7 @@ pub fn render(bundle: &CaptureBundle) -> Result<Vec<(&'static str, String)>, Cap
         toml::to_string_pretty(value).map_err(|source| CaptureError::Toml { file, source })
     }
 
-    let mut out = Vec::with_capacity(6);
+    let mut out = Vec::with_capacity(8);
     out.push(("schema.toml", toml_of("schema.toml", &bundle.schema)?));
     if let Some(tools) = &bundle.tools {
         out.push(("tools.toml", toml_of("tools.toml", tools)?));
@@ -354,6 +408,12 @@ pub fn render(bundle: &CaptureBundle) -> Result<Vec<(&'static str, String)>, Cap
     }
     if let Some(wsl) = &bundle.wsl {
         out.push(("wsl.toml", toml_of("wsl.toml", wsl)?));
+    }
+    if let Some(globals) = &bundle.globals {
+        out.push(("globals.toml", toml_of("globals.toml", globals)?));
+    }
+    if let Some(configs) = &bundle.configs {
+        out.push(("configs.toml", toml_of("configs.toml", configs)?));
     }
     if let Some(skipped) = &bundle.skipped {
         out.push(("skipped.toml", toml_of("skipped.toml", skipped)?));

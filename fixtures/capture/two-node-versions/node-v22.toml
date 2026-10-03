@@ -1,0 +1,47 @@
+# 场景：决策 172/174 —— 同一个 prefix 在**两个 Node 版本**下是**两份独立清单**
+#
+# 这一份是 v22.11.0 那一侧。与 `node-v24.toml` 的差别**只有**三处：
+#   联接目标（版本目录）、`node -v` 的回答、`npm ls -g --json` 的包集合。
+# prefix 逐字相同（`C:\nvm4w\nodejs`）—— 切 Node 版本时这个路径**不变**，
+# 变的只有它指向哪里，所以"清单属于哪个运行时"只能靠 tool_version 承载。
+
+[env]
+USERPROFILE = 'C:\Users\dev'
+APPDATA = 'C:\Users\dev\AppData\Roaming'
+LOCALAPPDATA = 'C:\Users\dev\AppData\Local'
+Path = 'C:\Windows\System32;C:\nvm4w\nodejs'
+
+[[paths]]
+path = 'C:\nvm4w\nodejs'
+is_dir = true
+reparse = 'symlink-dir'
+link_target = 'C:\Users\dev\AppData\Local\nvm\v22.11.0'
+
+[[dirs]]
+path = 'C:\nvm4w\nodejs'
+entries = [
+    { path = 'node.exe', size = 81002496 },
+    { path = 'npm.cmd', size = 340 },
+]
+
+[[dirs]]
+path = 'C:\Users\dev\AppData\Local\nvm\v22.11.0'
+entries = [{ path = 'node.exe', size = 81002496 }]
+
+[[processes]]
+program = 'node.exe'
+args = ['-v']
+stdout = "v22.11.0\n"
+exit_code = 0
+
+[[processes]]
+program = 'cmd.exe'
+args = ['/C', 'npm.cmd', 'config', 'get', 'prefix']
+stdout = "C:\\nvm4w\\nodejs\n"
+exit_code = 0
+
+[[processes]]
+program = 'cmd.exe'
+args = ['/C', 'npm.cmd', 'ls', '-g', '--json', '--depth=0', '--offline']
+stdout = "{\n  \"name\": \"lib\",\n  \"dependencies\": {\n    \"@openai/codex\": { \"version\": \"0.8.3\" },\n    \"npm\": { \"version\": \"10.9.0\" },\n    \"typescript\": { \"version\": \"5.4.5\" },\n    \"yarn\": { \"version\": \"1.22.22\" }\n  }\n}\n"
+exit_code = 0

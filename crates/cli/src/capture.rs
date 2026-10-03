@@ -19,7 +19,8 @@ use tuoen_core::capture::Section;
 /// `tuoen capture` 的参数。
 #[derive(Debug, Args)]
 pub struct CaptureArgs {
-    /// 只捕获这些 section（可重复）。不给就是全部四个：tools / path / env / wsl。
+    /// 只捕获这些 section（可重复）。不给就是全部六个：tools / path / env / wsl /
+    /// globals / configs。
     #[arg(long = "only", value_name = "section")]
     pub only: Vec<CaptureSection>,
 
@@ -51,6 +52,16 @@ pub enum CaptureSection {
     Env,
     /// WSL 发行版（`wsl.toml`）。
     Wsl,
+    /// 全局包清单（`globals.toml`）。
+    ///
+    /// **L1 只捕获，不还原**（决策 165）：还原它要跑包管理器自己的解析，
+    /// 那是另一个 ticket。`restore` 会认出它并说明这一点，不会假装没看见。
+    Globals,
+    /// 配置文件清单（`configs.toml`）—— **只有路径与哈希，没有内容**。
+    ///
+    /// 同理只捕获不还原。含凭据形状的文件（`.m2/settings.xml` 这类）进
+    /// `skipped.toml`，理由具体。
+    Configs,
 }
 
 impl CaptureSection {
@@ -62,13 +73,16 @@ impl CaptureSection {
             Self::Path => Section::Path,
             Self::Env => Section::Env,
             Self::Wsl => Section::Wsl,
+            Self::Globals => Section::Globals,
+            Self::Configs => Section::Configs,
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use clap::Parser;
+    use clap::{Parser, ValueEnum};
+    use tuoen_core::capture::Section;
 
     use super::CaptureSection;
     use crate::cli::{Cli, Command};
@@ -113,18 +127,49 @@ mod tests {
 
     #[test]
     fn every_cli_section_maps_onto_an_engine_section() {
-        for section in [
-            CaptureSection::Tools,
-            CaptureSection::Path,
-            CaptureSection::Env,
-            CaptureSection::Wsl,
-        ] {
+        for section in CaptureSection::value_variants() {
             // 文件名与 slug 都由引擎定义，CLI 不重新拼 —— 于是"`--only` 的取值"
             // 与"磁盘上的文件名"不可能对不上。
             assert!(
                 section.section().file_name().ends_with(".toml"),
                 "{section:?} 没有对应的文件"
             );
+        }
+    }
+
+    #[test]
+    fn the_cli_value_set_is_exactly_the_engine_section_set() {
+        // 决策 165/166：`--only` 的取值表**只有一处定义**（`Section::ALL`）。
+        // 这条用例把两个方向同时钉住：
+        //   * 引擎里的每一个 section，CLI 都收 —— 漏一个，用户就没法只捕获它；
+        //   * CLI 收的每一个取值，都映射回**同一个** section —— 映射写错，就会捕错东西。
+        //
+        // 顺序也断言：枚举的声明顺序就是 `--help` 里列出来的顺序，而
+        // `Section::ALL` 的顺序是**写入顺序**（决策 165）—— 两处不一致时，
+        // 帮助里排在前面的 section 会在文件里排在后面。
+        let cli_slugs: Vec<&str> = CaptureSection::value_variants()
+            .iter()
+            .map(|section| section.section().as_str())
+            .collect();
+        let engine_slugs: Vec<&str> = Section::ALL
+            .iter()
+            .map(|section| section.as_str())
+            .collect();
+        assert_eq!(
+            cli_slugs, engine_slugs,
+            "CLI 取值表与引擎的 section 集合漂移了"
+        );
+
+        for engine in Section::ALL {
+            let cli = Cli::try_parse_from(["tuoen", "capture", "--only", engine.as_str()])
+                .unwrap_or_else(|error| panic!("`{}` 必须被 CLI 接受：{error}", engine.as_str()));
+            match cli.command {
+                Command::Capture(args) => {
+                    assert_eq!(args.only.len(), 1);
+                    assert_eq!(args.only[0].section(), engine, "映射到了别的 section");
+                }
+                other => panic!("应当是 capture，实际：{other:?}"),
+            }
         }
     }
 }

@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::env_block::InMemoryEnv;
 use crate::error::PlatformError;
-use crate::fs_facts::{DirEntryFacts, FileFacts, FileSystem, ReparseKind};
+use crate::fs_facts::{DirEntryFacts, FileFacts, FileSystem, ReadOutcome, ReparseKind};
 use crate::managed::{ManagedStore, ManagedTool};
 use crate::process::{ProcessOutcome, ProcessRunner};
 use crate::registry::{RegHive, RegValue, Registry};
@@ -75,6 +75,18 @@ pub struct FixturePath {
     /// 链接目标（junction / symlink）。
     #[serde(default)]
     pub link_target: Option<String>,
+    /// 文件内容。**只给需要读内容的用例**（决策 177/178：算 `content_hash`、扫凭据形状）。
+    ///
+    /// 不写就是"有大小、没内容" —— 读它会得到 [`ReadOutcome::Unreadable`]，而这一条
+    /// 必须是**故意**的：一份固定装置说"这个文件存在、`size = 494`"时，
+    /// 我们**不知道**那 494 字节是什么，而"猜一个内容"会让用例在测一件不存在的事。
+    /// 有专门一条用例钉住这个 `Unreadable`（见 `fixture.rs` 的 `read` 用例）。
+    ///
+    /// 它与 `size` 是**两件事**：`size` 是"声明的事实"（可以是假的、可以是 0 ——
+    /// 比如 App Execution Alias），`content` 是"读得到的东西"。要两者一致时用
+    /// [`FixturePath::file_with_content`]。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
 }
 
 /// 手写而不是 `derive`：`serde` 那侧的 `exists` 默认是 `true`，Rust 那侧必须是同一个值，
@@ -89,6 +101,7 @@ impl Default for FixturePath {
             size: 0,
             reparse: ReparseKind::None,
             link_target: None,
+            content: None,
         }
     }
 }
@@ -100,6 +113,21 @@ impl FixturePath {
         Self {
             path: path.to_owned(),
             size,
+            ..Self::default()
+        }
+    }
+
+    /// 一个**有内容**的普通文件，`size` 由内容长度算出来。
+    ///
+    /// 手写一个与 `content` 不一致的 `size` 会让 `inspect` 与 `read` 说两套话
+    /// （"这个文件 494 字节"而读出来 12 字节）—— 那种固定装置测的是一个真机上
+    /// 不存在的形状。所以"要有内容"这条路只留这一个入口。
+    #[must_use]
+    pub fn file_with_content(path: &str, content: &str) -> Self {
+        Self {
+            path: path.to_owned(),
+            size: content.len() as u64,
+            content: Some(content.to_owned()),
             ..Self::default()
         }
     }
@@ -244,6 +272,18 @@ impl FixtureKey {
 pub struct FixtureProcess {
     /// 可执行文件的完整路径。
     pub program: String,
+    /// 参数前缀。**空 = 通配**（任何参数都能命中），用来兼容既有的"只关心 program"的固定装置。
+    ///
+    /// 非空时，**调用的参数必须逐元素、按顺序以它开头**才算命中。匹配与取舍规则
+    /// （最长赢、同长按声明顺序）写在 [`FakeProcessRunner`] 上 —— 规则本身就是被测对象。
+    ///
+    /// 为什么需要它：决策 168 把枚举命令定成 `cmd.exe /C <tool>.cmd …`，于是 #17 的采集器
+    /// 会有**六次调用共用同一个 `cmd.exe`**（`npm config get prefix` / `npm ls -g --json …` /
+    /// `pip --version` / `pip list --format=json …` / `git config --system --list` /
+    /// `git config --global --list`）。只按 program 匹配时这六次只能拿到同一份 stdout，
+    /// 于是"npm 非零退出"与"git 两层身份不同"这类固定装置**在原理上写不出来**。
+    #[serde(default)]
+    pub args: Vec<String>,
     /// 标准输出。
     #[serde(default)]
     pub stdout: String,
@@ -301,19 +341,29 @@ fn normalize_key(raw: &str) -> String {
 pub struct FakeFileSystem {
     index: HashMap<String, FileFacts>,
     dirs: HashMap<String, Vec<DirEntryFacts>>,
+    /// 声明了内容的那些文件（归一化路径 → 内容）。
+    ///
+    /// 与 `index` 分开存：`FileFacts` 是"这个路径的事实"（大小、reparse、链接目标），
+    /// 而内容是**另一件事** —— 绝大多数固定装置只需要前者，写一个 `size` 就够了。
+    contents: HashMap<String, String>,
 }
 
 impl FakeFileSystem {
     fn from_fixture(fixture: &MachineFixture) -> Self {
         let mut index: HashMap<String, FileFacts> = HashMap::new();
         let mut dirs: HashMap<String, Vec<DirEntryFacts>> = HashMap::new();
+        let mut contents: HashMap<String, String> = HashMap::new();
 
         for dir in &fixture.dirs {
             let mut entries = Vec::new();
             for entry in &dir.entries {
                 let full = format!("{}\\{}", dir.path.trim_end_matches('\\'), entry.path);
+                entry.check_size_matches_content(&full);
                 let facts = entry.to_facts(Path::new(&full));
                 index.insert(normalize_path(&full), facts);
+                if let Some(content) = &entry.content {
+                    contents.insert(normalize_path(&full), content.clone());
+                }
                 entries.push(DirEntryFacts {
                     name: entry.path.clone(),
                     is_dir: entry.is_dir,
@@ -350,11 +400,28 @@ impl FakeFileSystem {
         //
         // 现在显式路径赢：`dirs` 仍然提供目录里的文件，`paths` 决定目录节点本身。
         for entry in &fixture.paths {
+            entry.check_size_matches_content(&entry.path);
             let facts = entry.to_facts(Path::new(&entry.path));
-            index.insert(normalize_path(&entry.path), facts);
+            let key = normalize_path(&entry.path);
+            index.insert(key.clone(), facts);
+            // 内容跟着同一条"`paths` 赢"的规矩：一条**没有**声明内容的显式路径会把
+            // 同名的 `dirs` 条目刚写进去的内容撤掉。否则 `inspect` 说它是符号链接、
+            // 而 `read` 还能读到一份旧内容 —— 两句话对不上，而用例会照着其中一句写断言。
+            match &entry.content {
+                Some(content) => {
+                    contents.insert(key, content.clone());
+                }
+                None => {
+                    contents.remove(&key);
+                }
+            }
         }
 
-        Self { index, dirs }
+        Self {
+            index,
+            dirs,
+            contents,
+        }
     }
 }
 
@@ -373,6 +440,30 @@ impl FixturePath {
             error: None,
         }
     }
+
+    /// 固定装置自证：声明了 `content` 时，`size` 必须等于内容的**字节数**（决策 186）。
+    ///
+    /// # 为什么在这里炸，而不是在 `read` 里返回点什么
+    ///
+    /// 真机上这两个数**可以**不同（App Execution Alias 是 0 字节、稀疏文件、并发截断），
+    /// 但固定装置里两个数**都是我们自己写的** —— 不一致永远是笔误，而不是"机器长这样"。
+    /// 失败模式选"构造时炸"而不是"读的时候返回某个东西"：后者会让一条断言**因为错误的
+    /// 理由变绿**（用例想验 494 字节的路径，实际读的是 12 字节的另一份内容）。
+    ///
+    /// 消息里必须**同时**有路径与两个数：只有"size 不匹配"的话，固定装置一多就得靠猜。
+    fn check_size_matches_content(&self, full_path: &str) {
+        let Some(content) = &self.content else {
+            return;
+        };
+        let bytes = content.len() as u64;
+        assert_eq!(
+            self.size, bytes,
+            "固定装置自相矛盾（决策 186）：`{full_path}` 声明了 size = {}，\
+             而 `content` 是 {bytes} 字节。两个数都是我们自己写的，不一致永远是笔误 —— \
+             用 `FixturePath::file_with_content` 让 size 跟着内容走。",
+            self.size
+        );
+    }
 }
 
 impl FileSystem for FakeFileSystem {
@@ -388,6 +479,48 @@ impl FileSystem for FakeFileSystem {
             .get(&normalize_path(&path.to_string_lossy()))
             .cloned()
             .unwrap_or_default()
+    }
+
+    /// 读固定装置里声明的内容。
+    ///
+    /// 语义与真实实现**逐条对应**，除了"内容从哪来"：
+    ///
+    /// | 固定装置里 | 得到 |
+    /// |---|---|
+    /// | 不存在（或 `exists = false`） | [`ReadOutcome::NotFound`] |
+    /// | 是目录 | [`ReadOutcome::Unreadable`] |
+    /// | 有 `content`，`content.len() <= limit` | [`ReadOutcome::Bytes`] |
+    /// | 有 `content`，但比 `limit` 长 | [`ReadOutcome::TooLarge { size: content.len() }`] |
+    /// | 有文件、**没写 `content`** | [`ReadOutcome::Unreadable`]（**故意**，见下） |
+    ///
+    /// 最后那一条是这一层最重要的语义：固定装置说"这个文件存在、`size = 494`"时，
+    /// 我们**不知道**那 494 字节是什么。要么诚实地答"读不了"（于是用例必须显式写出
+    /// 内容才能测"读到了什么"），要么编一段内容出来 —— 后者会让一个测凭据扫描的用例
+    /// 在**没有任何 token 的输入**上通过。前者是唯一不会说谎的那个。
+    fn read(&self, path: &Path, limit: u64) -> ReadOutcome {
+        let key = normalize_path(&path.to_string_lossy());
+        let Some(facts) = self.index.get(&key) else {
+            return ReadOutcome::NotFound;
+        };
+        if !facts.exists {
+            return ReadOutcome::NotFound;
+        }
+        if facts.is_dir {
+            return ReadOutcome::Unreadable {
+                message: "是一个目录，不是一个文件".to_owned(),
+            };
+        }
+        let Some(content) = self.contents.get(&key) else {
+            return ReadOutcome::Unreadable {
+                message: "固定装置没有声明这个文件的内容（`content`）".to_owned(),
+            };
+        };
+        if content.len() as u64 > limit {
+            return ReadOutcome::TooLarge {
+                size: content.len() as u64,
+            };
+        }
+        ReadOutcome::Bytes(content.as_bytes().to_vec())
     }
 }
 
@@ -546,10 +679,37 @@ pub struct ProcessCall {
 }
 
 /// 读固定装置的假进程运行器。
+///
+/// # 匹配规则（决策 185）—— 规则本身就是被测对象
+///
+/// 一次 `run(program, args)` 命中哪一条 [`FixtureProcess`]，按顺序：
+///
+/// 1. `normalize_path(program)` **相等**；
+/// 2. 且（`entry.args` **为空** → 通配，任何参数都算命中）**或**（调用的 `args`
+///    **以 `entry.args` 开头**：逐元素相等、顺序敏感、长度可以更长）；
+/// 3. 多个命中时 **`args` 最长的赢**（精确的压过通配的）；
+/// 4. 仍然并列时按**声明顺序**取第一个。
+///
+/// 第 3、4 条一起保证"同一次调用只有一种解释"：没有它们，一份同时写了
+/// `cmd.exe /C npm.cmd config get prefix` 与 `cmd.exe /C npm.cmd ls -g …` 的固定装置
+/// 会取决于**迭代顺序**给出两份不同的 stdout —— 而 `HashMap`/`read_dir` 那类顺序
+/// 在本仓库已经被明确禁止依赖（决策 35：输出必须逐字节稳定）。
 #[derive(Debug, Clone, Default)]
 pub struct FakeProcessRunner {
     entries: Vec<FixtureProcess>,
     calls: RefCell<Vec<ProcessCall>>,
+}
+
+/// 声明的参数是不是这次调用的**前缀**（决策 185 的第 2 条）。
+///
+/// 空 = 通配。`["config"]` 命中 `["config", "get", "prefix"]`，但**不**命中
+/// `["config-get"]`（逐元素比较，不做字符串前缀）也不命中 `["get", "config"]`（顺序敏感）。
+fn args_are_a_prefix(declared: &[String], called: &[String]) -> bool {
+    declared.len() <= called.len()
+        && declared
+            .iter()
+            .zip(called)
+            .all(|(declared, called)| declared == called)
 }
 
 impl FakeProcessRunner {
@@ -570,15 +730,26 @@ impl FakeProcessRunner {
 impl ProcessRunner for FakeProcessRunner {
     fn run(&self, program: &Path, args: &[&str], _timeout: Duration) -> ProcessOutcome {
         let wanted = normalize_path(&program.to_string_lossy());
+        let called: Vec<String> = args.iter().map(|arg| (*arg).to_owned()).collect();
         self.calls.borrow_mut().push(ProcessCall {
             program: program.to_string_lossy().into_owned(),
-            args: args.iter().map(|arg| (*arg).to_owned()).collect(),
+            args: called.clone(),
         });
-        match self
-            .entries
-            .iter()
-            .find(|entry| normalize_path(&entry.program) == wanted)
-        {
+
+        // 决策 185 的四条规则（见 `FakeProcessRunner` 的文档）。"严格更长才替换"这一步
+        // 同时实现了"最长赢"与"同长按声明顺序"—— 后者靠 `>` 而不是 `>=`。
+        let mut matched: Option<&FixtureProcess> = None;
+        for entry in &self.entries {
+            if normalize_path(&entry.program) != wanted || !args_are_a_prefix(&entry.args, &called)
+            {
+                continue;
+            }
+            if matched.is_none_or(|best| entry.args.len() > best.args.len()) {
+                matched = Some(entry);
+            }
+        }
+
+        match matched {
             Some(entry) => ProcessOutcome {
                 spawned: true,
                 timed_out: entry.timed_out,
@@ -593,7 +764,22 @@ impl ProcessRunner for FakeProcessRunner {
             },
             // 固定装置里没写 = 这个程序起不来。**不编一个空版本**，
             // 因为"发现但版本未知"与"根本没跑起来"在输出里必须能区分。
-            None => ProcessOutcome::not_spawned("固定装置里没有这个程序"),
+            //
+            // 两条消息分开写：写了 `args` 之后，"程序在、但参数没对上"会变成最常见的
+            // 固定装置笔误（比如把 `["config", "get", "prefix"]` 写成了
+            // `["config", "get", "prefix"]` 之外的顺序），而一句
+            // "固定装置里没有这个程序"会让人去查 program —— 查错地方。
+            None => ProcessOutcome::not_spawned(
+                if self
+                    .entries
+                    .iter()
+                    .any(|entry| normalize_path(&entry.program) == wanted)
+                {
+                    "固定装置里有这个程序，但没有一条的 `args` 是这次调用的前缀"
+                } else {
+                    "固定装置里没有这个程序"
+                },
+            ),
         }
     }
 }
@@ -678,6 +864,7 @@ mod tests {
             ],
             processes: vec![FixtureProcess {
                 program: r"C:\machine\node.exe".to_owned(),
+                args: Vec::new(),
                 stdout: "v1.2.3\n".to_owned(),
                 stderr: String::new(),
                 exit_code: Some(0),
@@ -810,5 +997,433 @@ mod tests {
         assert_eq!(normalize_path("C:/"), r"c:\");
         assert_eq!(normalize_path(r"C:\\Tools\\bin"), r"c:\tools\bin");
         assert_eq!(normalize_path(r"\\srv\share\bin\"), r"\\srv\share\bin");
+    }
+
+    // ------------------------------------------------------------------
+    // `FixtureProcess.args` 的匹配规则（决策 185）—— 规则本身就是被测对象。
+    // ------------------------------------------------------------------
+
+    /// 六次调用共用同一个 `cmd.exe` 的那份固定装置（决策 168 的形状）。
+    fn cmd_fixture() -> MachineFixture {
+        fn cmd(args: &[&str], stdout: &str) -> FixtureProcess {
+            FixtureProcess {
+                program: r"C:\Windows\System32\cmd.exe".to_owned(),
+                args: args.iter().map(|arg| (*arg).to_owned()).collect(),
+                stdout: stdout.to_owned(),
+                stderr: String::new(),
+                exit_code: Some(0),
+                timed_out: false,
+            }
+        }
+        MachineFixture {
+            processes: vec![
+                cmd(&[], "通配：任何参数都到这里"),
+                cmd(
+                    &["/C", "npm.cmd", "config", "get", "prefix"],
+                    "C:\\nvm4w\\nodejs\n",
+                ),
+                cmd(
+                    &[
+                        "/C",
+                        "npm.cmd",
+                        "ls",
+                        "-g",
+                        "--json",
+                        "--depth=0",
+                        "--offline",
+                    ],
+                    "[]",
+                ),
+                cmd(&["/C", "npm.cmd"], "短前缀"),
+                cmd(
+                    &["/C", "git.exe", "config", "--system", "--list"],
+                    "system 层",
+                ),
+                cmd(
+                    &["/C", "git.exe", "config", "--global", "--list"],
+                    "global 层",
+                ),
+            ],
+            ..MachineFixture::default()
+        }
+    }
+
+    fn ask(machine: &FakeMachine, args: &[&str]) -> ProcessOutcome {
+        machine.runner.run(
+            Path::new(r"C:\Windows\System32\cmd.exe"),
+            args,
+            Duration::from_millis(100),
+        )
+    }
+
+    #[test]
+    fn an_exact_args_entry_beats_the_wildcard_for_the_same_program() {
+        let machine = cmd_fixture().build();
+        let outcome = ask(&machine, &["/C", "npm.cmd", "config", "get", "prefix"]);
+        assert_eq!(outcome.stdout, "C:\\nvm4w\\nodejs\n");
+        // 通配那条仍然给"完全没写 args 的调用"兜底（旧固定装置的行为）。
+        let outcome = ask(&machine, &["/C", "whoami"]);
+        assert_eq!(outcome.stdout, "通配：任何参数都到这里");
+    }
+
+    #[test]
+    fn the_longest_args_prefix_wins() {
+        let machine = cmd_fixture().build();
+        // `["/C", "npm.cmd"]`（2 个）与 `["/C","npm.cmd","config","get","prefix"]`（5 个）
+        // 都是这次调用的前缀 —— 长的赢，否则"npm 的前缀"会把每一个 npm 子命令都吃掉。
+        assert_eq!(
+            ask(&machine, &["/C", "npm.cmd", "config", "get", "prefix"]).stdout,
+            "C:\\nvm4w\\nodejs\n"
+        );
+        assert_eq!(
+            ask(
+                &machine,
+                &[
+                    "/C",
+                    "npm.cmd",
+                    "ls",
+                    "-g",
+                    "--json",
+                    "--depth=0",
+                    "--offline"
+                ]
+            )
+            .stdout,
+            "[]"
+        );
+        // 只写了短前缀的调用命中短的那条 —— 它没被更长的条目抢走。
+        assert_eq!(
+            ask(&machine, &["/C", "npm.cmd", "--version"]).stdout,
+            "短前缀"
+        );
+        // 两次 git 调用拿到两份**不同**的输出：这是"只按 program 匹配"做不到的事。
+        assert_eq!(
+            ask(&machine, &["/C", "git.exe", "config", "--system", "--list"]).stdout,
+            "system 层"
+        );
+        assert_eq!(
+            ask(&machine, &["/C", "git.exe", "config", "--global", "--list"]).stdout,
+            "global 层"
+        );
+    }
+
+    #[test]
+    fn equal_length_prefixes_are_decided_by_declaration_order() {
+        let machine = MachineFixture {
+            processes: vec![
+                FixtureProcess {
+                    program: r"C:\bin\tool.exe".to_owned(),
+                    args: vec!["--json".to_owned()],
+                    stdout: "先声明的".to_owned(),
+                    stderr: String::new(),
+                    exit_code: Some(0),
+                    timed_out: false,
+                },
+                FixtureProcess {
+                    program: r"C:\bin\tool.exe".to_owned(),
+                    args: vec!["--json".to_owned()],
+                    stdout: "后声明的".to_owned(),
+                    stderr: String::new(),
+                    exit_code: Some(0),
+                    timed_out: false,
+                },
+            ],
+            ..MachineFixture::default()
+        }
+        .build();
+        // 同长（都是 1）时取**声明顺序的第一个** —— 没有这条，答案取决于迭代顺序，
+        // 而"同一台机器跑两次逐字节相同"（决策 35）就没了。
+        let outcome = machine.runner.run(
+            Path::new(r"C:\bin\tool.exe"),
+            &["--json", "--depth=0"],
+            Duration::from_millis(100),
+        );
+        assert_eq!(outcome.stdout, "先声明的");
+    }
+
+    #[test]
+    fn args_match_element_wise_and_in_order_and_not_as_a_string_prefix() {
+        let machine = cmd_fixture().build();
+        // 顺序反了 → 不命中（会落到通配那条）。
+        assert_eq!(
+            ask(&machine, &["/C", "config", "npm.cmd", "get", "prefix"]).stdout,
+            "通配：任何参数都到这里"
+        );
+        // 逐元素比较，不是字符串前缀：`npm.cmd-extra` 不是 `npm.cmd`。
+        assert_eq!(
+            ask(&machine, &["/C", "npm.cmd-extra", "config"]).stdout,
+            "通配：任何参数都到这里"
+        );
+        // 调用的参数比声明的**少** → 不命中（前缀只允许更长）。
+        assert_eq!(ask(&machine, &["/C"]).stdout, "通配：任何参数都到这里");
+    }
+
+    #[test]
+    fn a_program_that_exists_but_whose_args_miss_says_that_and_not_something_else() {
+        let machine = MachineFixture {
+            processes: vec![FixtureProcess {
+                program: r"C:\bin\tool.exe".to_owned(),
+                args: vec!["--json".to_owned()],
+                stdout: String::new(),
+                stderr: String::new(),
+                exit_code: Some(0),
+                timed_out: false,
+            }],
+            ..MachineFixture::default()
+        }
+        .build();
+        // 程序在、参数没对上：消息必须指向**参数**，否则固定装置作者会去查 program。
+        let missed = machine.runner.run(
+            Path::new(r"C:\bin\tool.exe"),
+            &["--plain"],
+            Duration::from_millis(100),
+        );
+        assert!(!missed.spawned);
+        assert!(
+            missed
+                .spawn_error
+                .as_deref()
+                .is_some_and(|m| m.contains("args")),
+            "消息要说清是参数没对上：{:?}",
+            missed.spawn_error
+        );
+        // 程序根本不在：另一条消息（"发现但版本未知"与"根本没跑起来"必须能区分）。
+        let absent = machine.runner.run(
+            Path::new(r"C:\bin\other.exe"),
+            &["--json"],
+            Duration::from_millis(100),
+        );
+        assert!(!absent.spawned);
+        assert!(
+            absent
+                .spawn_error
+                .as_deref()
+                .is_some_and(|m| m.contains("没有这个程序")),
+            "{:?}",
+            absent.spawn_error
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // `FixturePath.content` 与 `FakeFileSystem::read`
+    // ------------------------------------------------------------------
+
+    /// 一份"配置文件在目录里"的固定装置（`fixtures/**` 里的形状）。
+    fn config_fixture() -> MachineFixture {
+        MachineFixture {
+            dirs: vec![FixtureDir::new(
+                r"C:\Users\dev\.m2",
+                vec![
+                    FixturePath::file_with_content(
+                        "settings.xml",
+                        "<settings><servers/></settings>",
+                    ),
+                    // 声明了文件、**故意**不写内容。
+                    FixturePath::file("settings-security.xml", 494),
+                ],
+            )],
+            paths: vec![
+                FixturePath::file_with_content(r"C:\Users\dev\.gitconfig", "[user]\n"),
+                FixturePath::file(r"C:\Users\dev\.npmrc", 88),
+                FixturePath::missing(r"C:\Users\dev\.docker\config.json"),
+            ],
+            ..MachineFixture::default()
+        }
+    }
+
+    #[test]
+    fn content_inside_a_directory_entry_is_reachable_by_its_full_path() {
+        let machine = config_fixture().build();
+        assert_eq!(
+            machine
+                .fs
+                .read(Path::new(r"C:\Users\dev\.m2\settings.xml"), 4096),
+            ReadOutcome::Bytes(b"<settings><servers/></settings>".to_vec()),
+            "目录条目里的内容必须按**完整路径**读得到（`dirs[].entries[]` 的相对名）"
+        );
+        // 大小写与分隔符不敏感（与 `inspect` 同一条归一化）。
+        assert_eq!(
+            machine
+                .fs
+                .read(Path::new("c:/USERS/DEV/.m2/SETTINGS.XML"), 4096),
+            ReadOutcome::Bytes(b"<settings><servers/></settings>".to_vec())
+        );
+    }
+
+    #[test]
+    fn a_declared_file_without_content_is_unreadable_on_purpose() {
+        let machine = config_fixture().build();
+        // 固定装置说"这个文件存在、494 字节"，但我们**不知道**那 494 字节是什么。
+        // 编一段内容出来会让"扫凭据形状"的用例在没有任何 token 的输入上通过 ——
+        // 所以这里必须是 Unreadable，而且理由要说得出。
+        assert!(
+            machine
+                .fs
+                .inspect(Path::new(r"C:\Users\dev\.m2\settings-security.xml"))
+                .exists
+        );
+        match machine
+            .fs
+            .read(Path::new(r"C:\Users\dev\.m2\settings-security.xml"), 4096)
+        {
+            ReadOutcome::Unreadable { message } => {
+                assert!(message.contains("content"), "要说清缺什么：{message}");
+            }
+            other => panic!("没声明内容必须是 Unreadable，实际 {other:?}"),
+        }
+        // 顶层 `paths` 里的同一种形状。
+        assert!(
+            matches!(
+                machine.fs.read(Path::new(r"C:\Users\dev\.npmrc"), 4096),
+                ReadOutcome::Unreadable { .. }
+            ),
+            "只有 size 的条目读不出内容"
+        );
+    }
+
+    #[test]
+    fn a_directory_is_unreadable_and_an_undeclared_path_is_not_found() {
+        let machine = config_fixture().build();
+        // 目录：存在，但"读它"这件事不成立 —— 不是 NotFound。
+        assert!(
+            matches!(
+                machine.fs.read(Path::new(r"C:\Users\dev\.m2"), 4096),
+                ReadOutcome::Unreadable { .. }
+            ),
+            "目录不是 NotFound"
+        );
+        // 不存在：`paths` 里显式写了 `exists = false` 的，与完全没声明的，都是 NotFound。
+        assert_eq!(
+            machine
+                .fs
+                .read(Path::new(r"C:\Users\dev\.docker\config.json"), 4096),
+            ReadOutcome::NotFound
+        );
+        assert_eq!(
+            machine
+                .fs
+                .read(Path::new(r"C:\Windows\System32\cmd.exe"), 4096),
+            ReadOutcome::NotFound,
+            "没声明的路径永远是 NotFound —— 这是假文件系统存在的理由"
+        );
+    }
+
+    #[test]
+    fn too_large_uses_the_real_content_length_and_not_the_limit() {
+        let machine = config_fixture().build();
+        // 内容 31 字节（`"<settings><servers/></settings>"`），limit 30 → TooLarge，
+        // 且 `size` 是 **31**（不是 30）。
+        assert_eq!(
+            machine
+                .fs
+                .read(Path::new(r"C:\Users\dev\.m2\settings.xml"), 30),
+            ReadOutcome::TooLarge { size: 31 }
+        );
+        // 恰好 limit 的那一边读得到。
+        assert_eq!(
+            machine
+                .fs
+                .read(Path::new(r"C:\Users\dev\.m2\settings.xml"), 31),
+            ReadOutcome::Bytes(b"<settings><servers/></settings>".to_vec())
+        );
+    }
+
+    #[test]
+    fn an_explicit_path_entry_overrides_the_directory_entrys_content() {
+        // 与 `index` 同一条"`paths` 赢"的规矩：显式路径把同名目录条目的内容撤掉，
+        // 否则 `inspect` 说它是符号链接、而 `read` 还能读到一份旧内容。
+        let machine = MachineFixture {
+            dirs: vec![FixtureDir::new(
+                r"C:\nvm4w",
+                vec![FixturePath::file_with_content("nodejs", "目录条目的内容")],
+            )],
+            paths: vec![FixturePath::symlink_dir(
+                r"C:\nvm4w\nodejs",
+                r"C:\Users\dev\AppData\Local\nvm\v24.19.0",
+            )],
+            ..MachineFixture::default()
+        }
+        .build();
+        let facts = machine.fs.inspect(Path::new(r"C:\nvm4w\nodejs"));
+        assert!(facts.reparse.is_link(), "显式路径赢：它是符号链接");
+        assert!(
+            matches!(
+                machine.fs.read(Path::new(r"C:\nvm4w\nodejs"), 4096),
+                ReadOutcome::Unreadable { .. }
+            ),
+            "内容跟着同一条规矩被撤掉，不许留下一个自相矛盾的答案"
+        );
+    }
+
+    #[test]
+    fn file_with_content_keeps_size_and_content_in_step() {
+        let file = FixturePath::file_with_content(r"C:\a\.gitconfig", "[user]\nname=x\n");
+        assert_eq!(file.size, file.content.as_deref().unwrap().len() as u64);
+        assert_eq!(file.size, 14);
+        assert_eq!(FixturePath::file(r"C:\a\x", 10).content, None);
+    }
+
+    #[test]
+    fn content_is_omitted_from_toml_when_it_is_not_declared() {
+        // 加字段是**加法**：没写 `content` 的固定装置序列化回来必须一个字节都不变
+        // （`fixtures/**` 里那几十份 TOML 不能因为这一票而集体变样）。
+        let fixture = MachineFixture {
+            paths: vec![
+                FixturePath::file(r"C:\a\.npmrc", 88),
+                FixturePath::file_with_content(r"C:\a\.gitconfig", "[user]\n"),
+            ],
+            ..MachineFixture::default()
+        };
+        let text = toml::to_string(&fixture).expect("序列化");
+        assert_eq!(
+            text.matches("content = ").count(),
+            1,
+            "只有声明了内容的那一条才出键：\n{text}"
+        );
+        // 往返：字段名写错会被 `deny_unknown_fields` 当场拒绝。
+        let back: MachineFixture = toml::from_str(&text).expect("反序列化");
+        assert_eq!(back, fixture);
+    }
+
+    /// 决策 186：固定装置里 `size` 与 `content` 不一致 → **构造时就炸**。
+    ///
+    /// 期望的消息里**同时**有路径与两个数：只报"size 不匹配"的话，固定装置一多就得靠猜
+    /// 是哪一条。`should_panic(expected = …)` 是子串匹配，所以这一条同时钉住了三者。
+    #[test]
+    #[should_panic(
+        expected = "`C:\\Users\\dev\\.npmrc` 声明了 size = 494，而 `content` 是 19 字节"
+    )]
+    fn a_fixture_whose_size_disagrees_with_its_content_is_refused_when_it_is_built() {
+        // 19 字节的内容配 494 的 `size`：两个数都是我们自己写的，不一致永远是笔误。
+        // 失败模式必须是"构造时炸"—— 在 `read` 里返回点什么会让断言**因为错误的理由变绿**。
+        let _ = MachineFixture {
+            paths: vec![FixturePath {
+                path: r"C:\Users\dev\.npmrc".to_owned(),
+                size: 494,
+                content: Some("allow-scripts=false".to_owned()),
+                ..FixturePath::default()
+            }],
+            ..MachineFixture::default()
+        }
+        .build();
+    }
+
+    /// 同一条校验必须也覆盖 `dirs[].entries[]` —— 只写在一处的话，另一处就是"看不住"。
+    #[test]
+    #[should_panic(expected = "`C:\\Users\\dev\\.m2\\settings.xml` 声明了 size = 31")]
+    fn the_size_check_also_covers_entries_inside_a_directory() {
+        let _ = MachineFixture {
+            dirs: vec![FixtureDir::new(
+                r"C:\Users\dev\.m2",
+                vec![FixturePath {
+                    path: "settings.xml".to_owned(),
+                    size: 31,
+                    content: Some("很短".to_owned()),
+                    ..FixturePath::default()
+                }],
+            )],
+            ..MachineFixture::default()
+        }
+        .build();
     }
 }

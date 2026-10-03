@@ -1,0 +1,52 @@
+# 场景：决策 175 —— 枚举**非零退出** → `enumerate_error = "command-failed"`
+#
+# 注意 `stderr` 里**故意没有任何 npm 的错误码**（没有 `ENOTCACHED`、没有 `E404`）：
+# 分类只能来自**退出码**。本仓库的铁律是"永远不要匹配错误文本"（本机 zh-CN，
+# 报错是本地化的），所以一个靠 stderr 里找关键词来分类的实现会在这份装置上
+# 分不出来 —— 那是它自己的 bug，不是固定装置的。
+#
+# 行**仍然要写出去**（带 prefix 与 tool_version）："发现了这个全局前缀、
+# 但数不出里面的包"是一个有用的结果，而"这一节什么都没有"是一句假话（决策 175）。
+
+[env]
+USERPROFILE = 'C:\Users\dev'
+APPDATA = 'C:\Users\dev\AppData\Roaming'
+LOCALAPPDATA = 'C:\Users\dev\AppData\Local'
+Path = 'C:\Windows\System32;C:\nvm4w\nodejs'
+
+[[paths]]
+path = 'C:\nvm4w\nodejs'
+is_dir = true
+reparse = 'symlink-dir'
+link_target = 'C:\Users\dev\AppData\Local\nvm\v24.19.0'
+
+[[dirs]]
+path = 'C:\nvm4w\nodejs'
+entries = [
+    { path = 'node.exe', size = 84043264 },
+    { path = 'npm.cmd', size = 340 },
+]
+
+[[dirs]]
+path = 'C:\Users\dev\AppData\Local\nvm\v24.19.0'
+entries = [{ path = 'node.exe', size = 84043264 }]
+
+# prefix 那条**成功** —— 所以这一行有 prefix、有 tool_version，只有包数不出来。
+[[processes]]
+program = 'node.exe'
+args = ['-v']
+stdout = "v24.19.0\n"
+exit_code = 0
+
+[[processes]]
+program = 'cmd.exe'
+args = ['/C', 'npm.cmd', 'config', 'get', 'prefix']
+stdout = "C:\\nvm4w\\nodejs\n"
+exit_code = 0
+
+[[processes]]
+program = 'cmd.exe'
+args = ['/C', 'npm.cmd', 'ls', '-g', '--json', '--depth=0', '--offline']
+stdout = ""
+stderr = "npm error: cannot reach the registry while offline\n"
+exit_code = 1

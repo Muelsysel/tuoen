@@ -505,6 +505,256 @@ sections, manualActions, summary}}`（`--apply` 时多一个 `apply`，决策 16
 
 ---
 
+### 1.20 L1-17 globals + configs：全局包清单与配置文件清单（决策 165–184）
+
+票据 #17。这一票补上 dev-state 的最后两个 section。它包含 L1 的**第二个安全红线**：
+配置文件扫描会**直接碰到**本机 `C:\Users\Muelsyse\.m2\settings.xml` 里那个明文 `glpat-` PAT。
+决策的读法：**先看"这条会不会让一句看起来完全合理的假话成立"**。
+
+- **165. 两个新 section 追加在末尾，顺序即写入顺序。** `Section::{Globals, Configs}` 排在
+  `Wsl` 之后；文件名 `globals.toml` / `configs.toml`；slug `globals` / `configs`；
+  `skipped.toml` 仍然最后写。理由：`Section::ALL` 的顺序决定**磁盘写入顺序**（`render` 按它
+  产出），而"同一台机器跑两次逐字节相同"依赖顺序稳定 —— 追加在末尾让**老快照**的顺序一个字
+  都不变。
+  **复核期修正（实现者发现我的措辞与实现不一致）**：`schema.toml` 里 `sections` 数组是
+  **排序后**的（`SchemaFile::new` 一直如此，这是 #12 就有的行为），不是 `Section::ALL` 的顺序。
+  两种都可以是"稳定的"，而**已经上线的行为不为一句文档措辞让路** —— 改文档（这一句），
+  不改实现。
+- **166. 追加 `--only` 取值与追加 JSON 键不递增 `schemaVersion`。** 递增的判据是**删改**
+  （改名、改类型、改语义、删键），不是**加法**：老消费者忽略未知键仍然正确。
+  这条与"`--only` 的取值集合是对外契约"不矛盾 —— 契约说的是"不许静默改"，不是"不许加"。
+- **167. 全局包清单只来自工具自己的回答，不许自己走目录。** 实测（本机）：`npm ls -g --json
+  --depth=0 --offline` 给出 **7** 个包；自己走 `<prefix>\node_modules\*\package.json` 只数到
+  **5** 个（`@deepseek-ai` / `@openai` 两个 **scope 目录**的包在更深一层，且全局树里没有
+  `.package-lock.json`）。走目录快 60 倍（13 ms vs 771 ms）**但会静默少数** —— 而"少了一个包"
+  在迁移时表现为"新机器上少装了一个"，没有人会察觉。**能被工具回答的问题不许我们自己猜。**
+- **168. 枚举命令的形状：`cmd.exe /C <tool>.cmd …`，载荷是编译期常量。**
+  `ProcessRunner::run` 只接受普通 `arg`（见 §"会启动进程的代码"铁律 2），所以唯一安全的形状是
+  "载荷里没有任何需要转义的字符"：`npm ls -g --json --depth=0 --offline` 零插值、零引号。
+  **不用** `node.exe <npm-cli.js>`：那需要从 prefix 反推脚本路径，多一条会漂移的推导；
+  唯一允许原样塞载荷的地方（`raw_arg`）留给 `tuoen shell --exec`。
+- **169. `--offline` 是必需的，不是优化。** `npm ls` 在元数据缺失时会去网上找，而本机
+  （以及任何有代理的机器）换源要等 150 秒（issue #19）。`--offline` 把"这一票不访问网络"
+  从"我们没写访问网络的代码"升级成"访问网络不可能发生"；失败形态（`ENOTCACHED`）仍然
+  落到"发现但无法枚举"，不报错退出。
+- **170. 枚举超时与探测超时分开：`GLOBALS_TIMEOUT = 60s`。** 实测 `npm ls -g` 冷 **12.4 s**、
+  热 **0.77 s**；`pip list` **0.37 s**。用 `probe_timeout`（几秒，为 `--version` 定的）会把
+  冷启动判成"枚举失败" —— 那是**假阴性**，而假阴性在这里等于"新机器上少了几个全局包"。
+  超时也走"发现但无法枚举"（`timed-out`），**不报错退出**（票据原文）。
+- **171. 工具表只有 `npm` 与 `pip`。** `docs/specs/L1-dev-state.md` 第 104 行点名这两个
+  （"捕获全局包清单（`npm -g` / `pip`）"）。票据正文里 `# npm | pnpm | yarn | pip | ...`
+  是**字段取值空间**的说明，不是本票的工具清单 —— `tool` 是自由字符串，将来加 pnpm/yarn
+  不改格式。**找不到可执行文件的工具不产生行**（不是"报了个空行"）。
+- **172. `tool_version` 永远出键，值原样。** 它是"这份清单属于哪个**运行时**版本"：
+  npm → `node -v`（本机 `v24.19.0`）；pip → `pip --version` 里 `(python 3.12)` 的**版本号 `3.12`**。
+  **判据只有一条：存"那个运行时自己报的版本字符串"** —— node 报的就是 `v24.19.0`（带 `v`），
+  而 `pip --version` 里的括号与 `python` 是 **pip 的排版**、不是版本字符串的一部分，所以只取
+  `3.12`。（这一句是复核期补的：实现者一度取整段 `(python 3.12)`，理由是"DESIGN 是权威"——
+  **权威指的是设计意图，不是举例里的标点**；字段名是 `tool_version`，值必须是一个版本。）
+  比较时才归一化（与 `tools.toml` 的版本同一条规矩）；
+  判不出来时写稳定 slug **`"unknown"`**（不是空串、不是省略键）—— 票据把"必需"写在这里的
+  理由就是本机的活陷阱：`npm config get prefix` = `C:\nvm4w\nodejs` 实测是一个
+  **`SymbolicLink` → `C:\Users\Muelsyse\AppData\Local\nvm\v24.19.0`**，切 Node 版本会
+  **静默隐藏**这些包，而清单若不带版本，这个事实就无处附着。
+- **173. `prefix_inside_version_dir` 的判据：四支任一为真**（由代码判，票据明确禁止用户填）：
+  ① prefix 本身是 reparse point；② prefix 的**任一祖先**是 reparse point（有界向上走，到盘符根为止）；
+  ③ prefix 路径里有一段像版本号（`v` + 数字，或纯数字点分）；④ prefix 的 reparse **目标**是
+  这样的路径。本机：①真（`SymbolicLink`）+ ④真（目标 `…\nvm\v24.19.0`）→ `true`；
+  指向 `…\AppData\Roaming\npm` 的普通目录 → 四支全假 → `false`。
+- **174. `globals.toml` 的形状（冻结）**：
+
+  ```toml
+  schema_version = 1
+  captured_at = "…"
+
+  [[global]]
+  tool = "npm"                     # 稳定 slug：npm | pip
+  tool_version = "v24.19.0"        # 原样；判不出来 = "unknown"（永远出键）
+  prefix = "C:\\nvm4w\\nodejs"     # 原样；拿不到就不出这个键
+  prefix_inside_version_dir = true # 与 prefix 同生共死（都出或都不出）
+  packages = [ { name = "…", version = "…" } ]   # 按 name 排序
+  enumerate_error = "timed-out"    # 只在枚举失败时出键
+  ```
+
+  `prefix` 与 `prefix_inside_version_dir` **同生共死**：拿不到前缀时两个键一起不出 ——
+  印一个 `prefix_inside_version_dir = false` 会是一句假话（"我判过了，不在版本目录里"）。
+  `packages` 按 name 排序（确定性是幂等性的一部分）。
+  **`--no-version` 的后果（复核期补）**：pip 的 prefix 是从 `pip --version` 那条路径的形状
+  反推的，所以那个开关一开，**pip 行连 `prefix` 一起没有**（npm 不受影响：它的 prefix 来自
+  另一条命令 `npm config get prefix`，那不是版本探测）。**按名字判**：`pip --version` 就是
+  版本探测，跳过它是 `--no-version` 的字面意思；不对称来自"每条命令各自是什么"，不来自偏好。
+- **175. `enumerate_error` 的取值（稳定 slug）**：`command-failed`（非零退出）/ `timed-out` /
+  `bad-json`（解析不了）/ `unsupported-output`（形状不认识）。**行本身仍然写出去**，带着
+  prefix 与 tool_version —— "发现了这个全局前缀，但数不出里面的包"是一个有用的结果，
+  而"这一节什么都没有"是一句假话。**枚举失败不走 `skipped.toml`**：那行已经带着前缀与版本，
+  同一个事实写两处就是第二份真相（决策 179 同源）。
+- **176. `configs.toml` 的形状（冻结）**：
+
+  ```toml
+  schema_version = 1
+  captured_at = "…"
+
+  [[config]]
+  path = "C:\\Users\\Muelsyse\\.gitconfig"
+  kind = "git"                  # git | npm | maven | docker | ssh | wsl | vscode | jetbrains
+  layer = "global"              # 只在有层级概念的文件上出键（git 的 system / global）
+  captured = true
+  bytes = 142
+  content_hash = "sha256:…"
+
+  [[config]]
+  path = "C:\\Users\\Muelsyse\\.m2\\settings.xml"
+  kind = "maven"
+  captured = false
+  skip_reason = "contains-credential-shape"    # 必填、具体、稳定 slug
+
+  [git]
+  identity_source = "missing"   # system | global | missing | unknown
+  system_config = "C:/Program Files/Git/etc/gitconfig"   # **git 自己报的形态**（正斜杠），只去掉 file: 前缀
+  global_config = "C:/Users/Muelsyse/.gitconfig"
+  # user_name / user_email 只在 identity_source 为 system|global 时出键
+  ```
+
+  `system_config` / `global_config` **原样存 git 的答案**（它的正斜杠不改写）：归一化是**比较者**
+  的事（验收脚本自己 `Normalize-Path` 两边），不是记录者的事 —— 与决策 176 的"存工具说了什么"
+  同一条。第一版文档里我举的例是反斜杠形态，那是**文档与实现的字形差异**，改文档。
+- **177. `content_hash` 只哈希、不存内容。** `tuoen.d/` 是要提交进仓库的，存内容等于把
+  配置文件（可能含凭据）复制进仓库 —— 而"扫一遍找凭据形状"永远可能漏。哈希让
+  "两台机器的这个文件是否相同"仍然可回答。**`captured = true` 的含义因此是
+  "读到了、算出了哈希"**，不是"内容进了快照"（字段名是票据定的契约，语义由这一行钉住）。
+- **178. 凭据形状的判据复用 `capture::secrets`，不许写第二个扫描器。** 环境变量那条路径
+  靠**变量名**提示（`ARK_API_KEY` → `credential-named`），配置文件没有变量名，所以用
+  **内容级**判据：厂商形状（`glpat-` / `ghp_` / `github_pat_` / `sk-` / JWT / `AKIA…` /
+  `-----BEGIN … PRIVATE KEY-----`）与"赋值给一个像密钥的键"。**一个扫描器，两个调用方** ——
+  两个扫描器迟早对同一个 token 给出不同答案。本机实证：`.m2/settings.xml`（494 B，含
+  `<server>` 段与恰好 1 个 `glpat-`）→ 跳过；`.docker/config.json`（353 B，`auths` 为空、
+  `credsStore: "desktop"`）→ 捕获；`.npmrc`（88 B，只有 `allow-scripts=`）→ 捕获；
+  `~/.gitconfig`（142 B，只有 credential provider 与 proxy）→ 捕获。
+  **"吓人的地方是安全的，安全的地方是危险的"**：环境变量里零密钥，配置文件里有。
+  **复核期改动（安全方向）**：`glpat-` 的最小正文长度从 **20 收到 16** —— 卡在 20 时，
+  一份"前缀 + 16 位"的固定装置会被**当成干净文件捕获**（实现者自己的单测就是这么红的），
+  而那是**假阴性**：形状对了却不报，比误报危险得多。真机那个 PAT 是 20 位，仍然命中。
+- **179. 跳过清单的归属与触发条件。** `skipped.toml` 在 **`env` 或 `configs` 被扫过**时写出
+  （原来只有 env）。`section` 取 `"env"` / `"configs"`；缓存目录用 `section = "configs"` +
+  `kind = "cache-directory"`。`kind` 取值表（与 `skip_reason` 同一套词）：
+  `credential-named` / `contains-credential-shape` / `private-key-file` / `credential-database` /
+  `host-keys-not-captured` / `cache-directory` / `binary` / `too-large` / `unreadable`。
+  **静默跳过是 bug**：候选清单里存在、而我们没写进 `configs.toml` 的每一个东西，都必须在这里
+  有一条，且 `reason` 具体。
+- **180. 缓存目录只在跳过清单里，且绝不走进去、不报体积。** 判据是**路径前缀命中固定表**
+  （`%LOCALAPPDATA%\pnpm\store`、`%LOCALAPPDATA%\npm-cache`、`%LOCALAPPDATA%\pip\Cache`、
+  `%LOCALAPPDATA%\uv\cache`、`%USERPROFILE%\.cache\codex-runtimes`、`%USERPROFILE%\.m2\repository`），
+  命中且存在 → 一条 `cache-directory`，`reason` = "缓存不是状态：重建它不需要它"。
+  本机这六处合计约 8 GB —— **为了印一个用户不会据此行动的数字去走 8 GB 目录，是拿秒换装饰**。
+  这也让"扫描"这件事的代价**在编译期可算**：候选清单是常量表，不递归任何目录。
+- **181. `~/.ssh` 的处理。** `config` 在捕获清单里（票据点名）；目录里出现的**私钥形状**
+  （`id_*` 且不是 `.pub`、`*.pem`、`*.ppk`、`*.key`）→ 跳过项 `private-key-file`；
+  `known_hosts` → 跳过项 `host-keys-not-captured`（它记录的是**内网主机名**，而 `tuoen.d/`
+  是要提交进仓库的）。本机 `~/.ssh` 只有 `known_hosts`(192 B) → 真机上会出现一条
+  `host-keys-not-captured`；私钥那条**只在固定装置里**，如实记入未覆盖。
+- **182. JetBrains 只认"产品 + 版本"目录。** 匹配 `%APPDATA%\JetBrains\<Product><Version>`
+  （本机 `IntelliJIdea2026.1`）的目录出一条**标记行**：`captured = true`、**没有 `bytes`、
+  没有 `content_hash`** —— 目录不是文件，我们对它只报告"存在与名字"（这是决策 184 里唯一
+  一条"`captured = true` 却没有哈希"的例外，契约测试按 `kind == "jetbrains"` 逐字放行）。
+  目录里的 `c.kdbx` / `c.pwd` / `idea.key`（本机 2682 / 1331 / 28232 B）各出一条跳过项
+  （`credential-database` / `private-key-file`）✓ 真机证据。其余目录（`acp-agents`、
+  `consentOptions`）与其余文件**不在候选集里**，因此不出现在跳过清单（"没看"不是"跳过"）。
+- **183. `git` 身份必须跨层级读，问不了就说问不了。** `[git]` 来自 `git` 自己的回答：
+  `git config --system --list --show-origin` + `git config --global --list --show-origin`
+  （`--show-origin` 同时给出**路径**，于是文件行与层级不必靠猜路径）。身份取
+  **system → global** 的先后（global 覆盖 system），`identity_source` = 命中的那一层；
+  两层都没有 → `"missing"`（**缺失就明确说缺失**，这是票据的原话）；`git` 不可用 →
+  `"unknown"`（**不写 `[git]` 表**？不 —— 写，并让 `identity_source = "unknown"` 说明
+  我们问不了；省略整张表会让"没问"与"没装 git"长得一样）。
+  本机实证：系统级 `C:\Program Files\Git\etc\gitconfig`（401 B，11 个键：`core.autocrlf` /
+  `credential.helper=manager` / `http.sslbackend=schannel` / `init.defaultbranch=master` …），
+  全局级 `~/.gitconfig`（142 B，3 个键：credential provider + 两个 proxy），
+  **两层都没有 `user.name` / `user.email`** → `identity_source = "missing"`。
+  **只快照 `~/.gitconfig` 会只拿到 3 行并丢掉整个 Git 身份** —— 这就是这条决策的存在理由。
+- **184. `captured` 与 `skip_reason` 是两个互斥子集，契约测试逐行断言。**
+  `captured = true` ⇒ `bytes` + `content_hash` 都在（例外：决策 182 的目录标记行）；
+  `captured = false` ⇒ `skip_reason` 在且具体。**"两个同时出现"或"两个都不出现"都是必须红的形状** ——
+  这一条不是格式洁癖：一个既说"捕获了"又说"跳过了"的行，会让读者去猜哪一句是真的。
+
+**这一票的验收物**：`tuoen capture --only globals` 与 `--only configs` 在本机的真实产出 +
+跳过清单（票据点名要贴进 issue），以及"`.m2/settings.xml` 被跳过且原因具体"这一条最重要的证据。
+
+**185. 固定装置必须能区分"同一个程序的两次不同调用"（决策 168 的直接推论）。**
+决策 168 让 npm/pip 的六条命令共用一个 program（`cmd.exe`），而 `git config --system` 与
+`--global` 也共用 `git` —— 于是"只按 program 匹配"的 `FakeProcessRunner` 只能给它们同一份
+stdout，`enumeration-fails` 的三种形态与 `git-identity-layers` 的五种形态**都写不出来**
+（那是决策 183 的核心）。这不是测试写法问题，是**固定装置表达力的缺口**，必须在平台侧补：
+`FixtureProcess` 加 `args: Vec<String>`（`serde(default)`，向后兼容），匹配规则写死为
+**"program 相等，且（args 为空 = 通配）或（调用的 args 以它开头）；多个命中时 args 最长的赢，
+同长按声明顺序"**。理由与决策 179 同源：**一个说不清哪条命中的固定装置，会让用例为错误的
+理由变绿**。平台侧必须为这条规则本身写用例（精确赢通配、长赢短、同长按声明顺序）。
+
+**这条规则的已知代价**（实现者提的，记下来而不是藏起来）：一个人写了一条较短的**兜底**条目、
+后来又加了一条更长的，兜底会**静默不再命中**。缓解只有两条：`spawn_error` 分成"没有这个程序"
+与"有这个程序但没有一条 args 是这次调用的前缀"两句不同的消息；以及把规则写进
+`fixtures/capture/README.md`。**没有用例能钉住"作者的意图"** —— 这条代价买的是"规则确定、
+可预测"，不是"永远不会误用"。
+
+**186. `content` 与 `size` 在固定装置里必须自洽，而且要在**构造时**就炸。**
+`FixturePath` 现在既能声明 `size` 又能声明 `content`，两者可以互相矛盾：`size = 494` +
+12 字节的 `content` 会让同一份固定装置对同一个文件给出两个大小，而用例会照着其中一句写断言。
+真机上"声明的大小"与"读到的字节数"确实可以不同（0 字节别名、稀疏文件、并发截断）——
+但那是**真实文件系统**的事；在固定装置里，两个数**都是我们自己写的**，矛盾永远是固定装置的
+笔误。所以：**构造假机器时校验 `content.is_some() ⇒ size == content.len()`，不成立就 panic
+并同时印出路径与两个数**。失败模式选 panic 而不是"读的时候返回某个东西"：一个说不清自己
+多大的固定装置，会让断言为错误的理由变绿（决策 185 的同一条理由）。
+
+**187. `configs` 的候选路径必须从**进程环境**拼，不能从持久环境（注册表）拼。**
+实现者复核本机 + 我独立复核（两边一致）：`HKCU\Environment` 14 个值、机器级 19 个值，
+**两个作用域里都没有 `USERPROFILE` / `APPDATA` / `LOCALAPPDATA`** —— 它们是**登录时派生**的
+（`HOMEDRIVE`+`HOMEPATH`+用户名），注册表根本不存。用 `ctx.env_var()` 读这三个名字，
+真机上会拿到 `None`，于是**整节 `configs` 一行候选都拼不出来、静默变成空文件** ——
+一句看起来完全合理的假话（"这台机器没有配置文件"）。所以：根一律走 `ctx.process_var()`，
+与 `fixtures/capture/**` 的 `[env]`、契约测试的 `env_var(m, …)` 用的是同一份。
+（`USERNAME` 是另一回事：它**在**机器级作用域里 —— 三个名字的来路不同，不能一起想当然。）
+
+**188. `restore` 遇到自己不认识的 section 必须说话，而不是静默忽略。**
+`restore` 的 `sections` 只有四条（tools/path/env/wsl），而 `capture` 现在能写六个文件。
+一份带 `globals.toml` / `configs.toml` 的快照交给 `restore`，四条全 `no-change` 的计划看起来
+就像"本机都有了" —— 而实际上**两节根本没被考虑**。这是决策 162 的同一条病（"core 出占位、
+CLI 忘了覆盖"永远不会红），所以判据写死：
+
+- **差集**：`Section::ALL`（core 能捕获的）减 `SectionId::ALL`（restore 会规划的）= 这一层
+  不认识的那一半。**不许写成硬编码列表** —— 第七个 section 出现时它要自己跟上。
+- **再交一次磁盘**：差集里的每一项**只有在磁盘上真的有那个文件时**才报（`fs.inspect(...).exists`）。
+  一份只有四个旧 section 的快照，这个键**根本不出现**。
+- **形态**：`summary.unrestorable` = slug 列表，**稳定顺序 = `Section::ALL` 的顺序（也就是写入顺序）**，
+  **不是字典序**（真机载荷是 `["globals","configs"]`）。措辞写"排序"会被后来的人顺手加一个 `.sort()`，
+  在**不改任何决策**的前提下换掉一个已冻结的载荷顺序 —— 而那条契约用例会红，红得像是产品坏了。
+  `#[serde(skip_serializing_if = "Vec::is_empty")]` —— 空数组**不许**出键（`[]` 会被读成"我看过了，
+  一个都没有"，而没看见与看见了是两件事）。
+- **人类输出两行**，不是一行：第一行说"我不还原它们"，第二行说"**这不是「没看见」**：它们的内容
+  在快照里"。限定比断言本身重要 —— 一句话的"不还原"会被读成"没有"。
+- **已知限度（故意不做）**：只看文件在不在，**不解析它**。一个零字节的 `globals.toml` 也会被报成
+  "这份快照里还有 globals"。校验它需要 CLI 去理解 core 的形状（第二份真相）；真要做，正确的位置
+  是 core 的 `RestoreBundle::load`。
+
+**复核期冻结（决策 166 的适用）：`capture --json` 的两个新子形状。**
+`data.globals = {tools, packages, insideVersionDir, enumerateErrors[{tool, error}], byTool[{tool, packages, toolVersion}]}`；
+`data.configs = {entries, captured, skipped, gitIdentitySource, byKind[{kind, count}]}`。
+camelCase、加法**不递增 `schemaVersion`**（仍是 1）。`gitIdentitySource` 在 core 没给出 `[git]` 表时
+**缺席**而不是 `null`（与"空数组不许出键"同一精神）。这些子形状是按"与 `tools.byConfidence` 同形"
+选的（决策 174/176 冻结的是 **TOML** 形状）—— 想看每个包的名字的消费者去读文件，那是下一个 ticket。
+
+**决策 172 的复核期补充（一个已知的合流，不是缺陷）：** `--no-version` 下 `tool_version = "unknown"`，
+而 `unknown` 同时表示"这台机器上没有这个运行时"与"这次我们没问"。区分它们要一个新字段（"问过没有"），
+L1 不做 —— 那个开关是**调用者自己**给的，人类输出也会明说"本次没有探测版本"。键永远在、
+值可以答不上来，这条不变。
+
+**这一票里我（lead）写错的两处，记在文档里而不是悄悄改掉：**
+① 任务书说"`--only` 的取值表**由 `Section::ALL` 生成**"—— clap 的 `ValueEnum` 必须是编译期枚举，
+做不到。实现者换成**更强的东西**：一条断言"`CaptureSection::value_variants()` 的 slug 序列与
+`Section::ALL` 的 slug 序列**逐字相同（含顺序）**"的用例，core 加第七个 section 时它会红。
+② 任务书里"只改 reparse 目标就会红"那句对决策 173 的 ④ 支是**做不到**的（① 支恒真，只改目标仍是
+`true`）—— 变异必须做两步。**任务书的字面要求也可能是错的**；实现者照做之前先想一遍，是对的。
+
+---
+
 ## 2. 平台硬约束（来自本机实测，非推断）
 
 这些是**必须绕着走的地面事实**，实现时不得假设相反情况。

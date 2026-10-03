@@ -26,20 +26,47 @@ use tuoen_core::restore::{
     NOTE_NOT_SELECTED, NOTE_REPORT_ONLY, NOTE_SECTION_NOT_IN_SNAPSHOT,
     REMEDIATION_INSTALL_MANUALLY, REMEDIATION_NOT_SUPPORTED_IN_THIS_VERSION,
     REMEDIATION_RECONFIGURE_MANUALLY, REMEDIATION_RUN_AS_ADMINISTRATOR,
-    REMEDIATION_USE_THE_MANAGER, RestorePlan, SectionCounts, SectionId, SectionPlan,
+    REMEDIATION_USE_THE_MANAGER, RestorePlan, RestoreSummary, SectionCounts, SectionId,
+    SectionPlan,
 };
 
 use crate::path_diff_cmd::Username;
 
-/// `--json` 的 `data`：计划原样 + 可选的结果。
+/// `--json` 的 `data`：计划那四个键 + **一个 CLI 侧拥有的键** + 可选的结果。
+///
+/// # 为什么这里不是 `#[serde(flatten)] plan` 了
+///
+/// 票据 #17（决策 183）要求在 `summary` 里加 `unrestorable`，而那个键**不在** core 的
+/// [`RestoreSummary`] 里（写入范围不含 `crates/core/**`）。`#[serde(flatten)]` 铺开的
+/// 是 core 的整个 `RestorePlan`，**不允许覆盖其中一个已存在的键** —— 所以这里把四个键
+/// 逐个引用过来（**不重算、不重命名**），只把 `summary` 包一层。
+///
+/// 代价说清楚：core 以后给 `RestorePlan` 加第五个键时，这里**不会**自动跟上。
+/// 那一天的正确做法是把 `unrestorable` 挪进 core 的 `RestoreSummary`，然后退回 flatten。
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RestoreDataView<'a> {
-    /// core 的 `RestorePlan` 原样铺开。**不要**在这里重新拼 `snapshot`。
-    #[serde(flatten)]
-    pub(crate) plan: &'a RestorePlan,
+    /// core 的 `RestorePlan::snapshot` 原样（**不要**在这里重新拼）。
+    pub(crate) snapshot: &'a str,
+    pub(crate) sections: &'a [SectionPlan],
+    pub(crate) manual_actions: &'a [ManualAction],
+    pub(crate) summary: SummaryView<'a>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) apply: Option<&'a ApplyReport>,
+}
+
+/// `summary`：core 的六个计数器 + CLI 侧的 `unrestorable`。
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SummaryView<'a> {
+    #[serde(flatten)]
+    pub(crate) summary: &'a RestoreSummary,
+    /// 快照里有、而 L1 的 `restore` **不还原**的 section。
+    ///
+    /// **只在非空时出键**：一份没有 `globals` / `configs` 的快照，这个键根本不存在 ——
+    /// `[]` 会被读成"我看过了，一个都没有"，而那份快照根本没说过这件事。
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(crate) unrestorable: Vec<String>,
 }
 
 /// `--apply` 这一次跑完的结果。
@@ -107,6 +134,7 @@ impl ApplyReport {
 pub(crate) fn print_plan_human(
     plan: &RestorePlan,
     username: &Username,
+    unrestorable: &[String],
     apply: Option<&ApplyReport>,
 ) {
     let applying = apply.is_some();
@@ -127,6 +155,7 @@ pub(crate) fn print_plan_human(
     }
 
     print_summary(plan);
+    print_unrestorable(unrestorable);
     print_manual_actions(&plan.manual_actions);
 
     if let Some(report) = apply {
@@ -135,6 +164,30 @@ pub(crate) fn print_plan_human(
         println!();
         println!("以上是计划，**什么都没有写**。");
     }
+}
+
+/// 快照里有、而 L1 的 `restore` **不还原**的 section。
+///
+/// # 为什么这一行必须存在
+///
+/// 一份带了 `globals.toml` / `configs.toml` 的快照，在 `restore` 眼里是**四条** section
+/// 全 `no-change` —— 于是人类输出会以「这份快照要写的东西：**没有**」结尾。那句话在这里
+/// 是**真的**（`restore` 确实什么都不写），但它会被读成「这份快照里的东西本机都有了」，
+/// 而真相是「里面有两类东西我压根不还原」。**一句看起来完全合理的错话**正是这一票要消灭的，
+/// 所以这一行不是补充说明，它是那句话的限定条件。
+fn print_unrestorable(unrestorable: &[String]) {
+    if unrestorable.is_empty() {
+        return;
+    }
+    println!();
+    println!(
+        "注意：这份快照里还有 **{}** —— L1 的 `restore` **不还原**它们（只捕获）。",
+        unrestorable.join(" · ")
+    );
+    println!(
+        "  这不是「没看见」：它们的内容在快照里（`globals.toml` / `configs.toml`）。\
+         还原它们要跑包管理器自己的解析、或者替用户写配置文件 —— 两件事 L1 都明确不做。"
+    );
 }
 
 fn print_section(section: &SectionPlan, username: &Username, outcome: Option<&SectionOutcome>) {

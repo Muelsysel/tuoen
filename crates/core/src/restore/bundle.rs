@@ -459,6 +459,11 @@ mod tests {
             )),
             env: Some(EnvFile::new("2026-10-02T12:00:00Z")),
             wsl: None,
+            // `globals` / `configs` 是 #17 加的：restore **不读**它们（决策 183），
+            // 所以这里两个都是 `None`，而 `RestoreBundle` 里根本没有对应的字段 ——
+            // 它不该携带自己读不懂的东西。
+            globals: None,
+            configs: None,
             skipped: Some(SkippedFile::new("2026-10-02T12:00:00Z")),
         };
         let bundle = RestoreBundle::from_capture(&captured);

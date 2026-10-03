@@ -27,7 +27,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::detect::{Confidence, DetectedTool, DetectionSource};
 use crate::pin::resolve::ResolvedTool;
-use tuoen_platform::{DirEntryFacts, FileFacts, FileSystem, ReparseKind};
+use tuoen_platform::{DirEntryFacts, FileFacts, FileSystem, ReadOutcome, ReparseKind};
 
 /// 自建、自删的临时目录。
 ///
@@ -286,6 +286,20 @@ impl FileSystem for FakeDirs {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    /// `FakeDirs` 只建模"目录与目录项名字"，**没有文件内容这个概念**。
+    ///
+    /// 所以两个答案都与 [`FileSystem::inspect`] 一致：它认识的那个路径是**目录** →
+    /// 读目录是 `Unreadable`（不是 `NotFound`）；其余路径它本来就说"不存在" → `NotFound`。
+    fn read(&self, path: &Path, _: u64) -> ReadOutcome {
+        if self.dirs.contains_key(&key(path)) {
+            ReadOutcome::Unreadable {
+                message: "这是一个目录（假文件系统只建模目录）".to_owned(),
+            }
+        } else {
+            ReadOutcome::NotFound
+        }
     }
 }
 

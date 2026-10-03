@@ -1,0 +1,40 @@
+# 场景：决策 183 —— 身份**只在系统级**
+#
+# `--show-origin` 同时给出**路径**，所以"这条键来自哪个文件、哪一层"不必靠猜路径。
+# 身份取 system → global 的先后；这里 global 层没有任何身份键 ⇒ identity_source = "system"。
+#
+# 路径**原样存**（只去掉 `file:` 前缀），不做 `/` → `\` 归一化 —— 存"工具说了什么"。
+# 所以期望值就是 `C:/Program Files/Git/etc/gitconfig`（正斜杠，git 自己就是这么打的）。
+
+[env]
+USERPROFILE = 'C:\Users\dev'
+APPDATA = 'C:\Users\dev\AppData\Roaming'
+LOCALAPPDATA = 'C:\Users\dev\AppData\Local'
+Path = 'C:\Windows\System32;C:\Program Files\Git\cmd'
+
+[[dirs]]
+path = 'C:\Program Files\Git\cmd'
+entries = [{ path = 'git.exe', size = 3527680 }]
+
+[[dirs]]
+path = 'C:\Program Files\Git\etc'
+entries = [{ path = 'gitconfig', size = 109, content = "[core]\n\tautocrlf = true\n[user]\n\tname = System Dev\n\temail = dev@system.example\n[init]\n\tdefaultbranch = master\n" }]
+
+# 全局级那一份：存在，但**没有身份键**（真实本机就是这样：只有 credential provider 与 proxy）
+[[dirs]]
+path = 'C:\Users\dev'
+entries = [
+    { path = '.gitconfig', size = 73, content = "[credential]\n\thelper = manager\n[http]\n\tproxy = http://proxy.example:8080\n" },
+]
+
+[[processes]]
+program = 'git.exe'
+args = ['config', '--system', '--list', '--show-origin']
+stdout = "file:C:/Program Files/Git/etc/gitconfig\tcore.autocrlf=true\nfile:C:/Program Files/Git/etc/gitconfig\tuser.name=System Dev\nfile:C:/Program Files/Git/etc/gitconfig\tuser.email=dev@system.example\nfile:C:/Program Files/Git/etc/gitconfig\tinit.defaultbranch=master\n"
+exit_code = 0
+
+[[processes]]
+program = 'git.exe'
+args = ['config', '--global', '--list', '--show-origin']
+stdout = "file:C:/Users/dev/.gitconfig\tcredential.helper=manager\nfile:C:/Users/dev/.gitconfig\thttp.proxy=http://proxy.example:8080\n"
+exit_code = 0

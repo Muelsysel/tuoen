@@ -1,0 +1,46 @@
+# 场景：决策 175 —— 枚举**超时** → `enumerate_error = "timed-out"`
+#
+# `timed_out = true`、**没有退出码**（超时的进程没有退出码 —— 编一个 0 或 1 都会
+# 让"超时"与"跑完了"在数据上长得一样）。决策 170：枚举超时与探测超时是**两个**超时
+# （`GLOBALS_TIMEOUT = 60s`，实测 npm 冷启动 12.4 s），而超时**不报错退出**。
+
+[env]
+USERPROFILE = 'C:\Users\dev'
+APPDATA = 'C:\Users\dev\AppData\Roaming'
+LOCALAPPDATA = 'C:\Users\dev\AppData\Local'
+Path = 'C:\Windows\System32;C:\nvm4w\nodejs'
+
+[[paths]]
+path = 'C:\nvm4w\nodejs'
+is_dir = true
+reparse = 'symlink-dir'
+link_target = 'C:\Users\dev\AppData\Local\nvm\v24.19.0'
+
+[[dirs]]
+path = 'C:\nvm4w\nodejs'
+entries = [
+    { path = 'node.exe', size = 84043264 },
+    { path = 'npm.cmd', size = 340 },
+]
+
+[[dirs]]
+path = 'C:\Users\dev\AppData\Local\nvm\v24.19.0'
+entries = [{ path = 'node.exe', size = 84043264 }]
+
+[[processes]]
+program = 'node.exe'
+args = ['-v']
+stdout = "v24.19.0\n"
+exit_code = 0
+
+[[processes]]
+program = 'cmd.exe'
+args = ['/C', 'npm.cmd', 'config', 'get', 'prefix']
+stdout = "C:\\nvm4w\\nodejs\n"
+exit_code = 0
+
+[[processes]]
+program = 'cmd.exe'
+args = ['/C', 'npm.cmd', 'ls', '-g', '--json', '--depth=0', '--offline']
+stdout = ""
+timed_out = true

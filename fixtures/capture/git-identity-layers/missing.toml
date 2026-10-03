@@ -1,0 +1,41 @@
+# 场景：决策 183 —— 两层**都没有**身份 → `identity_source = "missing"`
+#
+# 这是**本机的真实形状**：系统级有 11 个键、全局级有 3 个键，两层都没有
+# `user.name` / `user.email`。票据的原话是"**缺失就明确说缺失**" ——
+# 所以 `identity_source = "missing"`，而 `user_name` / `user_email`
+# **两个键都不出**（"没有身份"与"身份是空串"是两句话）。
+#
+# 同时钉住一件容易做错的事：`[git]` 表**照样要出**，且 `system_config` /
+# `global_config` 仍然要写 —— 我们问得到"这两份文件在哪"，只是里面没有身份。
+
+[env]
+USERPROFILE = 'C:\Users\dev'
+APPDATA = 'C:\Users\dev\AppData\Roaming'
+LOCALAPPDATA = 'C:\Users\dev\AppData\Local'
+Path = 'C:\Windows\System32;C:\Program Files\Git\cmd'
+
+[[dirs]]
+path = 'C:\Program Files\Git\cmd'
+entries = [{ path = 'git.exe', size = 3527680 }]
+
+[[dirs]]
+path = 'C:\Program Files\Git\etc'
+entries = [{ path = 'gitconfig', size = 116, content = "[core]\n\tautocrlf = true\n[credential]\n\thelper = manager\n[http]\n\tsslbackend = schannel\n[init]\n\tdefaultbranch = master\n" }]
+
+[[dirs]]
+path = 'C:\Users\dev'
+entries = [
+    { path = '.gitconfig', size = 73, content = "[credential]\n\thelper = manager\n[http]\n\tproxy = http://proxy.example:8080\n" },
+]
+
+[[processes]]
+program = 'git.exe'
+args = ['config', '--system', '--list', '--show-origin']
+stdout = "file:C:/Program Files/Git/etc/gitconfig\tcore.autocrlf=true\nfile:C:/Program Files/Git/etc/gitconfig\tcredential.helper=manager\nfile:C:/Program Files/Git/etc/gitconfig\thttp.sslbackend=schannel\nfile:C:/Program Files/Git/etc/gitconfig\tinit.defaultbranch=master\n"
+exit_code = 0
+
+[[processes]]
+program = 'git.exe'
+args = ['config', '--global', '--list', '--show-origin']
+stdout = "file:C:/Users/dev/.gitconfig\tcredential.helper=manager\nfile:C:/Users/dev/.gitconfig\thttp.proxy=http://proxy.example:8080\n"
+exit_code = 0

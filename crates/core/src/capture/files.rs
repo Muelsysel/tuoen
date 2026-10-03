@@ -427,6 +427,177 @@ pub struct WslRow {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// globals.toml
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// `tuoen.d/globals.toml` —— **全局包清单**（决策 167–175）。
+///
+/// 它是"这台机器上装了哪些全局包"的唯一答案，而它的来源被决策 167 钉死：
+/// **只来自工具自己的回答**（`npm ls -g --json` / `pip list --format=json`），
+/// 绝不自己走 `<prefix>\node_modules`。实测那个目录只数到 5 个而工具说 7 个 ——
+/// 少掉的两个（scope 目录）在迁移时表现为"新机器上少装了两个"，没有人会察觉。
+///
+/// 一行 = 一个工具。**找不到可执行文件的工具不产生行**（决策 171）：
+/// 那不是"报了个空行"，而是"这台机器上没有这个工具"。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GlobalsFile {
+    /// 格式版本。
+    pub schema_version: u32,
+    /// 捕获时间。
+    pub captured_at: String,
+    /// 每个工具一行，按 `tool` 排序。
+    #[serde(default)]
+    pub global: Vec<GlobalRow>,
+}
+
+impl GlobalsFile {
+    /// 造一个只有表头的文件。
+    #[must_use]
+    pub fn new(captured_at: &str) -> Self {
+        Self {
+            schema_version: SCHEMA_VERSION,
+            captured_at: captured_at.to_owned(),
+            global: Vec::new(),
+        }
+    }
+}
+
+/// 一个工具的全局包清单。
+///
+/// # 为什么 `tool_version` 是必填的
+///
+/// 它是"这份清单属于哪个**运行时**版本"：npm → `node -v`，pip → `pip --version` 里的
+/// `(python 3.12)`。本机的活陷阱：`npm config get prefix` 实测是一个
+/// `SymbolicLink` → `…\nvm\v24.19.0`，切 Node 版本会**静默隐藏**这些包 ——
+/// 清单不带版本，这个事实就无处附着（决策 172）。判不出来时写 `"unknown"`。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GlobalRow {
+    /// 工具名。稳定 slug：`npm` | `pip`（取值空间是自由的，加 pnpm/yarn 不改格式）。
+    pub tool: String,
+    /// 运行时版本，**原样**（`v24.19.0` / `3.12`）；判不出来 = `"unknown"`。
+    pub tool_version: String,
+    /// 全局前缀，**原样**；拿不到就不出这个键。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prefix: Option<String>,
+    /// 前缀是不是落在"按版本隔离"的目录里（决策 173 的四支判据）。
+    ///
+    /// **与 `prefix` 同生共死**（决策 174）：拿不到前缀时两个键一起不出 ——
+    /// 印一个 `false` 会是一句假话（"我判过了，不在版本目录里"）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prefix_inside_version_dir: Option<bool>,
+    /// 包清单，**按 `name` 排序**（确定性是幂等性的一部分）。
+    #[serde(default)]
+    pub packages: Vec<GlobalPackage>,
+    /// 枚举失败的原因（稳定 slug：`command-failed` / `timed-out` / `bad-json` /
+    /// `unsupported-output`）。**只在失败时出键，行本身照样写出去**（决策 175）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enumerate_error: Option<String>,
+}
+
+/// 一个全局包。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GlobalPackage {
+    /// 包名（含 scope，如 `@deepseek-ai/dsh`）。
+    pub name: String,
+    /// 版本。工具没给版本时是 `"unknown"` —— 这一格没有"省略"这个选项。
+    pub version: String,
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// configs.toml
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// `tuoen.d/configs.toml` —— **配置文件清单**（决策 176–184）。
+///
+/// # 只哈希、不存内容（决策 177）
+///
+/// `tuoen.d/` 的用途是**被提交进仓库**，存内容等于把配置文件（可能含凭据）复制进仓库 ——
+/// 而"扫一遍找凭据形状"永远可能漏。所以 `captured = true` 的含义是
+/// **"读到了、算出了哈希"**，不是"内容进了快照"。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConfigsFile {
+    /// 格式版本。
+    pub schema_version: u32,
+    /// 捕获时间。
+    pub captured_at: String,
+    /// 每个候选一条，按 `path` 排序。
+    #[serde(default)]
+    pub config: Vec<ConfigRow>,
+    /// Git 身份。**必须排在 `config` 之后**：TOML 里一张表一旦打开，
+    /// 后面出现的 `[[config]]` 就会被解析成它的子表 —— 字段顺序是格式的一部分。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub git: Option<GitFacts>,
+}
+
+impl ConfigsFile {
+    /// 造一个只有表头的文件。
+    #[must_use]
+    pub fn new(captured_at: &str) -> Self {
+        Self {
+            schema_version: SCHEMA_VERSION,
+            captured_at: captured_at.to_owned(),
+            config: Vec::new(),
+            git: None,
+        }
+    }
+}
+
+/// 一个配置文件（或一个 JetBrains 产品目录）的结论。
+///
+/// # `captured` 与 `skip_reason` 是两个互斥子集（决策 184）
+///
+/// `captured = true` ⇒ `bytes` + `content_hash` 都在（**唯一例外**是
+/// `kind == "jetbrains"` 的目录标记行：目录不是文件，我们对它只报告"存在与名字"）；
+/// `captured = false` ⇒ `skip_reason` 在且具体。两个同时出现、或两个都不出现，都是必须红的形状。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConfigRow {
+    /// 文件（或目录）的完整路径。
+    pub path: String,
+    /// `git` | `npm` | `maven` | `docker` | `ssh` | `wsl` | `vscode` | `jetbrains`。
+    pub kind: String,
+    /// 只在有层级概念的文件上出键（git 的 `system` / `global`）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub layer: Option<String>,
+    /// 读到了、算出了哈希（见类型文档；`jetbrains` 标记行是例外）。
+    pub captured: bool,
+    /// 字节数。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bytes: Option<u64>,
+    /// `sha256:<hex 小写>`。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content_hash: Option<String>,
+    /// 没捕获的原因（稳定 slug，见 `collect::configs` 的词表）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skip_reason: Option<String>,
+}
+
+/// Git 身份与它来自哪一层（决策 183）。
+///
+/// **只快照 `~/.gitconfig` 会丢掉整个 Git 身份**：本机系统级 401 B / 11 个键、
+/// 全局级 142 B / 3 个键，而**两层都没有** `user.name` / `user.email`。
+/// 所以这张表来自 `git` 自己的回答（`--show-origin` 同时给出路径），不靠猜路径。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitFacts {
+    /// `system` | `global` | `missing` | `unknown`。
+    ///
+    /// `missing` = 两层都答了、都没有身份；`unknown` = **我们问不了**（git 不可用）。
+    /// 省略整张表会让"没问"与"没装 git"长得一样。
+    pub identity_source: String,
+    /// 系统级 gitconfig 的路径（git 说的）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub system_config: Option<String>,
+    /// 全局级 gitconfig 的路径（git 说的）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub global_config: Option<String>,
+    /// `user.name`，**只在 `identity_source` 为 `system` / `global` 时出键**。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_name: Option<String>,
+    /// `user.email`，同上。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_email: Option<String>,
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // skipped.toml
 // ─────────────────────────────────────────────────────────────────────────────
 

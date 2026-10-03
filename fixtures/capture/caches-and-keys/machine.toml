@@ -1,0 +1,104 @@
+# 场景：决策 179/180/181/182 —— 缓存目录、私钥形状、JetBrains
+#
+# 四条判据各自的"必须出现"与"必须不出现"都在这一份里：
+#
+#   180 缓存目录：常量表里的六个**全部声明**，其中 `uv\cache` 声明为**不存在**
+#       —— 命中路径前缀**且存在**才出一条 `cache-directory`，所以期望条数是
+#       数出来的（"六个目录"不等于"六条跳过项"）。**绝不走进去、不报体积**。
+#   181 `~/.ssh`：`config` 捕获；`id_*`（不是 `.pub`）/ `*.pem` / `*.ppk` / `*.key`
+#       → `private-key-file`；`known_hosts` → `host-keys-not-captured`（它记的是内网主机名，
+#       而 `tuoen.d/` 要提交进仓库）。`id_rsa.pub` 与 `authorized_keys` **不是候选**，
+#       所以它们**不该出现**在跳过清单里 —— "没看"不是"跳过"。
+#   182 JetBrains：只认 `%APPDATA%\JetBrains\<Product><Version>`（**只 list 这一层**）；
+#       产品目录本身出一条**标记行**（`captured = true`，**没有 `bytes` / `content_hash`**）；
+#       里面的 `c.kdbx` / `c.pwd` → `credential-database`、`idea.key` → `private-key-file`；
+#       `consentOptions` / `acp-agents` 与 `.bashrc` 不在候选集里 → 一个字都不出。
+
+[env]
+USERPROFILE = 'C:\Users\dev'
+APPDATA = 'C:\Users\dev\AppData\Roaming'
+LOCALAPPDATA = 'C:\Users\dev\AppData\Local'
+Path = 'C:\Windows\System32;C:\Program Files\Git\cmd'
+
+# ── 决策 180：六个缓存目录（常量表），最后一个声明为不存在 ──
+[[dirs]]
+path = 'C:\Users\dev\AppData\Local\pnpm\store'
+
+[[dirs]]
+path = 'C:\Users\dev\AppData\Local\npm-cache'
+
+[[dirs]]
+path = 'C:\Users\dev\AppData\Local\pip\Cache'
+
+[[dirs]]
+path = 'C:\Users\dev\AppData\Local\uv\cache'
+exists = false
+
+[[dirs]]
+path = 'C:\Users\dev\.cache\codex-runtimes'
+
+[[dirs]]
+path = 'C:\Users\dev\.m2\repository'
+
+# ── 决策 181：~/.ssh ──
+[[dirs]]
+path = 'C:\Users\dev\.ssh'
+entries = [
+    { path = 'config', size = 32, content = "Host *\n  ServerAliveInterval 60\n" },
+    { path = 'id_rsa', size = 1675 },
+    { path = 'id_rsa.pub', size = 43, content = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQAB user@host\n" },
+    { path = 'known_hosts', size = 52, content = "intranet-build.example ssh-ed25519 AAAAC3NzaC1lZDI1\n" },
+    { path = 'work.pem', size = 1704 },
+    { path = 'legacy.ppk', size = 1876 },
+    { path = 'note.key', size = 17, content = "not really a key\n" },
+    { path = 'authorized_keys', size = 40, content = "ssh-ed25519 AAAAC3NzaC1lZDI1 other@host\n" },
+]
+
+# ── 决策 182：JetBrains 产品目录（只 list 这一层） ──
+[[dirs]]
+path = 'C:\Users\dev\AppData\Roaming\JetBrains'
+entries = [{ path = 'IntelliJIdea2026.1', is_dir = true }]
+
+[[dirs]]
+path = 'C:\Users\dev\AppData\Roaming\JetBrains\IntelliJIdea2026.1'
+entries = [
+    { path = 'c.kdbx', size = 2682 },
+    { path = 'c.pwd', size = 1331 },
+    { path = 'idea.key', size = 28232 },
+    { path = 'consentOptions', is_dir = true },
+    { path = 'acp-agents', is_dir = true },
+]
+
+# ── 其它候选：都要捕获（没有对照组的话"全部跳过"也能过） ──
+[[dirs]]
+path = 'C:\Users\dev'
+entries = [
+    { path = '.gitconfig', size = 73, content = "[credential]\n\thelper = manager\n[http]\n\tproxy = http://proxy.example:8080\n" },
+    { path = '.npmrc', size = 54, content = "allow-scripts=true\nregistry=https://registry.example/\n" },
+    # 不是候选：任何一份清单里都不该出现它
+    { path = '.bashrc', size = 33, content = "export PATH=$PATH:/usr/local/bin\n" },
+]
+
+[[dirs]]
+path = 'C:\Users\dev\.m2'
+entries = [
+    { path = 'settings.xml', size = 127, content = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<settings>\n  <localRepository>C:/Users/dev/.m2/repository</localRepository>\n</settings>\n" },
+]
+
+[[dirs]]
+path = 'C:\Users\dev\.docker'
+entries = [
+    { path = 'config.json', size = 45, content = "{\n  \"auths\": {},\n  \"credsStore\": \"desktop\"\n}\n" },
+]
+
+[[processes]]
+program = 'git.exe'
+args = ['config', '--system', '--list', '--show-origin']
+stdout = "file:C:/Program Files/Git/etc/gitconfig\tcore.autocrlf=true\n"
+exit_code = 0
+
+[[processes]]
+program = 'git.exe'
+args = ['config', '--global', '--list', '--show-origin']
+stdout = "file:C:/Users/dev/.gitconfig\tcredential.helper=manager\n"
+exit_code = 0

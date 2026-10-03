@@ -42,7 +42,7 @@ pub use fixture::{
 };
 pub use fs_facts::{
     DirEntryFacts, FileFacts, FileSystem, IO_REPARSE_TAG_APPEXECLINK, IO_REPARSE_TAG_MOUNT_POINT,
-    IO_REPARSE_TAG_SYMLINK, RealFileSystem, ReparseKind,
+    IO_REPARSE_TAG_SYMLINK, ReadOutcome, RealFileSystem, ReparseKind,
 };
 pub use junction::{Repoint, junction_target, remove_junction, repoint_junction};
 pub use managed::{ManagedStore, ManagedTool, RealManagedStore};

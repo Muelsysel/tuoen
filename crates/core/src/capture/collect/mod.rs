@@ -1,4 +1,4 @@
-//! 四个采集器：把一个注入式的机器读成 `tuoen.d/` 的四个文件。
+//! 六个采集器：把一个注入式的机器读成 `tuoen.d/` 的六个文件。
 //!
 //! # 这个模块里所有采集器共守的六条规则
 //!
@@ -16,22 +16,147 @@
 //! 5. **确定性。** 除了 `PATH` 条目的顺序（顺序本身是数据），其它一切都要排序 ——
 //!    "同一台机器跑两次逐字节相同"是这一票承诺的东西，而排序是它的一部分。
 //! 6. **绝不把值写进跳过原因。** 理由见 [`super::secrets`]。
+//!
+//! 第 7 条只对 `globals` / `configs` 这两个会**起进程**的采集器成立：
+//! **外部命令只在一张常量表里定义**（[`Command`]），调用点不许拼字符串 ——
+//! 命令字符串是固定装置与产品之间的契约，散落两处就会对不上，而对不上表现为
+//! "工具不可用/枚举失败"（能看见，但要花很久才能定位）。
 
+pub(crate) mod configs;
 pub(crate) mod env;
+pub(crate) mod globals;
 pub(crate) mod path;
 pub(crate) mod tools;
 pub(crate) mod wsl;
 
+pub(crate) use configs::collect_configs;
 pub(crate) use env::collect_env;
+pub(crate) use globals::collect_globals;
 pub(crate) use path::collect_path;
 pub(crate) use tools::collect_tools;
 pub(crate) use wsl::collect_wsl;
 
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
-use tuoen_platform::EnvScope;
+use tuoen_platform::{EnvScope, PATH_EXTENSIONS, ProcessOutcome};
 
 use crate::detect::DetectContext;
+
+/// 外部命令的**枚举**超时（决策 170）。
+///
+/// 给的是"要启动包管理器 / 要读整份配置"的那些命令：`npm ls -g`（冷 12.4 s）、
+/// `npm config get prefix`、`git config --list`。`--version` 探测**不用**它 ——
+/// 那个只启动一个解释器，用 `ctx.probe_timeout`（3 秒）。
+pub(crate) const COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// 一次外部调用：**程序 + 参数**。
+///
+/// 这是"命令字符串只有一处定义"的载体：`globals` 与 `configs` 的每一条命令都是
+/// 一个常量（见 `globals.rs` / `configs.rs` 顶部的表），调用点只引用常量。
+///
+/// `program` 一律是**裸名字**（`cmd.exe` / `node.exe` / `pip.exe` / `git.exe`）：
+/// `CreateProcess` 自己会按 `System32` → `PATH` 的顺序解析，而我们**不拼绝对路径** ——
+/// 固定装置按程序名匹配，拼一个绝对路径只会让固定装置与产品对不上。
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Command {
+    /// 程序名（裸名字）。
+    pub(crate) program: &'static str,
+    /// 参数（逐字，顺序即命令行顺序）。
+    pub(crate) args: &'static [&'static str],
+}
+
+impl Command {
+    /// 跑一次。**超时是调用方给的**：枚举用 [`globals::GLOBALS_TIMEOUT`]（60 秒），
+    /// 版本探测用 `probe_timeout`（决策 170：两者必须分开）。
+    pub(crate) fn run(&self, ctx: &DetectContext<'_>, timeout: Duration) -> ProcessOutcome {
+        ctx.runner.run(Path::new(self.program), self.args, timeout)
+    }
+
+    /// 跑一次并只要 stdout —— 而且**只在真的成功时**才算数。
+    ///
+    /// `spawned == false` / `timed_out` / 非零退出都返回 `None`：这三个都是
+    /// "这个工具没回答"，而把它们当成"它回答了空字符串"会让我们**编**出一个值。
+    pub(crate) fn run_text(&self, ctx: &DetectContext<'_>, timeout: Duration) -> Option<String> {
+        let outcome = self.run(ctx, timeout);
+        if !outcome.spawned || outcome.timed_out || outcome.exit_code != Some(0) {
+            return None;
+        }
+        Some(outcome.stdout)
+    }
+}
+
+/// stdout 的第一行（去掉行尾的 `\r`）。
+///
+/// `node -v` / `npm config get prefix` 都是一行一条，而 Windows 上那行以 `\r\n` 结束 ——
+/// 不去掉 `\r` 会让 `prefix` 变成一个**末尾带回车**的路径（它在文件里看不出来，
+/// 但在任何按路径使用它的地方都会失败）。
+pub(crate) fn first_line(text: &str) -> String {
+    text.lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or("")
+        .to_owned()
+}
+
+/// 在**进程** `%Path%` 上找一条命令，返回它的完整路径。
+///
+/// 判据与 `pin::shell::dir_has_command` / `tuoen_platform::path::detect_shadowing`
+/// 同一套：逐目录 `list_dir`，名字大小写不敏感，裸名字再逐个拼
+/// [`PATH_EXTENSIONS`]。多出来的那一条是"名字本身就是 `node`（没有扩展名）"——
+/// `cmd.exe` 真的会尝试执行这种文件。
+///
+/// **绝不返回 App Execution Alias**（`WindowsApps\python.exe` 那种 0 字节别名）：
+/// 执行它会启动应用商店，而"找不到"在这里是一个正确且无害的答案。
+///
+/// 用**进程**环境那一份 `Path`（而不是持久环境）：CreateProcess 用的就是它，
+/// 所以"这个命令敲得出来吗"的答案来自它。
+pub(crate) fn find_on_path(ctx: &DetectContext<'_>, name: &str) -> Option<PathBuf> {
+    let path = ctx.process_var("Path")?;
+    let wanted = name.to_ascii_lowercase();
+
+    for dir in path.split(';').map(str::trim).filter(|d| !d.is_empty()) {
+        let dir_path = Path::new(dir);
+        for entry in ctx.fs.list_dir(dir_path) {
+            if entry.is_dir || entry.reparse.is_app_exec_alias() {
+                continue;
+            }
+            let found = entry.name.to_ascii_lowercase();
+            let matches = found == wanted
+                || (!wanted.contains('.')
+                    && PATH_EXTENSIONS
+                        .iter()
+                        .any(|extension| found == format!("{wanted}.{extension}")));
+            if matches {
+                return Some(dir_path.join(&entry.name));
+            }
+        }
+    }
+    None
+}
+
+/// 一个路径里有没有"像版本号"的段（决策 173 的第三支用的）。
+///
+/// 判据 = 段里**去掉开头的 `v` 之后**只剩数字与点，而且以数字开头：
+/// `v24` / `v24.19.0` / `3.12` / `24.19.0` / `312` 都算，
+/// 而 `Python312` / `nvm4w` / `current` / `C:` 都不算（带字母的段是**名字**，不是版本）。
+///
+/// **注意**：`crates/core/tests/capture_globals_configs.rs` 里那份独立实现把
+/// "点分"那一路写成了 `lower.split('.')`（带着 `v`），于是 `v24.19.0` 在它那里是
+/// **假** —— 那与决策 173 的原文（"`v` + 数字，或纯数字点分"）不符，已报给 lead 与
+/// `pathdiff-core`。产品这一侧按决策原文实现：`v24.19.0` 是版本段。
+pub(crate) fn has_version_segment(path: &str) -> bool {
+    path.split(['\\', '/']).any(version_like)
+}
+
+fn version_like(segment: &str) -> bool {
+    let lower = segment.to_ascii_lowercase();
+    let body = lower.strip_prefix('v').unwrap_or(&lower);
+    !body.is_empty()
+        && body.starts_with(|c: char| c.is_ascii_digit())
+        && body.chars().all(|c| c.is_ascii_digit() || c == '.')
+}
 
 /// 最多展开几轮。
 ///

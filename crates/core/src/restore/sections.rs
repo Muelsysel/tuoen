@@ -36,7 +36,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
-use tuoen_platform::{DirEntryFacts, EnvScope, FileFacts, FileSystem};
+use tuoen_platform::{DirEntryFacts, EnvScope, FileFacts, FileSystem, ReadOutcome};
 
 use crate::capture::{EnvFile, PathBudgetRow, PathFile, SkippedFile, ToolRow, ToolsFile, WslFile};
 use crate::pathdiff::{self, DiffClass, PathDiffOptions, PathDiffRow, Selection};
@@ -252,6 +252,12 @@ impl FileSystem for NoDisk {
 
     fn list_dir(&self, _: &Path) -> Vec<DirEntryFacts> {
         Vec::new()
+    }
+
+    /// 这台"磁盘"上什么都不存在，所以读任何东西都是 [`ReadOutcome::NotFound`] ——
+    /// 不是 `Unreadable`：它的语义是"**没有**磁盘"，不是"有磁盘但读不了"。
+    fn read(&self, _: &Path, _: u64) -> ReadOutcome {
+        ReadOutcome::NotFound
     }
 }
 

@@ -22,8 +22,8 @@ use std::collections::BTreeMap;
 
 use serde::Serialize;
 use tuoen_core::capture::{
-    CaptureBundle, CaptureError, CaptureOptions, EnvFile, Existence, PathFile, SkipEntry,
-    ToolsFile, WslFile, capture, write_bundle,
+    CaptureBundle, CaptureError, CaptureOptions, ConfigsFile, EnvFile, Existence, GlobalsFile,
+    PathFile, SkipEntry, ToolsFile, WslFile, capture, write_bundle,
 };
 use tuoen_platform::EnvScope;
 
@@ -150,6 +150,10 @@ pub struct CaptureView {
     pub env: Option<EnvCounts>,
     /// WSL。`null` = 这次没捕获 `wsl`。
     pub wsl: Option<WslCounts>,
+    /// 全局包清单。`null` = 这次没捕获 `globals`。
+    pub globals: Option<GlobalsCounts>,
+    /// 配置文件清单。`null` = 这次没捕获 `configs`。
+    pub configs: Option<ConfigsCounts>,
     /// 跳过清单。**`null` 与 `[]` 是两件事**：前者是"这次没扫环境变量，
     /// 「跳过了什么」无从谈起"，后者是"扫了，一条都没跳过"。
     pub skipped: Option<Vec<SkippedView>>,
@@ -174,6 +178,8 @@ impl CaptureView {
             path: bundle.path.as_ref().map(PathCounts::from),
             env: bundle.env.as_ref().map(EnvCounts::from),
             wsl: bundle.wsl.as_ref().map(WslCounts::from),
+            globals: bundle.globals.as_ref().map(GlobalsCounts::from),
+            configs: bundle.configs.as_ref().map(ConfigsCounts::from),
             skipped: bundle
                 .skipped
                 .as_ref()
@@ -370,6 +376,140 @@ impl From<&WslFile> for WslCounts {
     }
 }
 
+/// `globals.toml` 的计数（决策 167–175）。
+///
+/// # 为什么"几个包"这个数字必须来自工具自己的回答
+///
+/// 自己走 `<prefix>\node_modules` 也能数出一个数字，但**本机实测它只数到 5 个，
+/// 而工具说 7 个**（少掉的是 scope 目录）。那个假数字在迁移时的表现是
+/// "新机器上少装了两个包"，没有人会察觉 —— 所以这份计数里没有"我们自己数的包"。
+#[derive(Debug, Serialize)]
+pub struct GlobalsCounts {
+    /// 有几个工具回答了（一行一个工具）。**枚举失败的工具也算**：
+    /// 失败的是"问到几个包"，不是"有没有这个工具"（决策 175）。
+    pub tools: usize,
+    /// 包总数（各行的 `packages` 相加）。
+    pub packages: usize,
+    /// 每个工具一行，**按工具名升序**（顺序稳定才能比逐字节）。
+    #[serde(rename = "byTool")]
+    pub by_tool: Vec<GlobalsRow>,
+    /// 枚举失败的行（工具名 + 稳定 slug）。
+    #[serde(rename = "enumerateErrors")]
+    pub enumerate_errors: Vec<EnumerateFailure>,
+    /// 全局前缀落在**按版本隔离**目录里的行数（决策 173 的那四支判据）。
+    ///
+    /// 它值得一个数字：切一个 Node 版本会**静默隐藏**这些包 ——
+    /// "清单是齐的"这句话在那个前提下不成立。
+    #[serde(rename = "insideVersionDir")]
+    pub inside_version_dir: usize,
+}
+
+/// 一个工具的包数（`globals.toml` 的一行）。
+#[derive(Debug, Serialize)]
+pub struct GlobalsRow {
+    /// 工具名（稳定 slug：`npm` / `pip`）。
+    pub tool: String,
+    /// 运行时版本，**原样**（`v24.19.0` / `3.12` / `unknown`）。
+    #[serde(rename = "toolVersion")]
+    pub tool_version: String,
+    /// 这个工具答了几个包。
+    pub packages: usize,
+}
+
+/// 一个枚举失败的工具。`error` 是稳定 slug（`command-failed` / `timed-out` /
+/// `bad-json` / `unsupported-output`）。
+#[derive(Debug, Serialize)]
+pub struct EnumerateFailure {
+    /// 哪个工具。
+    pub tool: String,
+    /// 失败的原因 slug。
+    pub error: String,
+}
+
+impl From<&GlobalsFile> for GlobalsCounts {
+    fn from(file: &GlobalsFile) -> Self {
+        Self {
+            tools: file.global.len(),
+            packages: file.global.iter().map(|row| row.packages.len()).sum(),
+            by_tool: file
+                .global
+                .iter()
+                .map(|row| GlobalsRow {
+                    tool: row.tool.clone(),
+                    tool_version: row.tool_version.clone(),
+                    packages: row.packages.len(),
+                })
+                .collect(),
+            enumerate_errors: file
+                .global
+                .iter()
+                .filter_map(|row| {
+                    row.enumerate_error.as_ref().map(|error| EnumerateFailure {
+                        tool: row.tool.clone(),
+                        error: error.clone(),
+                    })
+                })
+                .collect(),
+            inside_version_dir: file
+                .global
+                .iter()
+                .filter(|row| row.prefix_inside_version_dir == Some(true))
+                .count(),
+        }
+    }
+}
+
+/// `configs.toml` 的计数（决策 176–184）。
+#[derive(Debug, Serialize)]
+pub struct ConfigsCounts {
+    /// 候选总数（配置文件 + JetBrains 产品目录的标记行）。
+    pub entries: usize,
+    /// 读到了、算出了哈希的条数。
+    pub captured: usize,
+    /// 没捕获的条数。**每一条都在 `skipped.toml` 里**，理由具体（决策 179）。
+    pub skipped: usize,
+    /// 按 `kind` 分组，**按 slug 升序**。
+    #[serde(rename = "byKind")]
+    pub by_kind: Vec<KindCount>,
+    /// Git 身份来自哪一层（`system` / `global` / `missing` / `unknown`）。
+    ///
+    /// **`missing` 与 `unknown` 是两件事**（决策 183）：前者是"问了，两层都没有
+    /// 身份"，后者是"我们**问不了**"（这台机器上没有可用的 `git`）。整张表缺席
+    /// 会让"没问"与"没装 git"长得一样，所以它是 `Option` 而不是空串。
+    #[serde(rename = "gitIdentitySource", skip_serializing_if = "Option::is_none")]
+    pub git_identity_source: Option<String>,
+}
+
+/// 一个 `kind` 的计数。
+#[derive(Debug, Serialize)]
+pub struct KindCount {
+    /// 稳定 slug（`git` / `npm` / `maven` / `docker` / `ssh` / `wsl` / `vscode` /
+    /// `jetbrains`），**不本地化**。
+    pub kind: String,
+    /// 这个类别有几条。
+    pub count: usize,
+}
+
+impl From<&ConfigsFile> for ConfigsCounts {
+    fn from(file: &ConfigsFile) -> Self {
+        // `BTreeMap`：插入顺序不影响输出顺序，于是 `--json` 逐字节稳定。
+        let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+        for row in &file.config {
+            *counts.entry(row.kind.clone()).or_default() += 1;
+        }
+        Self {
+            entries: file.config.len(),
+            captured: file.config.iter().filter(|row| row.captured).count(),
+            skipped: file.config.iter().filter(|row| !row.captured).count(),
+            by_kind: counts
+                .into_iter()
+                .map(|(kind, count)| KindCount { kind, count })
+                .collect(),
+            git_identity_source: file.git.as_ref().map(|git| git.identity_source.clone()),
+        }
+    }
+}
+
 /// 一条跳过项。
 ///
 /// **它是"我们看见了、但故意没写"的唯一出口。** 这里只有名字、位置与原因，
@@ -377,7 +517,7 @@ impl From<&WslFile> for WslCounts {
 /// `files.rs` 的 `SkippedFile` 文档）。
 #[derive(Debug, Serialize)]
 pub struct SkippedView {
-    /// 属于哪个 section（`env` / 未来的 `configs`）。
+    /// 属于哪个 section（`env` / `configs`）。
     pub section: String,
     /// 在哪个作用域里看到的（环境变量用）。文件类的跳过项是 `null`。
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -437,6 +577,8 @@ pub fn print_human(view: &CaptureView, no_version: bool) {
     print_tools_section(view.tools.as_ref());
     print_env_section(view.env.as_ref());
     print_wsl_section(view.wsl.as_ref());
+    print_globals_section(view.globals.as_ref());
+    print_configs_section(view.configs.as_ref());
     print_skipped_section(view.skipped.as_deref());
 
     println!("（本次**只读**：没有写 `PATH`、没有写注册表、没有动任何工具。）");
@@ -551,6 +693,103 @@ fn print_wsl_section(wsl: Option<&WslCounts>) {
     println!();
 }
 
+/// `globals.toml` 那一段。
+///
+/// 三句话是这个 section 的全部价值：**有几个包**、**它们挂在哪个运行时版本下**、
+/// **哪个工具没答上来**。第三句最容易被省掉 —— 省掉之后"清单是齐的"就是一句
+/// 无法验证的话（决策 175 要的正是"行照样写出去，失败照样说出来"）。
+fn print_globals_section(globals: Option<&GlobalsCounts>) {
+    let Some(globals) = globals else {
+        println!("globals.toml —— 这次没捕获 `globals`（`--only` 里没有它）。");
+        println!();
+        return;
+    };
+    println!("globals.toml —— 全局包清单（**只来自工具自己的回答**）");
+    if globals.tools == 0 {
+        println!("  一个工具都没回答 —— `npm` / `pip` 都不在这台机器的 `PATH` 上。");
+        println!("  （这不是错误：找不到可执行文件的工具**不产生行**，决策 171。）");
+        println!();
+        return;
+    }
+    println!("  工具 {} 个，包 {} 个：", globals.tools, globals.packages);
+    for row in &globals.by_tool {
+        println!(
+            "  · {} {} —— {} 个包",
+            row.tool, row.tool_version, row.packages
+        );
+    }
+    if globals.inside_version_dir > 0 {
+        println!(
+            "  ⚠ 其中 {} 个工具的全局前缀落在**按版本隔离**的目录里：换一个运行时版本，",
+            globals.inside_version_dir
+        );
+        println!("    这些包会被**静默隐藏**（它们还装着，只是不在那个版本下）。");
+    }
+    if globals.enumerate_errors.is_empty() {
+        println!("  枚举失败：没有。");
+    } else {
+        for failure in &globals.enumerate_errors {
+            println!(
+                "  ⚠ {} 枚举失败（{}）—— 这一行没有包清单，但工具本身在。",
+                failure.tool, failure.error
+            );
+        }
+    }
+    println!("  （自己走 `<prefix>\\node_modules` 数出来的数字**不算**：实测它少 2 个。）");
+    println!();
+}
+
+/// `configs.toml` 那一段。
+///
+/// 最后一句不是客套：这份清单里**只有路径与哈希**，一个字的内容都没有 ——
+/// 而"跳过的那几条去哪了"必须当场回答（`skipped.toml`），否则
+/// 「配置文件都备份好了」会是一句假话。
+fn print_configs_section(configs: Option<&ConfigsCounts>) {
+    let Some(configs) = configs else {
+        println!("configs.toml —— 这次没捕获 `configs`（`--only` 里没有它）。");
+        println!();
+        return;
+    };
+    println!("configs.toml —— 配置文件清单（**只有路径与哈希，没有内容**）");
+    println!(
+        "  候选 {} 条：捕获 {} · 跳过 {}",
+        configs.entries, configs.captured, configs.skipped
+    );
+    if configs.by_kind.is_empty() {
+        println!("  （一个候选文件都没找到 —— 这台机器上这些配置文件都不在默认位置。）");
+    } else {
+        let by_kind = configs
+            .by_kind
+            .iter()
+            .map(|row| format!("{} {}", row.kind, row.count))
+            .collect::<Vec<_>>()
+            .join(" · ");
+        println!("  按类别：{by_kind}");
+    }
+    match configs.git_identity_source.as_deref() {
+        // 决策 183：**跨层级读**。只看 `~/.gitconfig` 会丢掉整个身份
+        // （本机两层都没有身份，而系统级有 11 个键）。
+        Some("system") => println!("  git 身份：来自**系统级** gitconfig。"),
+        Some("global") => println!("  git 身份：来自**全局级** gitconfig。"),
+        Some("missing") => {
+            println!("  git 身份：两层都读了，**都没有** `user.name` / `user.email`。")
+        }
+        Some("unknown") => {
+            println!("  git 身份：**问不到** —— 这台机器上没有可用的 `git`（不是「没有身份」）。")
+        }
+        Some(other) => println!("  git 身份：{other}（这个取值我没见过，请报告）。"),
+        None => println!("  git 身份：这次没有问（没有 `git` 那张表）。"),
+    }
+    if configs.skipped > 0 {
+        println!(
+            "  跳过的那 {} 条在 `skipped.toml` 里，逐条带原因（含形似凭据的文件）。",
+            configs.skipped
+        );
+    }
+    println!("  （快照里**没有**任何配置文件的正文 —— 这是设计：`tuoen.d/` 要进仓库。）");
+    println!();
+}
+
 /// `skipped.toml` 那一段。**三种情形三句不同的话**（见本函数的 `match`）。
 fn print_skipped_section(skipped: Option<&[SkippedView]>) {
     println!("skipped.toml —— 看见了但**故意没有写进快照**的东西");
@@ -558,7 +797,10 @@ fn print_skipped_section(skipped: Option<&[SkippedView]>) {
         // `None` 与"零条"必须分开说：前者是"没扫过"，后者是"扫了，没有东西被跳过"。
         // 混成一句会让"这份快照是完整的"变成一句无法验证的话。
         None => {
-            println!("  这次没有扫环境变量（`--only` 里没有 `env`），所以**没有跳过清单** ——");
+            println!(
+                "  这次既没有扫环境变量、也没有扫配置文件（`--only` 里没有 `env` 与 `configs`），\
+                 所以**没有跳过清单** ——"
+            );
             println!("  「跳过了什么」这句话只在真的扫过之后才有意义。");
         }
         Some([]) => println!("  没有跳过任何东西 —— 扫到的都写进去了。"),
@@ -617,6 +859,8 @@ mod tests {
             path: Some(PathFile::new("2026-10-02T12:00:00Z", a_budget())),
             env: Some(EnvFile::new("2026-10-02T12:00:00Z")),
             wsl: Some(WslFile::new("2026-10-02T12:00:00Z")),
+            globals: None,
+            configs: None,
             skipped: None,
         }
     }
@@ -743,6 +987,160 @@ mod tests {
             by_scope,
             vec![("machine", 1), ("user", 1), ("process-only", 0)],
             "作用域的顺序固定，0 也要印出来"
+        );
+    }
+
+    /// 一个工具一行，包总数是**各行相加**，失败的行照样算一行（决策 175）。
+    fn a_globals() -> GlobalsFile {
+        let mut file = GlobalsFile::new("2026-10-02T12:00:00Z");
+        file.global.push(tuoen_core::capture::GlobalRow {
+            tool: "npm".to_owned(),
+            tool_version: "v24.19.0".to_owned(),
+            prefix: Some(r"C:\nvm4w\nodejs".to_owned()),
+            prefix_inside_version_dir: Some(true),
+            packages: vec![
+                tuoen_core::capture::GlobalPackage {
+                    name: "@deepseek-ai/dsh".to_owned(),
+                    version: "1.2.3".to_owned(),
+                },
+                tuoen_core::capture::GlobalPackage {
+                    name: "typescript".to_owned(),
+                    version: "5.6.3".to_owned(),
+                },
+            ],
+            enumerate_error: None,
+        });
+        file.global.push(tuoen_core::capture::GlobalRow {
+            tool: "pip".to_owned(),
+            tool_version: "unknown".to_owned(),
+            // 拿不到前缀 → 两个键**一起不出**（决策 174 的同生共死）。
+            prefix: None,
+            prefix_inside_version_dir: None,
+            packages: Vec::new(),
+            enumerate_error: Some("timed-out".to_owned()),
+        });
+        file
+    }
+
+    #[test]
+    fn the_globals_counts_add_up_and_name_the_tool_that_did_not_answer() {
+        let counts = GlobalsCounts::from(&a_globals());
+        assert_eq!(counts.tools, 2, "枚举失败的工具**也算一行**（决策 175）");
+        assert_eq!(counts.packages, 2, "包总数是各行相加");
+        let by_tool: Vec<(&str, usize)> = counts
+            .by_tool
+            .iter()
+            .map(|row| (row.tool.as_str(), row.packages))
+            .collect();
+        assert_eq!(by_tool, vec![("npm", 2), ("pip", 0)]);
+        assert_eq!(
+            counts
+                .enumerate_errors
+                .iter()
+                .map(|row| (row.tool.as_str(), row.error.as_str()))
+                .collect::<Vec<_>>(),
+            vec![("pip", "timed-out")],
+            "没答上来的工具必须被点名 —— 否则「清单是齐的」是一句无法验证的话"
+        );
+        assert_eq!(
+            counts.inside_version_dir, 1,
+            "只有 `Some(true)` 才算：拿不到前缀不是 `false`"
+        );
+
+        // 序列化之后键名是 camelCase，且**新键一个都不许带中文**。
+        let json = serde_json::to_string(&counts).expect("序列化");
+        for key in [
+            "\"tools\":2",
+            "\"packages\":2",
+            "\"byTool\":",
+            "\"toolVersion\":\"v24.19.0\"",
+            "\"enumerateErrors\":[{\"tool\":\"pip\",\"error\":\"timed-out\"}]",
+            "\"insideVersionDir\":1",
+        ] {
+            assert!(json.contains(key), "缺少 {key}：{json}");
+        }
+        assert!(!has_cjk(&json), "{json}");
+    }
+
+    #[test]
+    fn the_configs_counts_split_captured_from_skipped_and_carry_the_git_source() {
+        let mut file = ConfigsFile::new("2026-10-02T12:00:00Z");
+        file.config.push(tuoen_core::capture::ConfigRow {
+            path: r"C:\Users\x\.gitconfig".to_owned(),
+            kind: "git".to_owned(),
+            layer: Some("global".to_owned()),
+            captured: true,
+            bytes: Some(142),
+            content_hash: Some("sha256:abc".to_owned()),
+            skip_reason: None,
+        });
+        // 决策 184 的**唯一例外**：JetBrains 的目录标记行 `captured = true`
+        // 却没有 `bytes` / `content_hash`（目录不是文件）。
+        file.config.push(tuoen_core::capture::ConfigRow {
+            path: r"C:\Users\x\AppData\Roaming\JetBrains\IntelliJIdea2026.1".to_owned(),
+            kind: "jetbrains".to_owned(),
+            layer: None,
+            captured: true,
+            bytes: None,
+            content_hash: None,
+            skip_reason: None,
+        });
+        file.config.push(tuoen_core::capture::ConfigRow {
+            path: r"C:\Users\x\.m2\settings.xml".to_owned(),
+            kind: "maven".to_owned(),
+            layer: None,
+            captured: false,
+            bytes: None,
+            content_hash: None,
+            skip_reason: Some("contains-credential-shape".to_owned()),
+        });
+        file.git = Some(tuoen_core::capture::GitFacts {
+            identity_source: "missing".to_owned(),
+            system_config: Some(r"C:\ProgramData\Git\config".to_owned()),
+            global_config: Some(r"C:\Users\x\.gitconfig".to_owned()),
+            user_name: None,
+            user_email: None,
+        });
+
+        let counts = ConfigsCounts::from(&file);
+        assert_eq!(counts.entries, 3);
+        assert_eq!(counts.captured, 2, "JetBrains 的标记行算捕获");
+        assert_eq!(counts.skipped, 1);
+        let by_kind: Vec<(&str, usize)> = counts
+            .by_kind
+            .iter()
+            .map(|row| (row.kind.as_str(), row.count))
+            .collect();
+        assert_eq!(
+            by_kind,
+            vec![("git", 1), ("jetbrains", 1), ("maven", 1)],
+            "按 slug 升序（顺序稳定才能比逐字节）"
+        );
+        assert_eq!(
+            counts.git_identity_source.as_deref(),
+            Some("missing"),
+            "`missing` 与 `unknown` 是两件事（决策 183）"
+        );
+
+        let json = serde_json::to_string(&counts).expect("序列化");
+        for key in [
+            "\"entries\":3",
+            "\"captured\":2",
+            "\"skipped\":1",
+            "\"byKind\":",
+            "\"gitIdentitySource\":\"missing\"",
+        ] {
+            assert!(json.contains(key), "缺少 {key}：{json}");
+        }
+        assert!(!has_cjk(&json), "{json}");
+
+        // 没有 `[git]` 表时那个键**不出**（`null` 会被读成"git 说没有身份"）。
+        let mut without_git = ConfigsFile::new("2026-10-02T12:00:00Z");
+        without_git.config = file.config;
+        let json = serde_json::to_string(&ConfigsCounts::from(&without_git)).expect("序列化");
+        assert!(
+            !json.contains("gitIdentitySource"),
+            "问不到 git 时这个键必须缺席：{json}"
         );
     }
 }

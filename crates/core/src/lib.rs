@@ -16,8 +16,9 @@ pub mod restore;
 pub mod shim;
 
 pub use capture::{
-    CaptureBundle, CaptureError, CaptureOptions, Existence, SCHEMA_VERSION, Section, SkipEntry,
-    SkippedFile, TargetExistence, capture, render, without_timestamp, write_bundle,
+    CaptureBundle, CaptureError, CaptureOptions, ConfigRow, ConfigsFile, Existence, GitFacts,
+    GlobalPackage, GlobalRow, GlobalsFile, SCHEMA_VERSION, Section, SkipEntry, SkippedFile,
+    TargetExistence, capture, render, without_timestamp, write_bundle,
 };
 pub use detect::{Confidence, DetectedTool, DetectionSource, DetectionSummary};
 pub use doctor::{

@@ -124,6 +124,9 @@ mod tests {
             processes: vec![
                 FixtureProcess {
                     program: r"C:\nvm4w\nodejs\node.exe".to_owned(),
+                    // 空 = 通配：这份固定装置只声明了"这个程序会回答什么"，
+                    // 不限制参数（决策 185 的匹配规则）。
+                    args: Vec::new(),
                     stdout: "v24.19.0\n".to_owned(),
                     stderr: String::new(),
                     exit_code: Some(0),
@@ -131,6 +134,7 @@ mod tests {
                 },
                 FixtureProcess {
                     program: r"C:\Python312\python.exe".to_owned(),
+                    args: Vec::new(),
                     stdout: "Python 3.12.10\n".to_owned(),
                     stderr: String::new(),
                     exit_code: Some(0),
@@ -228,7 +232,9 @@ mod tests {
     #[test]
     fn probing_goes_through_the_injected_runner_only() {
         let fixture = CaptureFixture::build(&machine());
-        let _ = fixture.capture_all("2026-10-02T12:00:00Z");
+        // **只扫 tools**：这条用例数的是 tools 采集器起了几次进程。
+        // （全量捕获会连 `globals` 的枚举与 `configs` 的 git 一起跑，那些不属于这一条。）
+        let _ = fixture.capture(&[crate::capture::Section::Tools], "2026-10-02T12:00:00Z");
         assert_eq!(machine_handle(&fixture).runner.calls().len(), 2);
     }
 }

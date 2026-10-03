@@ -1,0 +1,133 @@
+=== A. capture --only globals（人类输出） ===
+命令：tuoen capture --only globals --out C:\Users\Muelsyse\AppData\Local\Temp\l117-human\g
+退出码：0
+
+写到：C:\Users\Muelsyse\AppData\Local\Temp\l117-human\g
+捕获时间：2026-10-02T23:57:20Z
+文件 2 个（每类内容一个文件 —— 它们各自是一个独立的 diff）：
+  · schema.toml
+  · globals.toml
+  （这些文件是**给人提交进仓库**的：换机器时它们就是你重建环境的依据，
+    所以 `skipped.toml` 也在里面。）
+
+path.toml —— 这次没捕获 `path`（`--only` 里没有它）。
+
+tools.toml —— 这次没捕获 `tools`（`--only` 里没有它）。
+
+env.toml —— 这次没捕获 `env`（`--only` 里没有它）。
+
+wsl.toml —— 这次没捕获 `wsl`（`--only` 里没有它）。
+
+globals.toml —— 全局包清单（**只来自工具自己的回答**）
+  工具 2 个，包 10 个：
+  · npm v24.19.0 —— 7 个包
+  · pip 3.12 —— 3 个包
+  ⚠ 其中 1 个工具的全局前缀落在**按版本隔离**的目录里：换一个运行时版本，
+    这些包会被**静默隐藏**（它们还装着，只是不在那个版本下）。
+  枚举失败：没有。
+  （自己走 `<prefix>\node_modules` 数出来的数字**不算**：实测它少 2 个。）
+
+configs.toml —— 这次没捕获 `configs`（`--only` 里没有它）。
+
+skipped.toml —— 看见了但**故意没有写进快照**的东西
+  这次既没有扫环境变量、也没有扫配置文件（`--only` 里没有 `env` 与 `configs`），所以**没有跳过清单** ——
+  「跳过了什么」这句话只在真的扫过之后才有意义。
+
+（本次**只读**：没有写 `PATH`、没有写注册表、没有动任何工具。）
+
+下一步：
+  · 把 `C:\Users\Muelsyse\AppData\Local\Temp\l117-human\g` 提交进仓库 —— 它是可 diff 的，也是将来 `restore` 的输入。
+  · 想知道这台机器哪里是坏的：`tuoen doctor`（那是下一张票，还没实现）。
+
+
+=== B. capture --only configs（人类输出） ===
+命令：tuoen capture --only configs --out C:\Users\Muelsyse\AppData\Local\Temp\l117-human\c
+退出码：0
+
+写到：C:\Users\Muelsyse\AppData\Local\Temp\l117-human\c
+捕获时间：2026-10-02T23:57:23Z
+文件 3 个（每类内容一个文件 —— 它们各自是一个独立的 diff）：
+  · schema.toml
+  · configs.toml
+  · skipped.toml
+  （这些文件是**给人提交进仓库**的：换机器时它们就是你重建环境的依据，
+    所以 `skipped.toml` 也在里面。）
+
+path.toml —— 这次没捕获 `path`（`--only` 里没有它）。
+
+tools.toml —— 这次没捕获 `tools`（`--only` 里没有它）。
+
+env.toml —— 这次没捕获 `env`（`--only` 里没有它）。
+
+wsl.toml —— 这次没捕获 `wsl`（`--only` 里没有它）。
+
+globals.toml —— 这次没捕获 `globals`（`--only` 里没有它）。
+
+configs.toml —— 配置文件清单（**只有路径与哈希，没有内容**）
+  候选 10 条：捕获 5 · 跳过 5
+  按类别：docker 1 · git 2 · jetbrains 4 · maven 1 · npm 1 · ssh 1
+  git 身份：两层都读了，**都没有** `user.name` / `user.email`。
+  跳过的那 5 条在 `skipped.toml` 里，逐条带原因（含形似凭据的文件）。
+  （快照里**没有**任何配置文件的正文 —— 这是设计：`tuoen.d/` 要进仓库。）
+
+skipped.toml —— 看见了但**故意没有写进快照**的东西
+  跳过了 11 条（**它们没有被写进任何文件**）：
+    · C:\Users\Muelsyse\.cache\codex-runtimes（configs / file）—— cache-directory：缓存不是状态：重建它不需要它
+    · C:\Users\Muelsyse\.m2\repository（configs / file）—— cache-directory：缓存不是状态：重建它不需要它
+    · C:\Users\Muelsyse\.m2\settings.xml（configs / file）—— contains-credential-shape：文件内容里有一处键名含 `PASSWORD` 的赋值，值够长、不像路径 —— 无法排除它是凭据，所以没有写进快照
+    · C:\Users\Muelsyse\.ssh\known_hosts（configs / file）—— host-keys-not-captured：known_hosts 记的是内网主机名，快照要提交进仓库
+    · C:\Users\Muelsyse\AppData\Local\npm-cache（configs / file）—— cache-directory：缓存不是状态：重建它不需要它
+    · C:\Users\Muelsyse\AppData\Local\pip\Cache（configs / file）—— cache-directory：缓存不是状态：重建它不需要它
+    · C:\Users\Muelsyse\AppData\Local\pnpm\store（configs / file）—— cache-directory：缓存不是状态：重建它不需要它
+    · C:\Users\Muelsyse\AppData\Local\uv\cache（configs / file）—— cache-directory：缓存不是状态：重建它不需要它
+    · C:\Users\Muelsyse\AppData\Roaming\JetBrains\IntelliJIdea2026.1\c.kdbx（configs / file）—— credential-database：凭据数据库（加密的密码库）不进快照
+    · C:\Users\Muelsyse\AppData\Roaming\JetBrains\IntelliJIdea2026.1\c.pwd（configs / file）—— credential-database：凭据数据库（加密的密码库）不进快照
+    · C:\Users\Muelsyse\AppData\Roaming\JetBrains\IntelliJIdea2026.1\idea.key（configs / file）—— private-key-file：私钥文件不进快照（快照要提交进仓库）
+
+（本次**只读**：没有写 `PATH`、没有写注册表、没有动任何工具。）
+
+下一步：
+  · 把 `C:\Users\Muelsyse\AppData\Local\Temp\l117-human\c` 提交进仓库 —— 它是可 diff 的，也是将来 `restore` 的输入。
+  · 想知道这台机器哪里是坏的：`tuoen doctor`（那是下一张票，还没实现）。
+
+
+=== C. restore <带 globals/configs 的快照>（人类输出） ===
+命令：tuoen restore C:\Users\Muelsyse\AppData\Local\Temp\tuoen-acceptance-L1-17\snapshot-for-restore
+退出码：0
+
+恢复计划 —— 快照：C:\Users\Muelsyse\AppData\Local\Temp\tuoen-acceptance-L1-17\snapshot-for-restore
+模式：只出计划（**什么都没有写**）。要真的做：`tuoen restore C:\Users\Muelsyse\AppData\Local\Temp\tuoen-acceptance-L1-17\snapshot-for-restore --apply`
+
+[tools] 工具 · 无变更
+  行数：extra 0 · installed 27 · missing 0 · third-party 0 · unsupported 0
+
+[path] PATH · 无变更
+  行数：add 0 · caseOnly 0 · fix 24 · keep 25 · move 0 · remove 0
+  当前用户名：Muelsyse（来自进程环境 USERPROFILE）—— 同一份快照在不同用户名下类别会不同
+  说明：fix 类（本机自身的健康问题：重复 / 失效 / 空条目 / 用户名）**默认不选中** —— 要一起应用加 `--with-fix`
+
+[env] 环境变量 · 无变更
+  行数：missing-machine 0 · missing-user 0 · present 32 · secret-skipped 1
+  · [env:ARK_API_KEY] 凭据，跳过 ARK_API_KEY（scope=user）
+
+[wsl] WSL · 无变更
+  行数：extra 0 · missing 0 · path-differs 0 · same 2
+  说明：只报告，**不写**
+
+摘要：4 个 section —— 无变更 4 · 会变更 0 · 需要提权 0 · 需要网络 0 · 不支持 0 · 跳过 0
+这份快照要写的东西：**没有** —— 本机已经和它一致。
+
+注意：这份快照里还有 **globals · configs** —— L1 的 `restore` **不还原**它们（只捕获）。
+  这不是「没看见」：它们的内容在快照里（`globals.toml` / `configs.toml`）。还原它们要跑包管理器自己的解析、或者替用户写配置文件 —— 两件事 L1 都明确不做。
+
+人工待办（3 条）—— **无变更不等于你什么都不用做**：
+  · [第三方版本管理器] nvm4w：由第三方版本管理器 `nvm4w` 管 —— tuoen **不接管**它：改它的符号链接要管理员，而且两个管理器会抢同一个 reparse point。
+    怎么办：用它自己的命令升级（tuoen 不接管）
+  · [第三方版本管理器] uv：由第三方版本管理器 `uv` 管 —— tuoen **不接管**它：改它的符号链接要管理员，而且两个管理器会抢同一个 reparse point。
+    怎么办：用它自己的命令升级（tuoen 不接管）
+  · [凭据要自己重配] env:ARK_API_KEY：变量名里有 `KEY` / `TOKEN` / `SECRET` 这类词，且值够长、不像路径 —— 无法排除它是凭据，所以**它没有进快照**（材料从不进快照）。
+    怎么办：自己把这个凭据重新配一遍
+
+以上是计划，**什么都没有写**。
+
+

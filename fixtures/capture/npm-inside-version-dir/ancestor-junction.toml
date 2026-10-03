@@ -1,0 +1,67 @@
+# 决策 173 的 **② 支单独为真**：prefix 本身是**普通目录**（① 假）、路径里没有版本段
+# （③ 假）、它自己也没有 reparse 目标（④ 假）—— 但它的**祖先** `C:\nvm4w\nodejs`
+# 是一个目录联接（指向 `…\nvm\v24.19.0`），所以"它落在按版本隔离的目录里"仍然成立。
+#
+# 为什么值得单独一份：一个**只看 prefix 自己**的实现在这里会判 false，
+# 而这份机器上除祖先之外没有任何 reparse point。
+#
+# pip 那一行是对照：`C:\Python312` 四支全假 → false。
+
+[env]
+USERPROFILE = 'C:\Users\dev'
+LOCALAPPDATA = 'C:\Users\dev\AppData\Local'
+APPDATA = 'C:\Users\dev\AppData\Roaming'
+Path = 'C:\nvm4w\nodejs;C:\Python312;C:\Windows\System32'
+
+# 祖先：目录联接（① 只对 prefix 自己成立，所以这一条不算 ①，只喂 ②）
+[[paths]]
+path = 'C:\nvm4w\nodejs'
+exists = true
+is_dir = true
+reparse = 'symlink-dir'
+link_target = 'C:\Users\dev\AppData\Local\nvm\v24.19.0'
+
+[[dirs]]
+path = 'C:\nvm4w\nodejs'
+entries = [
+    { path = 'npm.cmd', size = 3421 },
+    { path = 'node.exe', size = 84000000 },
+]
+
+[[dirs]]
+path = 'C:\nvm4w\nodejs\npm-global'
+entries = [{ path = 'package.json', size = 128 }]
+
+[[dirs]]
+path = 'C:\Python312'
+entries = [{ path = 'pip.exe', size = 108456 }]
+
+[[processes]]
+program = 'node.exe'
+args = ['-v']
+stdout = "v24.19.0\n"
+exit_code = 0
+
+[[processes]]
+program = 'cmd.exe'
+args = ['/C', 'npm.cmd', 'config', 'get', 'prefix']
+stdout = "C:\\nvm4w\\nodejs\\npm-global\n"
+exit_code = 0
+
+[[processes]]
+program = 'cmd.exe'
+args = ['/C', 'npm.cmd', 'ls', '-g', '--json', '--depth=0', '--offline']
+stdout = "{\n  \"name\": \"global\",\n  \"dependencies\": {\n    \"@deepseek-ai/dsh\": { \"version\": \"0.4.1\" },\n    \"pnpm\": { \"version\": \"10.15.0\" },\n    \"typescript\": { \"version\": \"5.9.2\" }\n  }\n}\n"
+exit_code = 0
+
+[[processes]]
+program = 'pip.exe'
+args = ['--version']
+stdout = "pip 24.0 from C:\\Python312\\Lib\\site-packages\\pip (python 3.12)\n"
+exit_code = 0
+
+[[processes]]
+program = 'pip.exe'
+args = ['list', '--format=json', '--disable-pip-version-check']
+stdout = "[\n  { \"name\": \"pip\", \"version\": \"24.0\" },\n  { \"name\": \"setuptools\", \"version\": \"75.1.0\" }\n]\n"
+exit_code = 0

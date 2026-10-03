@@ -1,0 +1,55 @@
+# 场景：决策 178 —— **内容级**凭据形状 → 跳过，且材料一个字节都不进快照
+#
+# `.m2/settings.xml` 里的 PAT 是**假**的，但**形状是真的**（GitLab PAT 前缀 + 16 位）。
+# 写法：`glpat\u002D…` —— `\u002D` 是 `-`，于是**文件文本里没有那个前缀的字面量**
+# （GitHub push protection GH013 在本仓库拦过一次这种形状），而**解析出来的值有**。
+# 判据看到的必须是真形状，否则这条用例什么都没测。
+#
+# 决策 178 的原话："一个扫描器，两个调用方" —— 内容级判据复用 `capture::secrets`，
+# 不许写第二个扫描器。这条固定装置是那个扫描器的**内容级**入口。
+#
+# 对照组（都必须**捕获**）：`.gitconfig` / `.npmrc` / `.docker/config.json` ——
+# 真实本机这三份里一个凭据都没有（`auths` 为空、`credsStore: "desktop"`）。
+# 没有对照组的话，"全部跳过"的实现也能过。
+
+[env]
+USERPROFILE = 'C:\Users\dev'
+APPDATA = 'C:\Users\dev\AppData\Roaming'
+LOCALAPPDATA = 'C:\Users\dev\AppData\Local'
+Path = 'C:\Windows\System32;C:\Program Files\Git\cmd'
+
+[[dirs]]
+path = 'C:\Program Files\Git\cmd'
+entries = [{ path = 'git.exe', size = 3527680 }]
+
+[[dirs]]
+path = 'C:\Users\dev'
+entries = [
+    { path = '.gitconfig', size = 73, content = "[credential]\n\thelper = manager\n[http]\n\tproxy = http://proxy.example:8080\n" },
+    { path = '.npmrc', size = 54, content = "allow-scripts=true\nregistry=https://registry.example/\n" },
+]
+
+[[dirs]]
+path = 'C:\Users\dev\.m2'
+entries = [
+    { path = 'settings.xml', size = 479, content = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<settings xmlns=\"http://maven.apache.org/SETTINGS/1.0.0\">\n  <localRepository>C:/Users/dev/.m2/repository</localRepository>\n  <servers>\n    <server>\n      <id>gitlab-internal</id>\n      <configuration>\n        <httpHeaders>\n          <property>\n            <name>Private-Token</name>\n            <value>glpat\u002D0000000000000000</value>\n          </property>\n        </httpHeaders>\n      </configuration>\n    </server>\n  </servers>\n</settings>\n" },
+]
+
+[[dirs]]
+path = 'C:\Users\dev\.docker'
+entries = [
+    { path = 'config.json', size = 82, content = "{\n  \"auths\": {},\n  \"credsStore\": \"desktop\",\n  \"currentContext\": \"desktop-linux\"\n}\n" },
+]
+
+# git 身份：两层都没有身份（与本场景无关，但真实机器就是这样）
+[[processes]]
+program = 'git.exe'
+args = ['config', '--system', '--list', '--show-origin']
+stdout = "file:C:/Program Files/Git/etc/gitconfig\tcore.autocrlf=true\n"
+exit_code = 0
+
+[[processes]]
+program = 'git.exe'
+args = ['config', '--global', '--list', '--show-origin']
+stdout = "file:C:/Users/dev/.gitconfig\tcredential.helper=manager\n"
+exit_code = 0

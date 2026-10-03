@@ -1,0 +1,65 @@
+# 场景：决策 179 —— `unreadable` / `too-large` / `binary` 三种 `skip_reason` 各一条
+#
+# 三条都是**候选清单里存在、但没写进 `configs.toml`** 的东西，所以每一条都必须在
+# 跳过清单里有一条**具体**的理由（决策 179：静默跳过是 bug）：
+#
+#   .gitconfig        读不出来      → `unreadable`
+#                     （固定装置声明它存在、有大小，但**没有 content**：
+#                       假文件系统不肯替我们编内容 —— "读不到"就是读不到）
+#   .m2/settings.xml  超过 256 KiB  → `too-large`
+#                     （`MAX_CONFIG_BYTES = 256 * 1024`；**先看大小、再读**，
+#                       所以它没有 content 也不该被当成 unreadable）
+#   .docker/config.json 二进制      → `binary`
+#                     （内容里有 NUL；`content` 是 String，二进制只能这样表达）
+#
+# 外加一条**必须被捕获**的对照（`.npmrc`）：没有它，"所有文件都跳过"的实现也能过。
+
+[env]
+USERPROFILE = 'C:\Users\dev'
+APPDATA = 'C:\Users\dev\AppData\Roaming'
+LOCALAPPDATA = 'C:\Users\dev\AppData\Local'
+Path = 'C:\Windows\System32;C:\Program Files\Git\cmd'
+
+[[dirs]]
+path = 'C:\Program Files\Git\cmd'
+entries = [{ path = 'git.exe', size = 3527680 }]
+
+[[dirs]]
+path = 'C:\Users\dev'
+entries = [
+    # 读不出来：声明了存在与大小，但没有 content
+    { path = '.gitconfig', size = 142 },
+    # 对照：必须捕获
+    { path = '.npmrc', size = 54, content = "allow-scripts=true\nregistry=https://registry.example/\n" },
+]
+
+[[dirs]]
+path = 'C:\Users\dev\.m2'
+entries = [
+    # 超过上限：`MAX_CONFIG_BYTES = 256 * 1024 = 262144`，这一份是 262145 字节
+    # （最紧的那个边界）。**256 KiB 的填充不是信息**，所以它不进仓库 ——
+    # 内容由 `crates/core/tests/capture_globals_configs.rs` 里的
+    # `with_synthetic_large_content()` 在 Rust 里补成等长的字符串（`size` 就是它的长度）。
+    # 为什么必须有内容：`too-large` 来自 `FileSystem::read` 的**内容长度**，
+    # 只写 `size` 而不写 `content` 会落到 `unreadable`（假文件系统不肯替我们编内容）。
+    { path = 'settings.xml', size = 262145 },
+]
+
+[[dirs]]
+path = 'C:\Users\dev\.docker'
+entries = [
+    # 二进制：内容里有 NUL（`\u0000`）
+    { path = 'config.json', size = 17, content = "{\"auths\":{}}\u0000\u0000\u0000MZ" },
+]
+
+[[processes]]
+program = 'git.exe'
+args = ['config', '--system', '--list', '--show-origin']
+stdout = "file:C:/Program Files/Git/etc/gitconfig\tcore.autocrlf=true\n"
+exit_code = 0
+
+[[processes]]
+program = 'git.exe'
+args = ['config', '--global', '--list', '--show-origin']
+stdout = "file:C:/Users/dev/.gitconfig\tcredential.helper=manager\n"
+exit_code = 0

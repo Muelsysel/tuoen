@@ -23,6 +23,8 @@
 //! * **不调用 `setx`**：1024 字符处静默裁剪 + 永久展开 `%VAR%`。
 //! * **不自动提权**：需要提权的部分只报告。
 
+use std::path::Path;
+
 use tuoen_core::capture::{CaptureError, Section};
 use tuoen_core::pathdiff::{DiffClass, PathDiffOptions, Selection};
 use tuoen_core::restore::{
@@ -30,8 +32,8 @@ use tuoen_core::restore::{
     SectionPlan, SectionStatus, plan,
 };
 use tuoen_platform::{
-    EnvScope, RealFileSystem, RegHive, RegType, RegValue, Registry, USER_ENV_SUBKEY, apply_rewrite,
-    plan_rewrite, write_type_for,
+    EnvScope, FileSystem, RealFileSystem, RegHive, RegType, RegValue, Registry, USER_ENV_SUBKEY,
+    apply_rewrite, plan_rewrite, write_type_for,
 };
 
 use crate::detect_ctx::Backends;
@@ -43,7 +45,7 @@ use crate::path_cmd::PathCliError;
 use crate::path_diff_cmd::{Username, broadcast, capture_local, user_after, username};
 use crate::restore::RestoreArgs;
 use crate::restore_view::{
-    ApplyFailure, ApplyReport, RestoreDataView, SectionOutcome, print_plan_human,
+    ApplyFailure, ApplyReport, RestoreDataView, SectionOutcome, SummaryView, print_plan_human,
 };
 
 /// 装配失败的错误码（与 `doctor` / `path diff` 逐字相同：同一个失败只该有一个名字）。
@@ -52,6 +54,32 @@ const UNWIRED_ROOTS: &str = "unwired-roots";
 /// 平台的 `windows-x64` recipe 面。快照里记的是"哪个平台的哪个版本"，
 /// 而 restore 只在**本机**跑，所以平台是当前这一个。
 const PLATFORM: &str = "windows-x64";
+
+/// 快照里有、而 L1 的 `restore` **不还原**的 section（票据 #17）。
+///
+/// # 判据是"两个枚举对不上的那一半"，不是一张写死的名单
+///
+/// `capture::Section` 回答的是"**快照里有什么**"，`restore::SectionId` 回答的是
+/// "**restore 能做什么**" —— 两个不同的问句，两套枚举（决策 165 与
+/// `restore-core` 的裁定）。于是"我不还原的 section"就是**前者有、后者没有**的那些，
+/// 而第七个 section 出现时这里会自动跟上，不用改一行。
+///
+/// 还要再看一眼磁盘：`Section::ALL` 是"**可能**有哪些"，而这一份快照真的带了它吗 ——
+/// `RestoreBundle::load` 只找它自己那张表（四个 section + `skipped.toml`），
+/// **忽略**不认识的 `.toml`，所以"带了 `globals.toml`"这件事在 core 的类型里看不见。
+/// 这正是决策要的"看见了但不还原"，而不是"没看见"。
+///
+/// 用 `FileSystem::inspect` 而不是 `std::fs`：与 core 读快照走同一条路径，
+/// 行为（不存在的路径不报错）一致。
+fn unrestorable_sections(dir: &Path) -> Vec<String> {
+    let fs = RealFileSystem;
+    Section::ALL
+        .iter()
+        .filter(|section| SectionId::parse(section.as_str()).is_none())
+        .filter(|section| fs.inspect(&dir.join(section.file_name())).exists)
+        .map(|section| section.as_str().to_owned())
+        .collect()
+}
 
 /// 跑 `tuoen restore`。返回退出码。
 pub fn run(args: &RestoreArgs) -> i32 {
@@ -86,11 +114,14 @@ pub fn run(args: &RestoreArgs) -> i32 {
 
     // **纯函数**：计划与真做读的是同一份东西（决策 150）。
     let plan = plan(&target, &local, &options);
+    // 快照里那些"我不还原"的 section（决策 183）—— 它们在 core 的类型里看不见，
+    // 所以必须在计划之外单独看一眼快照目录。
+    let unrestorable = unrestorable_sections(&args.dir);
 
     if !args.apply {
         // 默认形态与 `--dry-run` 走的是**同一条**路径、同一份计划 ——
         // 逐字节相同不是"顺手做到的"，而是因为它们本来就是同一次调用。
-        return finish(args.json, &plan, &who, None);
+        return finish(args.json, &plan, &who, &unrestorable, None);
     }
 
     let report = apply_plan(&backends, &plan, &target, &local, &options);
@@ -99,17 +130,34 @@ pub fn run(args: &RestoreArgs) -> i32 {
     } else {
         exit::SUCCESS
     };
-    finish(args.json, &plan, &who, Some(&report));
+    finish(args.json, &plan, &who, &unrestorable, Some(&report));
     code
 }
 
 /// 计划做好了：输出 + 退出码。两种模式共用，所以"计划"这一段不可能漂移。
-fn finish(json: bool, plan: &RestorePlan, who: &Username, apply: Option<&ApplyReport>) -> i32 {
+fn finish(
+    json: bool,
+    plan: &RestorePlan,
+    who: &Username,
+    unrestorable: &[String],
+    apply: Option<&ApplyReport>,
+) -> i32 {
     if json {
-        let view = RestoreDataView { plan, apply };
+        // 四个顶层键**逐字来自** core 的 `RestorePlan`（引用，不重算）——
+        // 摊开写只是为了在 `summary` 里塞进那个 CLI 侧拥有的 `unrestorable`。
+        let view = RestoreDataView {
+            snapshot: &plan.snapshot,
+            sections: &plan.sections,
+            manual_actions: &plan.manual_actions,
+            summary: SummaryView {
+                summary: &plan.summary,
+                unrestorable: unrestorable.to_vec(),
+            },
+            apply,
+        };
         crate::print_json(&Envelope::ok(command_name(apply.is_some()), &view));
     } else {
-        print_plan_human(plan, who, apply);
+        print_plan_human(plan, who, unrestorable, apply);
     }
     exit::SUCCESS
 }

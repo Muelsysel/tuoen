@@ -31,7 +31,12 @@ tuoen-download = { workspace = true }
 # 不是一条命令）。模板文件名只有一处定义，所以直接引用它 —— 抄一份字符串
 # 会在某次改名后静默变成"把模板当成一条 shim 报出去"。
 tuoen-shim = { workspace = true }
+# 全局包清单（`globals`）要解析**工具自己的 JSON 输出**：决策 168 把命令冻结成
+# `npm ls -g --json` 与 `pip list --format=json`，而决策 175 的 `bad-json` /
+# `unsupported-output` 就是"解析不了 / 形状不认识"。手写一个小 JSON 解析器是
+# "两个实现迟早对同一份输入给出不同答案"的形状（决策 178 的同一条理由），
+# 而 npm 的输出里有转义与嵌套 —— 手写的那个一定是错的。所以 lib 直接依赖 serde_json。
+serde_json.workspace = true
 
 [dev-dependencies]
-serde_json.workspace = true
 tuoen-platform = { path = "../platform", features = ["test-support"] }

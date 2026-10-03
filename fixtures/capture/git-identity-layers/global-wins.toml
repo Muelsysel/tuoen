@@ -1,0 +1,39 @@
+# 场景：决策 183 —— 两层**都有**身份，**全局赢**
+#
+# 这是"只快照 ~/.gitconfig 会丢掉整个 Git 身份"那条理由的反面：两层都有值时，
+# 必须明确谁赢。判据是 system → global 的先后（global 覆盖 system），
+# 所以 user_name / user_email 取的是**全局级**那一对，且 identity_source = "global"。
+#
+# 两层故意给**不同**的值：只报"有一层有身份"的实现在这里分不出来。
+
+[env]
+USERPROFILE = 'C:\Users\dev'
+APPDATA = 'C:\Users\dev\AppData\Roaming'
+LOCALAPPDATA = 'C:\Users\dev\AppData\Local'
+Path = 'C:\Windows\System32;C:\Program Files\Git\cmd'
+
+[[dirs]]
+path = 'C:\Program Files\Git\cmd'
+entries = [{ path = 'git.exe', size = 3527680 }]
+
+[[dirs]]
+path = 'C:\Program Files\Git\etc'
+entries = [{ path = 'gitconfig', size = 80, content = "[core]\n\tautocrlf = true\n[user]\n\tname = Machine Dev\n\temail = dev@machine.example\n" }]
+
+[[dirs]]
+path = 'C:\Users\dev'
+entries = [
+    { path = '.gitconfig', size = 52, content = "[user]\n\tname = Dev Local\n\temail = dev@local.example\n" },
+]
+
+[[processes]]
+program = 'git.exe'
+args = ['config', '--system', '--list', '--show-origin']
+stdout = "file:C:/Program Files/Git/etc/gitconfig\tcore.autocrlf=true\nfile:C:/Program Files/Git/etc/gitconfig\tuser.name=Machine Dev\nfile:C:/Program Files/Git/etc/gitconfig\tuser.email=dev@machine.example\n"
+exit_code = 0
+
+[[processes]]
+program = 'git.exe'
+args = ['config', '--global', '--list', '--show-origin']
+stdout = "file:C:/Users/dev/.gitconfig\tuser.name=Dev Local\nfile:C:/Users/dev/.gitconfig\tuser.email=dev@local.example\n"
+exit_code = 0

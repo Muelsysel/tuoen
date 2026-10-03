@@ -19,8 +19,13 @@
 //!    所以任何"本机 `PATH` 长什么样"的断言都是错的。这里只断言**形状与不变量**：
 //!    文件存在、能解析、结构自洽、两次一样。同理，跳过清单里"恰好有几条"不许断言
 //!    —— 那是开发机的状态，不是被测代码的性质（`AGENTS.md` 规矩五）。
-//! 3. **不启动任何进程**（除了被测的 `tuoen` 自己）。全部用例都带 `--no-version`，
-//!    于是版本探测那一步不会去 spawn 任何工具 —— 与 `detect_contract.rs` 同一条纪律。
+//! 3. **不启动任何真实工具。** `capture` 从 #17 起会**问工具自己**（`npm ls -g` / `pip list`）
+//!    并读配置文件、问 `git` 要身份 —— 于是"不启动进程"这条纪律升级成了：
+//!    **子进程的 `PATH` 与"家"被一起搬进临时树**（见 [`redirected`]）。
+//!    临时 `PATH` 里只有空的 bin 目录与 `System32`，所以真 `npm` / `pip` / `node` / `git`
+//!    一个都问不到，真配置文件一个都读不到。要测"工具答了什么"，就在临时 bin 里放一个
+//!    只 `echo` 一份 canned JSON 的假 `npm.cmd` —— **不是给厂二进制加开关**，
+//!    重定向的是环境，产品代码一行都不用知道。
 //! 4. **`--json` 的成功载荷里不出现中文**（决策 35），且逐字节稳定。两条都有用例，
 //!    而"中文只进人类输出"这条决策的落点是 `skipped[].reason`：它**不进 JSON**。
 //!
@@ -31,14 +36,22 @@
 
 mod common;
 
-use std::process::Output;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
 
 use common::{IsolatedHome, TempDir, json, list_files, stderr, stdout};
 use serde_json::{Value, json as value};
+use tuoen_platform::{EnvBlock, EnvScope, RealEnvBlock, RealFileSystem, RealRegistry};
 
-/// 默认跑一次会产出的六个文件（`list_files` 是排序过的）。
-const ALL_SIX: [&str; 6] = [
+/// 默认跑一次会产出的八个文件（`list_files` 是排序过的）。
+///
+/// 票据 #17 之前是六个：`globals.toml` / `configs.toml` 是决策 165 追加的，
+/// 而"多一个文件也是 bug"这条断言照旧 —— 消费者按文件名读。
+const ALL_EIGHT: [&str; 8] = [
+    "configs.toml",
     "env.toml",
+    "globals.toml",
     "path.toml",
     "schema.toml",
     "skipped.toml",
@@ -49,12 +62,78 @@ const ALL_SIX: [&str; 6] = [
 /// 形似凭据的串。**只断言形状**：断言"某个变量的值不在里面"会让用例依赖开发机。
 const CREDENTIAL_SHAPES: [&str; 3] = ["glpat-", "ghp_", "AKIA"];
 
+/// 一份形似凭据的假 token。
+///
+/// **必须 `concat!` 拼**：`glpat-` 后面直接跟 ≥10 个字符的字面量会被 GitHub 的
+/// push protection 拦下（本仓已经被拦过一次，见 `crates/core/src/capture/secrets.rs`
+/// 的记载）。拼接之后源文件里不存在那个形状，而运行期的字符串是真的。
+const SECRET: &str = concat!("glpat-", "AbCdEfGhIjKlMnOpQrSt");
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 测试基础设施
 // ─────────────────────────────────────────────────────────────────────────────
 
 fn run_capture(home: &IsolatedHome, args: &[&str]) -> Output {
-    home.run(args)
+    let profile = TempDir::new("capture-profile");
+    let bin = TempDir::new("capture-bin");
+    run_capture_in(home, &profile, &bin, args)
+}
+
+/// 在**指定**的临时"家"与临时 `PATH` 下跑一次 `tuoen`。
+///
+/// 需要往临时家里放配置文件、或者往临时 `PATH` 里放假工具（`npm.cmd`）的用例走这一条；
+/// 其余用例走 [`run_capture`]（一个空的家、一条问不到任何工具的 `PATH`）。
+fn run_capture_in(home: &IsolatedHome, profile: &TempDir, bin: &TempDir, args: &[&str]) -> Output {
+    redirected(home, profile, bin)
+        .args(args)
+        .output()
+        .expect("运行 tuoen 应当成功（失败说明二进制没被构建出来）")
+}
+
+/// 把子进程的**"家"与 `PATH`** 一起搬进临时树。
+///
+/// # 为什么这一票非有它不可
+///
+/// `capture` 从 #17 起会做三件"碰真实世界"的事：问 `npm` / `pip` 要全局包清单、
+/// 读家目录下的配置文件、问 `git` 要身份。三条都有真实的代价：
+///
+/// * 真 `npm ls -g` **冷启动实测 12.4 秒**，而且它会写 `~/.npm` 缓存；
+/// * 真配置文件里可能有真凭据（本机的 `.m2/settings.xml` 里就有一个明文 PAT）；
+/// * 真 `git` 会读**开发者自己的**身份。
+///
+/// 所以这一族用例一律走这里：`USERPROFILE` / `HOME` 指到临时树、
+/// `PATH` 只有**空的临时 bin 目录 + `System32`**（于是真 `npm` / `pip` / `node` / `git`
+/// 一个都找不到）、`GIT_CONFIG_*` 关掉系统级并指向临时文件。
+///
+/// # 这不是"给厂二进制加开关"
+///
+/// 重定向的是**子进程的环境**：产品代码一行都不用知道自己在测试里 ——
+/// `AGENTS.md` 规矩四明确禁止的是"给厂二进制留后门开关"，而这里没有。
+/// 判据（"这台机器上有没有 npm"）在测试里因此是**确定的**，不跟着开发机走。
+fn redirected(home: &IsolatedHome, profile: &TempDir, bin: &TempDir) -> Command {
+    let system_root = std::env::var_os("SystemRoot").expect("SystemRoot 必须存在");
+    let mut path = OsString::from(bin.path().as_os_str());
+    path.push(";");
+    path.push(&system_root);
+    path.push("\\System32");
+
+    // git 的配置面也一起关掉：`GIT_CONFIG_NOSYSTEM=1` 让系统级那份不参与，
+    // 另外两个指向临时文件 —— 于是"git 身份从哪一层来"这件事只由我们放的东西决定。
+    let system_config = profile.write("gitconfig-system", "[core]\n\tautocrlf = false\n");
+    let global_config = profile.write(
+        "gitconfig-global",
+        "[user]\n\tname = Tuoen Test\n\temail = test@example.invalid\n",
+    );
+
+    let mut command = home.command();
+    command
+        .env("USERPROFILE", profile.path())
+        .env("HOME", profile.path())
+        .env("PATH", path)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_SYSTEM", system_config)
+        .env("GIT_CONFIG_GLOBAL", global_config);
+    command
 }
 
 /// 一次调用的两路输出，用于断言失败时的可读信息。
@@ -292,7 +371,7 @@ fn assert_no_cjk_strings(value: &Value, path: &str, ours: bool) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[test]
-fn a_default_run_writes_exactly_the_six_promised_files() {
+fn a_default_run_writes_exactly_the_eight_promised_files() {
     let home = IsolatedHome::new("capture-six");
     let out = TempDir::new("capture-six-out");
     let output = run_capture(
@@ -304,14 +383,14 @@ fn a_default_run_writes_exactly_the_six_promised_files() {
     // **多一个文件也是 bug**：消费者（将来的 `restore` / `doctor`）会按文件名读。
     assert_eq!(
         list_files(out.path()),
-        ALL_SIX.to_vec(),
-        "产出的文件集合必须恰好是这六个"
+        ALL_EIGHT.to_vec(),
+        "产出的文件集合必须恰好是这八个"
     );
 
     let text = stdout(&output);
     assert!(contains_cjk(&text), "人类输出要是中文：{text}");
     assert!(text.contains(&out_arg(&out)), "要报出写到哪个目录：{text}");
-    for name in ALL_SIX {
+    for name in ALL_EIGHT {
         assert!(
             text.contains(name),
             "人类输出里必须**逐个列出**写出去的文件，缺 {name}：{text}"
@@ -474,14 +553,21 @@ fn two_runs_in_a_row_differ_only_in_the_timestamp() {
     let out_path = out_arg(&out);
     let args = ["capture", "--out", out_path.as_str(), "--no-version"];
 
-    let first = run_capture(&home, &args);
+    // **两次跑必须用同一个"家"**（票据 #17 之后才需要说这一句）：
+    // `env.toml` 里用户级 `TEMP` / `TMP` 的 `value_expanded` 会把 `%USERPROFILE%`
+    // 展开成字面路径，于是**换一个临时家就等于换了一台机器** ——
+    // 那两次输出不同是对的，而这条用例问的是"同一台机器上跑两次一不一样"。
+    let profile = TempDir::new("capture-idempotent-profile");
+    let bin = TempDir::new("capture-idempotent-bin");
+
+    let first = run_capture_in(&home, &profile, &bin, &args);
     assert_eq!(first.status.code(), Some(0), "{}", describe(&first));
-    let before: Vec<(&str, String)> = ALL_SIX
+    let before: Vec<(&str, String)> = ALL_EIGHT
         .iter()
         .map(|name| (*name, read_file(&out, name)))
         .collect();
 
-    let second = run_capture(&home, &args);
+    let second = run_capture_in(&home, &profile, &bin, &args);
     assert_eq!(second.status.code(), Some(0), "{}", describe(&second));
 
     for (name, first_text) in &before {
@@ -654,11 +740,23 @@ fn no_written_file_contains_anything_that_looks_like_a_credential() {
     // 开发机上有什么环境变量。而"绝不捕获密钥材料、只捕获意图"是这一票的硬规矩，
     // 这条用例就是它在进程边界上的证据 —— 本机环境变量里实测零密钥，
     // 所以它同时是一张"真机上也不会漏"的回归网。
-    for name in ALL_SIX {
+    //
+    // # 为什么放过 `reason` 那几行（票据 #17 补的）
+    //
+    // `skipped.toml` 的 `reason` 是**给人看的中文**，按决策 178 它**刻意**说出形状的
+    // 名字（"值形似 GitLab 个人访问令牌（`glpat-` 前缀）"）—— 那是判据，不是材料，
+    // 用户要靠它知道为什么这个东西没进快照。所以扫的是**机器可读的每一个字节**：
+    // 一句人话里出现形状名不算漏，而它出现在别的任何地方都算。
+    for name in ALL_EIGHT {
         let text = read_file(&out, name);
+        let machine_readable = text
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("reason = "))
+            .collect::<Vec<_>>()
+            .join("\n");
         for shape in CREDENTIAL_SHAPES {
             assert!(
-                !text.contains(shape),
+                !machine_readable.contains(shape),
                 "`{name}` 里出现了形似凭据的串 `{shape}`：\n{text}"
             );
         }
@@ -839,5 +937,647 @@ fn a_write_failure_is_reported_as_partial_without_lying_about_files() {
     assert!(
         data.get("files").is_none(),
         "失败时给不出准确的文件清单 —— 这个键必须缺席，而不是空数组：{data}"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 11. 两个新 section（票据 #17 / 决策 165–184）
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// 一份 canned 的 `npm ls -g --json --depth=0` 输出。
+///
+/// **工具给的顺序是故意反的**（`zeta` 在前、`alpha` 在后）：文件里的顺序必须是
+/// **按 name 排序**的，而"恰好与工具给的顺序相同"会让那条断言在没排序时也通过。
+const NPM_LS_JSON: &str =
+    r#"{"dependencies":{"zeta":{"version":"2.0.0"},"alpha":{"version":"1.0.0"}}}"#;
+
+/// 在临时 `PATH` 里放一个假的 `npm.cmd`：它只 `echo` 一份 canned JSON。
+///
+/// 载荷是**编译期常量**（零插值、零引号），与决策 168 的命令形状同一条理由 ——
+/// 而 `echo` 是 `cmd.exe` 的内建命令：真机实测 `echo "hi"` 原样印出 `"hi"`。
+/// 于是这个文件里的每一个字节都是我们写下的，没有一个来自开发机。
+fn fake_npm(bin: &TempDir) -> PathBuf {
+    let mut body = String::from("@echo off\r\necho ");
+    body.push_str(NPM_LS_JSON);
+    body.push_str("\r\n");
+    bin.write("npm.cmd", &body)
+}
+
+/// 把一份 TOML 切成一条条 `[[表]]`（**它的子表留在同一条里**）。
+///
+/// 自己写而不引 TOML 解析器：理由同 [`sections_of`] —— 一个跟着生产代码变的
+/// 解析器发现不了形状漂移。子表要留着，是因为 `packages` 既可能被渲染成
+/// `[[global.packages]]`、也可能是内联表，而这条断言关心的是**内容与顺序**。
+fn blocks(text: &str, header: &str) -> Vec<String> {
+    let stem = &header[..header.len() - 2]; // `[[global]]` → `[[global`
+    let mut out: Vec<String> = Vec::new();
+    let mut inside = false;
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with(stem) {
+            if trimmed.starts_with(header) {
+                inside = true;
+                out.push(String::new());
+            }
+            // 子表（`[[global.packages]]`）：当前这条继续。
+            continue;
+        }
+        if trimmed.starts_with('[') {
+            // 另一张表（如 `configs.toml` 的 `[git]`）结束了这一条。
+            inside = false;
+            continue;
+        }
+        if inside && let Some(last) = out.last_mut() {
+            last.push_str(line);
+            last.push('\n');
+        }
+    }
+    out
+}
+
+/// 取出文本里所有 `key = "值"` 或 `key = '值'` 的**值**，**不要求它在一行开头**。
+///
+/// 与 [`string_values`] 的差别是刻意的：`packages` 的渲染方式（子表 or 内联表）
+/// 不是这一票的契约，而包名与顺序是 —— 所以判据必须两种都认。
+/// 另外它要求键是**独立的**：否则找 `version` 会命中 `tool_version`。
+///
+/// # 两种引号都必须认（这条是真机跑出来的）
+///
+/// `toml` crate 对**含反斜杠**的字符串一律渲染成**字面量字符串**（单引号、不转义）：
+/// 同一个 `configs.toml` 里，`.m2\settings.xml` 那条是 `path = '…\…'`，
+/// 而 git 系统级那条（正斜杠）是 `path = "C:/Program Files/Git/etc/gitconfig"`。
+/// 只认双引号的第一版因此**漏掉了整条被跳过的行**，报出来的是"产品没看见这个文件" ——
+/// 一个由测试助手自己造出来的假结论（`AGENTS.md` 里"假的差异与代码错了长得一模一样"）。
+fn all_string_values(text: &str, key: &str) -> Vec<String> {
+    let needle = format!("{key} = ");
+    let mut out = Vec::new();
+    let mut rest = text;
+    while let Some(at) = rest.find(&needle) {
+        let standalone = match rest[..at].chars().next_back() {
+            None => true,
+            Some(previous) => !(previous.is_alphanumeric() || previous == '_'),
+        };
+        let after = &rest[at + needle.len()..];
+        if !standalone {
+            rest = after;
+            continue;
+        }
+        // 不是字符串（数字 / 布尔）就跳过这一个键，继续往后找。
+        let Some(quote) = after.chars().next().filter(|c| *c == '"' || *c == '\'') else {
+            rest = after;
+            continue;
+        };
+        // 两种引号都是 1 字节，所以下面按字节切。
+        let body = &after[1..];
+        match body.find(quote) {
+            Some(close) => {
+                out.push(body[..close].to_owned());
+                rest = &body[close + 1..];
+            }
+            None => break,
+        }
+    }
+    out
+}
+
+/// 一份"文件指纹"：读字节、算一个稳定的散列，**绝不打印内容**。
+///
+/// 它只用来回答一个问题：跑前跑后**逐字节相同**吗。用本地散列而不是引一个
+/// sha2 依赖 —— 这条断言要的是"变了没有"，不是密码学强度。
+fn fingerprint(path: &Path) -> Option<u64> {
+    let bytes = std::fs::read(path).ok()?;
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in bytes {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    Some(hash)
+}
+
+/// 真实注册表里两个作用域的 `Path`（类型 + 原始字节）。**只读。**
+///
+/// 这一票的每一处"没碰过真实机器"的断言都以它为准：`capture` 是只读命令，
+/// 而"声称没碰 ≠ 证明没碰"（`AGENTS.md` 规矩四）。
+fn registry_snapshot() -> (String, String) {
+    let block = RealEnvBlock::new(RealRegistry, RealFileSystem);
+    let read = |scope| match block.get(scope, "Path") {
+        Some(var) => format!("{:?}|{}", var.reg_type, var.value_raw),
+        None => "<没有这个值>".to_owned(),
+    };
+    (read(EnvScope::User), read(EnvScope::Machine))
+}
+
+/// `--only globals`：清单**只来自工具自己的回答**。
+#[test]
+fn only_globals_asks_the_tool_and_the_packages_are_sorted_by_name() {
+    let home = IsolatedHome::new("capture-globals");
+    let out = TempDir::new("capture-globals-out");
+    let profile = TempDir::new("capture-globals-profile");
+    let bin = TempDir::new("capture-globals-bin");
+    fake_npm(&bin);
+
+    let out_path = out_arg(&out);
+    // **这一条不带 `--no-version`**（本文件里唯一一条）：`tool_version` 的判据是
+    // 运行时探针（npm → `node -v`），带上 `--no-version` 的话它会变成 `unknown`
+    // 是因为**我们没问**，而这条断言要问的是"**问了，但答不上来**"——
+    // 那才是决策 172 的正路（键永远在，值可以答不上来，不是省略）。
+    let args = [
+        "capture",
+        "--only",
+        "globals",
+        "--out",
+        out_path.as_str(),
+        "--json",
+    ];
+    let output = run_capture_in(&home, &profile, &bin, &args);
+    assert_eq!(output.status.code(), Some(0), "{}", describe(&output));
+
+    // `--only` 是**格式层面**的：只该产出这两个文件。
+    assert_eq!(
+        list_files(out.path()),
+        vec!["globals.toml".to_owned(), "schema.toml".to_owned()],
+        "`--only globals` 只该产出这两个文件"
+    );
+
+    let globals = read_file(&out, "globals.toml");
+    let rows = blocks(&globals, "[[global]]");
+    assert_eq!(
+        rows.len(),
+        1,
+        "假 npm 答了一个工具，就该有一行：\n{globals}"
+    );
+    let row = &rows[0];
+    assert!(row.contains(r#"tool = "npm""#), "{row}");
+    // 临时 `PATH` 里**没有真 `node.exe`** → 运行时版本问了、答不上来 → `unknown`。
+    assert!(row.contains(r#"tool_version = "unknown""#), "{row}");
+    assert!(!row.contains("enumerate_error"), "这一行是成功的：\n{row}");
+    assert_eq!(
+        all_string_values(row, "name"),
+        ["alpha", "zeta"],
+        "包必须**按 name 排序**（工具给的顺序是反的）：\n{row}"
+    );
+    assert!(
+        row.contains("\"1.0.0\"") && row.contains("\"2.0.0\""),
+        "版本要原样带出来：\n{row}"
+    );
+
+    let envelope = json(&output);
+    let data = envelope.data.expect("成功载荷");
+    assert_eq!(data["globals"]["tools"].as_u64(), Some(1), "{data}");
+    assert_eq!(data["globals"]["packages"].as_u64(), Some(2), "{data}");
+    assert_eq!(data["globals"]["byTool"][0]["tool"].as_str(), Some("npm"));
+    assert_eq!(
+        data["globals"]["byTool"][0]["toolVersion"].as_str(),
+        Some("unknown")
+    );
+    assert_eq!(data["globals"]["enumerateErrors"], value!([]));
+    assert!(
+        data["globals"]["insideVersionDir"].as_u64().is_some(),
+        "「前缀落在按版本隔离的目录里」这件事要有数字：{data}"
+    );
+    // 成功载荷里不许有中文（决策 35）—— 新加的两个键也不例外。
+    assert_no_cjk_strings(&data, "$", true);
+
+    // 人类输出：文件、工具名、以及"版本答不上来"都要出现 ——
+    // 报告与磁盘上那份文件不许说两个真相。
+    let human = run_capture_in(
+        &home,
+        &profile,
+        &bin,
+        &[
+            "capture",
+            "--only",
+            "globals",
+            "--out",
+            out_arg(&out).as_str(),
+        ],
+    );
+    assert_eq!(human.status.code(), Some(0), "{}", describe(&human));
+    let text = stdout(&human);
+    assert!(text.contains("globals.toml"), "{text}");
+    assert!(text.contains("npm"), "{text}");
+    assert!(text.contains("unknown"), "{text}");
+    assert!(
+        text.contains("工具自己的回答"),
+        "要说清这个清单是从哪来的：{text}"
+    );
+}
+
+/// 工具不在 → **不产生行**，而这不是错误（决策 171）。
+#[test]
+fn a_tool_that_is_not_there_produces_no_row_and_is_not_an_error() {
+    let home = IsolatedHome::new("capture-globals-none");
+    let out = TempDir::new("capture-globals-none-out");
+    let profile = TempDir::new("capture-globals-none-profile");
+    // 临时 `PATH` 里**没有**假 npm：于是 `npm` / `pip` 一个都问不到。
+    let bin = TempDir::new("capture-globals-none-bin");
+
+    let output = run_capture_in(
+        &home,
+        &profile,
+        &bin,
+        &[
+            "capture",
+            "--only",
+            "globals",
+            "--out",
+            out_arg(&out).as_str(),
+            "--no-version",
+            "--json",
+        ],
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "问不到工具**不是**错误：{}",
+        describe(&output)
+    );
+
+    // 文件照样写出去（表头在），只是没有行 —— 这与"这个 section 没捕获"是两件事。
+    let globals = read_file(&out, "globals.toml");
+    assert!(globals.contains("schema_version"), "{globals}");
+    assert!(
+        !globals.contains("[[global]]"),
+        "一个工具都没答上来，就不该有行：\n{globals}"
+    );
+
+    let envelope = json(&output);
+    let data = envelope.data.expect("成功载荷");
+    assert_eq!(data["globals"]["tools"].as_u64(), Some(0), "{data}");
+    assert_eq!(data["globals"]["packages"].as_u64(), Some(0), "{data}");
+    assert_eq!(data["globals"]["byTool"], value!([]));
+
+    let human = run_capture_in(
+        &home,
+        &profile,
+        &bin,
+        &[
+            "capture",
+            "--only",
+            "globals",
+            "--out",
+            out_arg(&out).as_str(),
+            "--no-version",
+        ],
+    );
+    let text = stdout(&human);
+    assert!(
+        text.contains("一个工具都没回答"),
+        "「问不到」与「没有包」必须分开说：{text}"
+    );
+}
+
+/// `--only configs`：形似凭据的文件**被跳过、理由具体、内容不进任何输出**。
+#[test]
+fn only_configs_skips_the_file_with_a_credential_shape_and_never_copies_it() {
+    let home = IsolatedHome::new("capture-configs");
+    let out = TempDir::new("capture-configs-out");
+    let profile = TempDir::new("capture-configs-profile");
+    let bin = TempDir::new("capture-configs-bin");
+
+    // 临时家目录里的两份配置文件：一份干净、一份带形似凭据的串。
+    // **它们的内容是我们写的**，所以"哪一份被跳过"这件事不依赖开发机。
+    profile.write(
+        ".gitconfig",
+        "[user]\n\tname = Tuoen Test\n\temail = test@example.invalid\n",
+    );
+    let settings = format!(
+        "<settings><servers><server><id>tuoen</id>\
+         <configuration><httpHeaders><property><name>Private-Token</name>\
+         <value>{SECRET}</value></property></httpHeaders></configuration>\
+         </server></servers></settings>"
+    );
+    profile.write(".m2/settings.xml", &settings);
+
+    // 真实机器的判据：跑前跑后必须逐字相同。**读的是字节，不是内容** ——
+    // 任何断言消息里都不带文件内容。
+    let real_profile = std::env::var_os("USERPROFILE").map(PathBuf::from);
+    let real_files: Vec<(PathBuf, Option<u64>)> = real_profile
+        .iter()
+        .flat_map(|root| {
+            [
+                root.join(".gitconfig"),
+                root.join(".m2").join("settings.xml"),
+            ]
+            .map(|path| {
+                let hash = fingerprint(&path);
+                (path, hash)
+            })
+        })
+        .collect();
+    let registry_before = registry_snapshot();
+
+    let out_path = out_arg(&out);
+    let args = [
+        "capture",
+        "--only",
+        "configs",
+        "--out",
+        out_path.as_str(),
+        "--no-version",
+        "--json",
+    ];
+    let output = run_capture_in(&home, &profile, &bin, &args);
+    assert_eq!(output.status.code(), Some(0), "{}", describe(&output));
+
+    assert_eq!(
+        list_files(out.path()),
+        vec![
+            "configs.toml".to_owned(),
+            "schema.toml".to_owned(),
+            "skipped.toml".to_owned(),
+        ],
+        "`--only configs` 只该产出这三个文件（扫了 configs → 跳过清单必须有）"
+    );
+
+    let configs = read_file(&out, "configs.toml");
+    let rows = blocks(&configs, "[[config]]");
+    let settings_row = rows
+        .iter()
+        .find(|row| {
+            all_string_values(row, "path")
+                .iter()
+                .any(|p| p.ends_with("settings.xml"))
+        })
+        .unwrap_or_else(|| {
+            panic!("`settings.xml` 必须在候选清单里（看见了才谈得上跳过）：\n{configs}")
+        });
+    assert!(
+        settings_row.contains("captured = false"),
+        "带凭据形状的文件必须被跳过：\n{settings_row}"
+    );
+    let reason = all_string_values(settings_row, "skip_reason");
+    assert_eq!(reason.len(), 1, "跳过必须给一个理由：\n{settings_row}");
+    assert!(
+        is_slug(&reason[0]),
+        "理由是稳定 slug，不是中文句子：{:?}",
+        reason[0]
+    );
+    assert!(
+        !settings_row.contains("content_hash") && !settings_row.contains("bytes ="),
+        "被跳过的文件不许有哈希与字节数（那等于说'读过了'）：\n{settings_row}"
+    );
+
+    // 干净的那份：读到了、算出了哈希（决策 184 的两个互斥子集）。
+    if let Some(git_row) = rows.iter().find(|row| {
+        all_string_values(row, "path")
+            .iter()
+            .any(|p| p.ends_with(".gitconfig"))
+    }) {
+        assert!(
+            git_row.contains("captured = true"),
+            "干净的 `.gitconfig` 必须被捕获：\n{git_row}"
+        );
+        let hash = all_string_values(git_row, "content_hash");
+        assert_eq!(hash.len(), 1, "捕获了就要有哈希：\n{git_row}");
+        assert!(hash[0].starts_with("sha256:"), "{:?}", hash[0]);
+    }
+
+    // **材料一个字节都不许进任何输出**（含 `--json` 整份载荷与跳过清单）。
+    //
+    // # 「材料」不等于「形状的名字」（这条是跑真机跑出来的）
+    //
+    // 第一版断言的是"任何输出里都不许出现 `glpat-`"，于是它在**产品做对了**的时候红了：
+    // `skipped.toml` 的 `reason` 按决策 178 **刻意**说出形状 ——
+    // 「文件内容里值形似 GitLab 个人访问令牌（`glpat-` 前缀） —— 没有写进快照」。
+    // 那是**判据**（用户要靠它知道为什么这份文件没进快照），不是材料；
+    // 材料是那一串 token **本身**。所以下面断言两件事，方向相反：
+    // ① `SECRET` 这个值哪儿都没有；② 形状的名字**在**理由里。
+    let payload = stdout(&output);
+    assert!(
+        !payload.contains(SECRET),
+        "成功载荷里出现了凭据材料：{payload}"
+    );
+    for name in list_files(out.path()) {
+        let text = read_file(&out, &name);
+        assert!(
+            !text.contains(SECRET),
+            "`{name}` 里出现了凭据材料（跳过 ≠ 写进去）：\n{text}"
+        );
+    }
+    // 跳过清单里只有**名字**、种类与原因，没有材料。
+    let skipped = read_file(&out, "skipped.toml");
+    assert!(
+        skipped.contains("settings.xml"),
+        "跳过清单必须点名那个文件：\n{skipped}"
+    );
+    assert!(skipped.contains("contains-credential-shape"), "{skipped}");
+    assert!(
+        skipped.contains("glpat-"),
+        "理由要具体到能看出是**什么形状**（决策 178）：\n{skipped}"
+    );
+    assert!(
+        !skipped.contains(SECRET),
+        "理由里不许带材料，只许带形状的名字：\n{skipped}"
+    );
+
+    let envelope = json(&output);
+    let data = envelope.data.expect("成功载荷");
+    assert!(
+        data["configs"]["skipped"].as_u64().unwrap_or(0) >= 1,
+        "JSON 里的跳过条数要与文件对得上：{data}"
+    );
+    assert_eq!(
+        data["configs"]["entries"].as_u64(),
+        Some(rows.len() as u64),
+        "entries 必须等于 `configs.toml` 里的条数：{data}"
+    );
+    assert_no_cjk_strings(&data, "$", true);
+
+    // 人类输出：数字、类别、以及"跳过的那几条去哪了"都要说。
+    let human = run_capture_in(
+        &home,
+        &profile,
+        &bin,
+        &[
+            "capture",
+            "--only",
+            "configs",
+            "--out",
+            out_arg(&out).as_str(),
+            "--no-version",
+        ],
+    );
+    let text = stdout(&human);
+    assert!(text.contains("configs.toml"), "{text}");
+    assert!(text.contains("skipped.toml"), "要说清跳过的去哪了：{text}");
+    assert!(text.contains("没有内容"), "要说清快照里没有正文：{text}");
+
+    // **证明没碰真实机器**（`AGENTS.md` 规矩四）。
+    let registry_after = registry_snapshot();
+    assert_eq!(
+        registry_after.0, registry_before.0,
+        "用户级 Path 被改了（capture 是只读命令）"
+    );
+    assert_eq!(
+        registry_after.1, registry_before.1,
+        "机器级 Path 被改了（capture 是只读命令）"
+    );
+    // 护栏：一个读不到东西的助手会让上面两条退化成"两份空串相同"。
+    assert!(
+        !registry_before.1.starts_with("<没有这个值>") && registry_before.1.contains('|'),
+        "注册表助手必须真的读到机器级 Path：{}",
+        registry_before.1
+    );
+    for (path, before) in &real_files {
+        assert_eq!(
+            fingerprint(path),
+            *before,
+            "真实的配置文件被改了：{}",
+            path.display()
+        );
+    }
+}
+
+/// 两个新 section 在参数面上与其余四个**一模一样**。
+#[test]
+fn the_two_new_sections_are_visible_in_help_and_listed_in_the_schema() {
+    let home = IsolatedHome::new("capture-new-sections");
+    let help = run_capture(&home, &["capture", "--help"]);
+    assert_eq!(help.status.code(), Some(0), "{}", describe(&help));
+    let text = stdout(&help);
+    for slug in ["globals", "configs"] {
+        assert!(text.contains(slug), "帮助里必须列出 `{slug}`：{text}");
+    }
+    assert!(
+        text.contains("只捕获"),
+        "要说清这两个 section 在 L1 只捕获、不还原：{text}"
+    );
+    for file in ["globals.toml", "configs.toml"] {
+        assert!(text.contains(file), "帮助里要列出 `{file}`：{text}");
+    }
+
+    let out = TempDir::new("capture-new-sections-out");
+    let profile = TempDir::new("capture-new-sections-profile");
+    let bin = TempDir::new("capture-new-sections-bin");
+    fake_npm(&bin);
+    let output = run_capture_in(
+        &home,
+        &profile,
+        &bin,
+        &[
+            "capture",
+            "--only",
+            "globals",
+            "--only",
+            "configs",
+            "--out",
+            out_arg(&out).as_str(),
+            "--no-version",
+        ],
+    );
+    assert_eq!(output.status.code(), Some(0), "{}", describe(&output));
+    // `--only` 可重复，且**顺序即写入顺序**（`Section::ALL` 的顺序）。
+    assert_eq!(
+        list_files(out.path()),
+        vec![
+            "configs.toml".to_owned(),
+            "globals.toml".to_owned(),
+            "schema.toml".to_owned(),
+            "skipped.toml".to_owned(),
+        ]
+    );
+    let schema = read_file(&out, "schema.toml");
+    assert_eq!(sections_of(&schema), ["configs", "globals"], "{schema}");
+    // 六个 section 里只捕了两个 —— 其余四个是"没看"，不是"没有"。
+    assert!(!schema.contains("tools"), "{schema}");
+}
+
+/// 一份带了这两个 section 的快照，`restore` 必须**明说自己不还原它们**。
+///
+/// # 这条用例为什么住在这个文件里
+///
+/// 它测的是**一对命令**：`capture` 真的把这两个 section 写出来，
+/// 而 `restore` 对它们的说法必须能被机器读到（`summary.unrestorable`）。
+/// 前半段是这个文件的主题，后半段是这一票的另一半 —— 拆开写会让
+/// "capture 写出来的东西 restore 认不认"这件事没有一处是被完整测过的。
+#[test]
+fn a_snapshot_with_the_two_new_sections_says_restore_cannot_restore_them() {
+    let home = IsolatedHome::new("capture-restore-pair");
+    let profile = TempDir::new("capture-restore-pair-profile");
+    let bin = TempDir::new("capture-restore-pair-bin");
+    fake_npm(&bin);
+    profile.write(".gitconfig", "[user]\n\tname = Tuoen Test\n");
+
+    let full = TempDir::new("capture-restore-pair-full");
+    let captured = run_capture_in(
+        &home,
+        &profile,
+        &bin,
+        &["capture", "--out", out_arg(&full).as_str(), "--no-version"],
+    );
+    assert_eq!(captured.status.code(), Some(0), "{}", describe(&captured));
+    assert_eq!(list_files(full.path()), ALL_EIGHT.to_vec());
+
+    let restored = run_capture_in(
+        &home,
+        &profile,
+        &bin,
+        &["restore", out_arg(&full).as_str(), "--json"],
+    );
+    let envelope = json(&restored);
+    assert!(envelope.ok, "{:?}", envelope.error);
+    let data = envelope.data.expect("成功载荷");
+    assert_eq!(
+        data["summary"]["unrestorable"],
+        value!(["globals", "configs"]),
+        "带了这两个 section 就必须明说：{data}"
+    );
+    // **不许因此改变 `sections` 的四条**：`restore` 能做的仍然是四件事。
+    assert_eq!(
+        data["sections"].as_array().expect("数组").len(),
+        4,
+        "`restore` 的四个 section 一个都不许多、一个都不许少：{data}"
+    );
+
+    // 人类输出也要说这句话（`--json` 是给脚本的，人看的是 stdout）：
+    // 一份四条全 `no-change` 的计划**看起来**像"这份快照里的东西本机都有了"，
+    // 而真相是"里面有两类东西我压根不还原"。
+    let human = run_capture_in(&home, &profile, &bin, &["restore", out_arg(&full).as_str()]);
+    assert_eq!(human.status.code(), Some(0), "{}", describe(&human));
+    let text = stdout(&human);
+    assert!(
+        text.contains("不还原"),
+        "要明说这两个 section 不还原：{text}"
+    );
+    for slug in ["globals", "configs"] {
+        assert!(text.contains(slug), "要点名 `{slug}`：{text}");
+    }
+    assert!(text.contains("没看见"), "要说清这不是「没看见」：{text}");
+
+    // 反例：一份**没有**这两个 section 的快照，那个键必须**根本不出现** ——
+    // 空数组会被读成"我看过了，一个都没有"，而那份快照根本没说过这件事。
+    let four = TempDir::new("capture-restore-pair-four");
+    let only_four = run_capture_in(
+        &home,
+        &profile,
+        &bin,
+        &[
+            "capture",
+            "--only",
+            "tools",
+            "--only",
+            "path",
+            "--only",
+            "env",
+            "--only",
+            "wsl",
+            "--out",
+            out_arg(&four).as_str(),
+            "--no-version",
+        ],
+    );
+    assert_eq!(only_four.status.code(), Some(0), "{}", describe(&only_four));
+    let restored = run_capture_in(
+        &home,
+        &profile,
+        &bin,
+        &["restore", out_arg(&four).as_str(), "--json"],
+    );
+    let envelope = json(&restored);
+    let data = envelope.data.expect("成功载荷");
+    assert!(
+        data["summary"].get("unrestorable").is_none(),
+        "没有这两个 section 时这个键必须缺席：{data}"
     );
 }

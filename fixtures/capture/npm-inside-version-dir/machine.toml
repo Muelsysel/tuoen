@@ -1,0 +1,91 @@
+# 场景：决策 173 的四支判据 —— **同一次采集里一真一假**
+#
+#   npm 的 prefix = C:\nvm4w\nodejs
+#     ① prefix 本身是 reparse point（`symlink-dir`）→ 真
+#     ④ reparse 目标 C:\Users\dev\AppData\Local\nvm\v24.19.0 里有版本段 → 真
+#     ⇒ prefix_inside_version_dir = true
+#
+#   pip 的 prefix = C:\Python312（来自 `pip --version` 里 `from <路径>`）
+#     ①②③④ 四支全假（普通目录、祖先不是 reparse、路径里没有版本段、没有目标）
+#     ⇒ prefix_inside_version_dir = false
+#
+# 一真一假必须在同一份装置里：只做真的那一份时，"恒 true" 的实现也能通过。
+# 期望值不写在这里 —— 测试自己从这份文件数。
+
+[env]
+USERPROFILE = 'C:\Users\dev'
+APPDATA = 'C:\Users\dev\AppData\Roaming'
+LOCALAPPDATA = 'C:\Users\dev\AppData\Local'
+Path = 'C:\Windows\System32;C:\nvm4w\nodejs;C:\Python312\Scripts;C:\Program Files\Git\cmd'
+
+# 目录节点本身的事实：`paths` 决定节点，`dirs` 提供里面的文件（两者不冲突）。
+[[paths]]
+path = 'C:\nvm4w\nodejs'
+is_dir = true
+reparse = 'symlink-dir'
+link_target = 'C:\Users\dev\AppData\Local\nvm\v24.19.0'
+
+[[dirs]]
+path = 'C:\Windows\System32'
+entries = [{ path = 'cmd.exe', size = 289792 }]
+
+# nvm4w 的联接目录：PATH 上的那一个，里面是**当前版本**的 node/npm
+[[dirs]]
+path = 'C:\nvm4w\nodejs'
+entries = [
+    { path = 'node.exe', size = 84043264 },
+    { path = 'npm.cmd', size = 340 },
+    { path = 'npx.cmd', size = 340 },
+]
+
+# 联接目标：真正的版本目录（决策 173 ④ 支看的就是它）
+[[dirs]]
+path = 'C:\Users\dev\AppData\Local\nvm\v24.19.0'
+entries = [{ path = 'node.exe', size = 84043264 }]
+
+[[dirs]]
+path = 'C:\Python312'
+entries = [
+    { path = 'python.exe', size = 102400 },
+    { path = 'Lib', is_dir = true },
+]
+
+[[dirs]]
+path = 'C:\Python312\Scripts'
+entries = [{ path = 'pip.exe', size = 108544 }]
+
+[[dirs]]
+path = 'C:\Program Files\Git\cmd'
+entries = [{ path = 'git.exe', size = 3527680 }]
+
+# ── 进程：npm 行 = node.exe -v → cmd.exe /C npm.cmd config get prefix → cmd.exe /C npm.cmd ls …
+[[processes]]
+program = 'node.exe'
+args = ['-v']
+stdout = "v24.19.0\n"
+exit_code = 0
+
+[[processes]]
+program = 'cmd.exe'
+args = ['/C', 'npm.cmd', 'config', 'get', 'prefix']
+stdout = "C:\\nvm4w\\nodejs\n"
+exit_code = 0
+
+[[processes]]
+program = 'cmd.exe'
+args = ['/C', 'npm.cmd', 'ls', '-g', '--json', '--depth=0', '--offline']
+stdout = "{\n  \"name\": \"lib\",\n  \"dependencies\": {\n    \"@deepseek-ai/dsh\": { \"version\": \"1.4.2\" },\n    \"@openai/codex\": { \"version\": \"0.9.1\" },\n    \"corepack\": { \"version\": \"0.29.4\" },\n    \"npm\": { \"version\": \"11.4.2\" },\n    \"pnpm\": { \"version\": \"10.12.1\" },\n    \"typescript\": { \"version\": \"5.7.2\" },\n    \"vercel\": { \"version\": \"41.7.0\" }\n  }\n}\n"
+exit_code = 0
+
+# ── 进程：pip 行 = pip.exe --version（同时给出 tool_version 与 prefix）→ pip.exe list …
+[[processes]]
+program = 'pip.exe'
+args = ['--version']
+stdout = "pip 24.0 from C:\\Python312\\Lib\\site-packages\\pip (python 3.12)\n"
+exit_code = 0
+
+[[processes]]
+program = 'pip.exe'
+args = ['list', '--format=json', '--disable-pip-version-check']
+stdout = "[\n  { \"name\": \"pip\", \"version\": \"24.0\" },\n  { \"name\": \"requests\", \"version\": \"2.32.3\" },\n  { \"name\": \"setuptools\", \"version\": \"70.0.0\" }\n]\n"
+exit_code = 0

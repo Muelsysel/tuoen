@@ -1,0 +1,22 @@
+# 场景：决策 183 —— **git 不可用** → `identity_source = "unknown"`
+#
+# 决策 183 的原文："git 不可用 → unknown（**不写 `[git]` 表？不 —— 写**，并让
+# `identity_source = "unknown"` 说明我们问不了；**省略整张表会让"没问"与
+# "没装 git"长得一样**）。"
+#
+# 这一份里 PATH 上**没有** `git.exe`（也没有任何 git 进程条目）—— 所以
+# `system_config` / `global_config` 两条路径也**问不到**，两个键都不该出。
+# `~/.gitconfig` 文件本身仍然在磁盘上：它作为配置文件候选**照常捕获** ——
+# "问不了 git" 与 "这个文件存在" 是两件事。
+
+[env]
+USERPROFILE = 'C:\Users\dev'
+APPDATA = 'C:\Users\dev\AppData\Roaming'
+LOCALAPPDATA = 'C:\Users\dev\AppData\Local'
+Path = 'C:\Windows\System32;C:\Python312\Scripts'
+
+[[dirs]]
+path = 'C:\Users\dev'
+entries = [
+    { path = '.gitconfig', size = 44, content = "[user]\n\tname = Dev\n\temail = dev@example.com\n" },
+]

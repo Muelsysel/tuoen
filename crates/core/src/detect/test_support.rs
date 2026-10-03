@@ -153,6 +153,9 @@ mod tests {
             processes: vec![
                 FixtureProcess {
                     program: r"C:\Python312\python.exe".to_owned(),
+                    // 空 = 通配（决策 185 的匹配规则）：这份固定装置只声明"这个程序
+                    // 会回答什么"，与原来"只按 program 匹配"逐字等价。
+                    args: Vec::new(),
                     stdout: "Python 3.12.10\n".to_owned(),
                     stderr: String::new(),
                     exit_code: Some(0),
@@ -160,6 +163,7 @@ mod tests {
                 },
                 FixtureProcess {
                     program: r"C:\nvm4w\nodejs\node.exe".to_owned(),
+                    args: Vec::new(),
                     stdout: "v24.19.0\n".to_owned(),
                     stderr: String::new(),
                     exit_code: Some(0),
