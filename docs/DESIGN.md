@@ -884,6 +884,69 @@ L1-17 的 `setx` 守卫扫 `scripts/**`；我新写的 L2 验收脚本里有一�
 ⑤ 真装一个包（落进 tuoen 的根）没测 —— 那超出本票；⑥ `FixtureProcess` 用不上（`spawn_inherit` 是自由函数），
 替代判据是"真子进程把自己的环境印出来" + 纯函数逐字断言，更强。
 
+### 1.24 L2-24 安装期的三条实测：pip 会"假装装好了"，而"命令成功"不是"东西装上了"（决策 197–199）
+
+**决策 197：pip 的「已经满足」短路会让 tuoen 的根永远空着 —— 安装必须带 `--ignore-installed`。**
+
+`PYTHONUSERBASE` 指向一个**空**目录时实测：
+
+```
+$ pip install --user --no-index --dry-run pypinyin==0.55.0
+Requirement already satisfied: pypinyin==0.55.0 in c:\users\muelsyse\appdata\local\programs\python\python312\lib\site-packages (0.55.0)
+exit 0
+```
+
+它**在解析索引之前就短路**（所以 `--no-index` 拦不住它），**一个字节都没装进 tuoen 的根**。
+本机 pip 的 3 个包（`pip@25.0.1` / `pypdf@6.19.0` / `pypinyin@0.55.0`）都已经装在机器自己的
+site-packages 里，于是真实 restore 的结局是：装 → pip 说"已满足" → 根仍为空 → 第二次 `restore`
+枚举 tuoen 的根**还是空** → **永远到不了 `no-change`**。
+
+**npm 没有这个问题** —— `npm install -g --prefix <root>` 只看 `<root>/node_modules`（#23 实测：机器侧
+已有 `pnpm@11.21.0` 时，装进临时根仍然成功）。**这是两个工具之间又一处必须分别实测、不许类推的不对称。**
+
+机制已被独立验证（同一条命令加 `--ignore-installed` 就不再短路，转去解析索引，离线时报
+`No matching distribution found`）；正向实测（真装进临时根，**2293 ms**）：
+
+```
+$ pip install --user --ignore-installed --disable-pip-version-check pypinyin==0.55.0
+  Using cached pypinyin-0.55.0-py2.py3-none-any.whl (840 kB)
+  WARNING: The script pypinyin.exe is installed in '…\l225-pipuserbase\Python312\Scripts' which is not on PATH.
+Successfully installed pypinyin-0.55.0
+```
+
+落盘：`…\Python312\Scripts\pypinyin.exe`（**108 420** 字节）+ `…\Python312\site-packages\pypinyin-0.55.0.dist-info\`。
+临时根 3 778 050 字节，跑完删净（`Test-Path` → False），`%LOCALAPPDATA%\tuoen\globals` **仍不存在**，
+机器侧 `pip show pypinyin` 仍是 `0.55.0`。
+
+**推论（本条的普遍形状）：「命令成功」与「东西装上了」是两件事。** 一个返回 0、输出一句
+完全合理的"已经满足"的安装命令，与一次真的安装，在退出码上**长得一模一样**。所以
+① 测试要断言 **argv 里有 `--ignore-installed`**（固定装置断言 argv，不装真包）；
+② 真机验收要确认 `<tuoen pip 根>\Python312\Scripts\*.exe` **真的出现了**，而不是"命令成功就算过"；
+③ 幂等那条验收必须在**机器侧已有同名同版本包**的前提下跑（本机天然满足），否则测不到这个短路。
+
+**决策 198：用户级方案的落点由 `sysconfig` 实测钉住（#25 的 shim 目标路径依赖它）。**
+
+`PYTHONUSERBASE=<base>` 时：`scripts = <base>\Python312\Scripts`（**没有** `Lib` 段）、
+`purelib = <base>\Python312\site-packages`；pip 自己那句 WARNING 逐字印出 `<base>\Python312\Scripts`，
+与 `sysconfig` **两条独立来源一致**。另有一条陷阱：**`nt_user` 方案里没有 `base` 这个键** ——
+`sysconfig.get_path('base', 'nt_user')` 直接 `KeyError: 'base'`，别用它。
+
+**决策 199：裸 `python` 在这台机器上不是 Python，是 App Execution Alias —— 永不调用。**
+
+```
+$ where.exe python
+C:\Users\Muelsyse\AppData\Local\Microsoft\WindowsApps\python.exe      ← 第一个命中
+C:\Users\Muelsyse\AppData\Local\Programs\Python\Python312\python.exe
+$ python -V        →  无输出，exit 9009
+```
+
+那个文件 **0 字节**、属性 `Archive, ReparsePoint`、`LinkType`/`Target` 皆空、`ReadAllBytes` 报
+"系统无法访问此文件"（tag `0x8000001b`）。这是决策 22"pip 只用 `pip.exe`"的**第三条独立理由**。
+`pip` 无此问题（`where pip` 第一个命中就是真 `C:\…\Python312\Scripts\pip.exe`）。
+正面证据：`tuoen detect --json` **已经**把它报成 `alias-ghost`（PATH 第 9 条），并把真 python
+（PATH 第 37 条、`executable`、`3.12.10`）的证据写成"**被 PATH 第 9 条遮蔽**" —— 检测层在这件事上
+**做对了**，这一条是记录事实，不是记录缺陷。
+
 ---
 ## 2. 平台硬约束（来自本机实测，非推断）
 
