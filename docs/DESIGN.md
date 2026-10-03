@@ -366,7 +366,7 @@ V1 全做，分四层：
 | 148 | **人类输出的"会写 / 不会写"用 `PathPlan::will_write()` 判据**（= `changes_value \|\| before_type != after_type`），CLI **不自己重算**；bool 只作为参数传给人类打印函数，**`--json` 一个键都不加** | `user_scope_label(plan_will_write)`；`--only fix` 那种真的会写的形态仍印 `**会写**`，no-op 形态印 `**不会写（计划与现状一致）**` | 复核期 C 自查出来的既有瑕疵：用户级那一节**恒印** `**会写**`，而 `applied` 为空、`wrote=false` 时那句话是**错的** —— 下面 `print_visibility` 那句"计划与现状一致"只是把它盖住了一半。这正是这张票从头到尾在防的那一类：**用户读的预览里写着一句与事实相反的话**。不自己重算是因为重算就是第二份事实（`will_write` 同时覆盖"条目变了"与"值含 `%` 要换 `EXPANDED_SZ`"两种真写） |
 | 149 | **会改用户系统状态的脚本，必须在写入之前先自证"还原路径"能用**：把当前值**原样写回一次**（同字节、同类型、走与还原完全相同的代码路径），断言哈希与类型逐字未变；还原之后再**当场**复核一次哈希，不一致就红字喊出来并指出备份在哪 | 验收脚本 §6 的"还原机制自检"；备份在 `%TEMP%\_l115_hkcu_backup_script.txt` / `.kind` | **这是本次验收最严重的一次事故换来的**：第一版的 `Set-PathValue` 用 `(Get-Item 'HKCU:\Environment').SetValue(...)`，而 PowerShell 的注册表 provider 返回**只读**句柄 → `Cannot write to the registry key.`。于是"`--only add` 真的写成功（808 字符、新终端里 `mvn` 找得到）**而还原抛异常**"这个最坏的组合真的发生过一次，`HKCU\Environment\Path` 被留在改动值上，直到按跑前手工备份用可写子键句柄写回。**"我们打算还原"和"还原真的能写"是两件事** —— 前者写在代码里，后者必须被证明；而**一条不能失败的还原不是还原**（与铁律 3"一条不能失败的测量不是测量"同源）。这条规矩现在属于 AGENTS.md 的"会改用户系统状态的代码" |
 
-### 1.19 L1-16 restore：plan 是纯数据、默认不写、`manual_actions` 是公开契约（决策 150–159）
+### 1.19 L1-16 restore：plan 是纯数据、默认不写、`manual_actions` 是公开契约（决策 150–164）
 
 票据 #16 是招牌功能的出口：`tuoen restore <tuoen.d 目录>`。含糊的地方集中在"什么时候真的动手"、
 "plan 里到底写什么"、以及"那些做不到的事怎么告诉用户"。
@@ -505,7 +505,7 @@ sections, manualActions, summary}}`（`--apply` 时多一个 `apply`，决策 16
 
 ---
 
-### 1.20 L1-17 globals + configs：全局包清单与配置文件清单（决策 165–184）
+### 1.20 L1-17 globals + configs：全局包清单与配置文件清单（决策 165–188）
 
 票据 #17。这一票补上 dev-state 的最后两个 section。它包含 L1 的**第二个安全红线**：
 配置文件扫描会**直接碰到**本机 `C:\Users\Muelsyse\.m2\settings.xml` 里那个明文 `glpat-` PAT。
