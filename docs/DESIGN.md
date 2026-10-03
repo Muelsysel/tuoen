@@ -948,6 +948,59 @@ $ python -V        →  无输出，exit 9009
 **做对了**，这一条是记录事实，不是记录缺陷。
 
 ---
+
+### 1.25 L2-25 包 bin 的 shim：node 从哪来、同一个版本的两个拼法（决策 200–202）
+
+**决策 200：包 shim 里那个 `node.exe` 必须来自 store 的精确版本目录，找不到就报告，不许退回。**
+
+三条候选，两条是"不报错的假话"：
+
+- `store\node\current\node.exe` —— **`tuoen use` 会移动它**；
+- 机器自己的 `C:\nvm4w\nodejs\node.exe` —— **`nvm use` 会移动它**（而且它是 symlink，本机实测）。
+
+于是"用户在 `v24.19.0` 的根下装了 pnpm"这件事，会在用户 `nvm use 20`（或 `tuoen use node@22`）之后
+**变成一个跑着另一个 Node 的 pnpm**，而没有任何东西会报错。判据是
+`tuoen_store::Store::version_dir("node", <削过的版本>)\node.exe` 真的存在
+（`crates/store/src/layout.rs:212`；本机实测 `…\store\node\versions\24.19.0\node.exe` **存在**）。
+store 里没有那个精确版本 ⇒ **报告**（沿用 `result` 的稳定字符串），**不退回 `current`**。
+这是决策 194 的同族：**一个看起来完全合理的错话，比一次崩溃更难被发现。**
+
+**决策 201：同一个 Node 版本在本项目里有两个拼法 —— 根用原样，store 用削过的。**
+
+| 用途 | 拼法 | 真机证据 |
+|---|---|---|
+| globals 根名 | **原样** `v24.19.0` | `tuoen shell` 子进程里 `npm config get prefix` = `…\globals\npm\v24.19.0` |
+| store 里的版本目录 | **削过的** `24.19.0` | `…\store\node\versions\24.19.0\node.exe` 存在；`versions\v24.19.0\node.exe` **不存在** |
+
+决策 194 补回来的那个 `v` **只属于 globals 侧**；`Store::version_dir` 收的是削过的那个。
+**附则（本票最容易漏的一条）**：`write_shim` **只检查 `spec.target`** 存在且是文件
+（`crates/shim/src/lib.rs:648-654` 的 `TargetUnreadable`/`TargetNotAFile`），**不检查前缀参数**。
+npm 那条路的 `target` 是 `node.exe`（永远存在），真正可能不存在的是前缀里那个 `.js/.mjs` ——
+所以**包 bin 的存在性必须自己查**，否则 `crates/core/src/shim.rs:24-28` 警告过的
+"shim 生成成功、敲命令的时候才发现目标不存在"会从这个后门回来。
+
+**决策 202：包的 bin 名与目标只从包自己的 `package.json` 取，不从 `.cmd`、也不从目录里猜。**
+
+本机真机素材（独立读 `C:\nvm4w\nodejs\node_modules\*\package.json`，不是抄产品输出）：
+
+```
+pnpm@11.21.0      bin = { pnpm → bin/pnpm.mjs, pnpx → bin/pnpx.mjs, pn → bin/pnpm.mjs, pnx → bin/pnpx.mjs }
+corepack@0.35.0   bin = { corepack → ./dist/corepack.js, pnpm → ./dist/pnpm.js, pnpx → ./dist/pnpx.js,
+                          yarn → ./dist/yarn.js, yarnpkg → ./dist/yarnpkg.js }
+npm@11.17.0       bin = { npm → bin/npm-cli.js, npx → bin/npx-cli.js }
+@deepseek-ai/dsh  bin = { dsh → lib/bin.js }          ← 作用域包，bin 是**对象**（字符串时名字取 `name` 段）
+```
+
+三条由素材直接推出的要求：**`./` 前缀要归一化**（corepack 五个值全是 `./dist/…`）；
+**`skipped-shadowed` 有真实素材、不用编**（`npm@11.17.0` 的 `npm`/`npx` 撞 node 工具自己的 shim、
+`corepack` 的 `pnpm`/`pnpx` 撞 `pnpm` 包自己的 shim）；**`.mjs` 不在 `ScriptKind` 里** ——
+机制拒掉的是 `.js` 那类，别以为 `.mjs` 也被拒，也别把"要防的"记错成 `.mjs`。
+pip 侧的名字 = `Scripts\*.exe` 去掉扩展名（本机实测 `pip.exe` / `pip3.exe` / `pip3.12.exe` 各 108 425 字节、
+`pypinyin.exe` 108 420 字节；后者与我另一次在 `%TEMP%` 临时 `PYTHONUSERBASE` 里装出来的
+`…\Python312\Scripts\pypinyin.exe` **同大小**，两条独立来源对上）。
+被 `validate_name` 拒掉的名字（含 `/` `:`、保留设备名、以点结尾…）必须**报告**，不许静默少发一条。
+
+---
 ## 2. 平台硬约束（来自本机实测，非推断）
 
 这些是**必须绕着走的地面事实**，实现时不得假设相反情况。
