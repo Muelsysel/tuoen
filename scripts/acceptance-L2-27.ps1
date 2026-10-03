@@ -1,14 +1,14 @@
 <#
 .SYNOPSIS
-    验收脚本：票据 #27 —— L2 真机验收（全局包：根、两个来源、重定向、真装、幂等）。
+    验收脚本：票据 #27 —— L2 真机验收（全局包：根、两个来源、重定向、真装、幂等、shim）。
 
 .DESCRIPTION
-    票据 #18 写的是**证据**，不是功能：在作者本机上跑完整流程，把每一步的真实输出落盘，
+    票据 #27 写的是**证据**，不是功能：在作者本机上跑完整流程，把每一步的真实输出落盘，
     并在每一步之后核对"这台机器一个字节都没变"。
 
     它只写两种东西：
-      ① `%TEMP%\tuoen-acceptance-L2-27\` 下的工件；
-      ② §7 里**故意**写一个用户级环境变量 `TUOEN_L1_ACCEPT_PROBE` —— 空计划上的
+      ① `%TEMP%\tuoen-acceptance-L2-27\` 下的工件（默认**收尾时删掉**，见 `-KeepArtifacts`）；
+      ② 一个**故意**写的用户级环境变量 `TUOEN_L1_ACCEPT_PROBE` —— 空计划上的
          "计划 vs 真的执行"对比是恒真的，所以必须让计划非空。写之前先备份整个
          `HKCU\Environment`、**自证还原能用**（AGENTS.md 规矩 7），跑完删掉并逐字核对回原样。
 
@@ -16,17 +16,26 @@
     故意让最后一条检查失败（exit 1）—— 一条不能失败的验收不是验收。
 
 .PARAMETER SkipBuild
-    跳过 §0 的 release 构建。
+    跳过 §0 的 release 构建（会先断言 `target\release\tuoen.exe` 不比最新源码旧）。
+
+.PARAMETER WithNetwork
+    多跑 §7b：联网装一个 pip 包，并断言 **`restore` 自己**把它变成了 `.exe` shim。
+    不开时那一条记 `skip`（诚实的不对称：pip 的联网安装没法离线验）。
+
+.PARAMETER KeepArtifacts
+    保留 `%TEMP%\tuoen-acceptance-L2-27\` 下的工件；默认跑完就删（票据 §硬性约束）。
 
 .EXAMPLE
-    pwsh -File scripts/acceptance-L1-18.ps1
-    pwsh -File scripts/acceptance-L1-18.ps1 -SelfTest   # 必须 exit 1
+    pwsh -File scripts/acceptance-L2-27.ps1
+    pwsh -File scripts/acceptance-L2-27.ps1 -SelfTest      # 必须 exit 1
+    pwsh -File scripts/acceptance-L2-27.ps1 -WithNetwork   # 多跑 §7b
 #>
 [CmdletBinding()]
 param(
     [switch]$SelfTest,
     [switch]$SkipBuild,
-    [switch]$WithNetwork
+    [switch]$WithNetwork,
+    [switch]$KeepArtifacts
 )
 
 Set-StrictMode -Version Latest
@@ -38,6 +47,11 @@ $root = Join-Path $env:TEMP 'tuoen-acceptance-L2-27'
 Remove-Item -Recurse -Force $root -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Path $root | Out-Null
 
+# 整个验收体包在 `try` 里，收尾在 `finally` 里（票据 #27 §硬性约束："清理包在 try/finally 里"）。
+# 于是**成功、失败、甚至中途抛异常**都会走到收尾那一段 —— 本次实现期真的抛过一次
+# （空集合上取 `.Name`，见 `docs/acceptance/L2-global-packages.md` 的 §4），
+# 当时工件目录就留在了 `%TEMP%` 里。
+try {
 $script:Passed = 0
 $script:Failed = 0
 $script:SkipCount = 0
@@ -564,6 +578,20 @@ $null = Restore-EnvBackup $script:Backup
 $proofAfter = @(Get-EnvBlockSnapshot)
 Check '自证还原：原样写回之后逐字未变' ((($proofBefore -join "`n") -eq ($proofAfter -join "`n")) -and ($proofBefore.Count -gt 0)) "values=$($proofBefore.Count)"
 
+# 票据 #27 §1 点名要 `where python` 的**第一条**。本机实测它不是 Python —— 是 Microsoft
+# Store 的 **App Execution Alias**（0 字节、ReparsePoint、跑起来 exit 9009），真的那份在
+# 第二条。所以这一条要连"它是什么"一起记：只记路径会让人以为"第一条 python"是能用的。
+$wherePy = @(& cmd.exe /d /c 'where python 2>nul')
+$firstPy = if ($wherePy.Count -gt 0) { (@($wherePy)[0]).Trim() } else { '' }
+$pyItem = if ($firstPy) { Get-Item -LiteralPath $firstPy -Force -ErrorAction SilentlyContinue } else { $null }
+$pySize = if ($pyItem) { $pyItem.Length } else { -1 }
+$pyIsAlias = ($null -ne $pyItem) -and $pyItem.Attributes.ToString().Contains('ReparsePoint') -and ($pySize -eq 0)
+Note ('where python 的第一条：{0}（{1} 字节，{2}）' -f `
+        $(if ($firstPy) { $firstPy } else { '<没有>' }), $pySize, $(if ($pyIsAlias) { 'App Execution Alias' } else { '普通文件' }))
+Check 'where python 的第一条是 WindowsApps 里的 0 字节别名占位（真 Python 在第二条）' `
+    ($pyIsAlias -and ($firstPy -like '*\WindowsApps\*')) "path=$firstPy size=$pySize"
+Check 'where python 至少还有第二条（真的那份 Python）' ($wherePy.Count -ge 2) "count=$($wherePy.Count)"
+
 # ── 2. `tuoen globals list`（只读） ─────────────────────────────────────
 
 Section '2. `tuoen globals list`（只读，两个来源）'
@@ -740,6 +768,22 @@ $shPy = Invoke-InProject @('shell', '--exec', 'echo PYTHONUSERBASE=%PYTHONUSERBA
 Check '子进程里 PYTHONUSERBASE 指向 tuoen 的 pip 根' `
     ($shPy.Stdout -match [regex]::Escape("PYTHONUSERBASE=$expectPyRoot")) "out=$($shPy.Stdout.Trim())"
 Check '子进程里 PIP_USER = 1' ($shPy.Stdout -match 'PIP_USER=1') "out=$($shPy.Stdout.Trim())"
+
+# 票据 §6 的另一半：**`pip list --user` 从子进程里看到的东西**必须与 §2 报告里 tuoen 那一侧的
+# pip 行一致 —— 这是"重定向真的把 pip 指到了 tuoen 的根"的端到端证据。只看环境变量只能证明
+# "我们设了"，证明不了"pip 真的用了它"（本机实测：不设重定向时 `pip list --user` 印 `[]`，
+# 设上之后印 tuoen 根里那个包 —— 所以这条断言是**会红**的，不是恒真）。
+$shPip = Invoke-InProject @('shell', '--exec', 'pip list --user --format=json') 'pip-list-user'
+Check 'shell 里的 pip list --user 退出 0' ($shPip.Exit -eq 0) "exit=$($shPip.Exit) err=$($shPip.Stderr.Trim())"
+$childPip = @()
+try { $childPip = @($shPip.Stdout | ConvertFrom-Json) } catch { $childPip = @() }
+$childPipNames = @($childPip | ForEach-Object { $_.name } | Sort-Object)
+$tuoenPipNames = @(Arr $gj 'packages' |
+        Where-Object { (Prop $_ 'tool') -eq 'pip' -and (Prop $_ 'source') -eq 'tuoen' } |
+        ForEach-Object { Prop $_ 'name' } | Sort-Object)
+Check 'shell 里 pip list --user 看到的包 = globals list 里 tuoen 侧的 pip 包' `
+    (($childPipNames -join ',') -eq ($tuoenPipNames -join ',')) `
+    "child=$($childPipNames -join ',') tuoen=$($tuoenPipNames -join ',')"
 
 # 红线：跑完 shell 之后，父进程与注册表一个字节都没变（重定向绝不落盘）。
 $afterShell = @(Get-EnvBlockSnapshot)
@@ -929,18 +973,62 @@ if ($WithNetwork) {
     $okPy = New-GlobalsSnapshot -Source (Join-Path $capDir 'globals.toml') -Tool 'pip' -Name 'pypinyin' -Dest (Join-Path $snap2 'globals.toml')
     Check '快照里能定位到 pypinyin 那一行、并且只留它' $okPy ''
     if ($okPy) {
+        # **用户级 pip 的脚本目录不是 `<根>\Scripts`，是 `<根>\Python<XY>\Scripts`** ——
+        # 本机实测真身落在 `<globals>\pip\Python312\Scripts\pypinyin.exe`（`site-packages`
+        # 也在 `<根>\Python312\` 下面、**没有** `Lib` 那一层）。版本那一段从 `pip --version`
+        # 自己反推（§3 用的同一个输入），**不写死 `Python312`**：写死会让这条断言在
+        # **产品做对了**的时候红（换了 Python 版本就红）。
+        $pyTag = if ($expectPipPrefix.Length -gt 0) { Split-Path $expectPipPrefix -Leaf } else { '' }
+        $pipExe = Join-Path (Join-Path (Join-Path $script:TuoenGlobals 'pip') $pyTag) 'Scripts\pypinyin.exe'
+        # **可重复性**：`already-present` 的包**故意不补 shim**（决策 212），所以上一轮已经把它
+        # 装进 tuoen 的根之后，这一轮的计划是 `no-change`、发 shim 那一步根本不会走 —— 断言会红在
+        # 一个**产品做对了**的地方。所以先把 pip 的产物（`*.dist-info` 目录，就是产品自证用的
+        # 那一个）连同包目录删掉，让"要装"这件事重新成立。删之前断言解析出来的路径确实在
+        # tuoen 自己的 pip 根下面 —— 绝不删别的东西。
+        $pipSite = Join-Path (Join-Path (Join-Path $script:TuoenGlobals 'pip') $pyTag) 'site-packages'
+        if (Test-Path -LiteralPath $pipSite) {
+            $resolvedSite = (Resolve-Path -LiteralPath $pipSite).Path
+            $resolvedBase2 = (Resolve-Path -LiteralPath $script:TuoenGlobals).Path
+            if ($resolvedSite.StartsWith($resolvedBase2, [System.StringComparison]::OrdinalIgnoreCase)) {
+                $oldPip = @(Get-ChildItem -LiteralPath $resolvedSite -ErrorAction SilentlyContinue |
+                        Where-Object { $_.Name -like 'pypinyin*' })
+                foreach ($o in $oldPip) { Remove-Item -LiteralPath $o.FullName -Recurse -Force }
+                Note "删掉了上一轮留下的 $(@($oldPip.Name) -join ',')（只删 pypinyin*，好让这一轮真的装一次）"
+            } else {
+                Check '要删的 pip 产物确实在 tuoen 的根下面（绝不动别处）' $false "site=$resolvedSite base=$resolvedBase2"
+            }
+        }
         $apply2 = Invoke-Tuoen @('restore', $snap2, '--only', 'globals', '--apply', '--json') 'restore apply pip (network)'
         Check 'pip 的联网安装退出 0' ($apply2.Exit -eq 0) "exit=$($apply2.Exit)"
-        $pipExe = Join-Path (Join-Path $script:TuoenGlobals 'pip') 'Scripts\pypinyin.exe'
-        Check "pip 的 Scripts 里有 pypinyin.exe" (Test-Path -LiteralPath $pipExe) "path=$pipExe"
-        $shimAdd = Invoke-Tuoen @('shim', 'add', 'pypinyin') 'shim add pypinyin'
-        Check 'shim add pypinyin 退出 0' ($shimAdd.Exit -eq 0) "exit=$($shimAdd.Exit)"
-        $shimExe = Join-Path $shimDir 'pypinyin.exe'
-        Check '发出来的是 .exe' (Test-Path -LiteralPath $shimExe) "path=$shimExe"
-        if (Test-Path -LiteralPath $shimExe) {
-            $run = Invoke-Program $shimExe @('--version')
-            Check 'shim 跑得起来' ($run.Exit -eq 0) "exit=$($run.Exit) out=$($run.Stdout.Trim())"
+        Check 'pip 的 payload 在 `<根>\<PythonXY>\Scripts` 里（版本段从 pip --version 反推）' `
+            (Test-Path -LiteralPath $pipExe) "tag=$pyTag path=$pipExe"
+        # #25 的核心承诺：**`restore` 自己**把装好的包变成 shim。**不是** `shim add` ——
+        # 那个命令认的是**编目里的工具**（node/temurin/oracle-jdk/msvc），拿包名去问它得到的是
+        # `unknown-tool`（本票实测：`shim add pypinyin` exit 1）。所以证据分两层：
+        # 机器可读的 `shims` 数组（"restore 说它发了"）+ 盘上的 `.exe`（"真的在"）。
+        $apSec2 = Find (Arr (Prop (Get-Payload $apply2) 'apply') 'sections') 'id' 'globals'
+        Check 'pip 那一趟 apply.sections 里有 globals' ($null -ne $apSec2) ''
+        if ($apSec2) {
+            $pipRow = Find (Arr $apSec2 'packages') 'name' 'pypinyin'
+            Check 'apply 载荷里有 pypinyin 这一行' ($null -ne $pipRow) ''
+            if ($pipRow) {
+                Check '载荷里报出 pypinyin 发出来的 shim 名（restore 自己发的）' `
+                    (@(Arr $pipRow 'shims') -contains 'pypinyin') "shims=$(@(Arr $pipRow 'shims') -join ',')"
+                Check '载荷里 shimCommands 是"查过"的那一态（不是 null）' ($null -ne (Prop $apSec2 'shimCommands')) `
+                    "shimCommands=$(@(Arr $apSec2 'shimCommands') -join ',')"
+            }
         }
+        $shimExe = Join-Path $shimDir 'pypinyin.exe'
+        Check 'restore 自己发出了 `<shims>\pypinyin.exe`（不是 `shim add` 发的）' (Test-Path -LiteralPath $shimExe) "path=$shimExe"
+        if ((Test-Path -LiteralPath $shimExe) -and (Test-Path -LiteralPath $pipExe)) {
+            # 逐字对照（票据 §5）：shim 跑出来的东西必须与**真身**相同。
+            $viaShim = (Invoke-Program $shimExe @('--version')).Stdout.Trim()
+            $viaPayload = (& $pipExe --version 2>&1 | Out-String).Trim()
+            Check 'pip shim 的 `--version` 与真身逐字相同' `
+                (($viaShim.Length -gt 0) -and ($viaShim -eq $viaPayload)) "shim=$viaShim payload=$viaPayload"
+        }
+        $pipBad = @(Get-ChildItem -LiteralPath $shimDir -File -Force | Where-Object { $_.Extension -in @('.cmd', '.ps1') })
+        Check 'pip 侧也没发 `.cmd` / `.ps1`' ($pipBad.Count -eq 0) "bad=$(@($pipBad | ForEach-Object { $_.Name }) -join ',')"
     }
 } else {
     Skip 'pip 侧的 .exe shim（需要联网装 pypinyin）' '-WithNetwork 未开'
@@ -1010,6 +1098,21 @@ Write-Host ("SUMMARY checks_passed={0} checks_failed={1} checks_skipped={2} verd
     -ForegroundColor $(if ($script:Failed -eq 0) { 'Green' } else { 'Red' })
 foreach ($n in $script:Notes) { Write-Host "NOTE $n" }
 Write-Host "ARTIFACTS $root"
+
+} finally {
+    # 票据 #27 的硬性约束："跑完 `%TEMP%` 下不留东西"。默认收掉工件目录；要留证据加
+    # `-KeepArtifacts`。删的路径必须**逐字等于**脚本自己建的那一个，而且**只删它** ——
+    # 绝不递归删 `%TEMP%`，也不碰任何别的东西。
+    $expected = Join-Path $env:TEMP 'tuoen-acceptance-L2-27'
+    if ($KeepArtifacts) {
+        Write-Host "KEPT $root"
+    } elseif ($root -eq $expected) {
+        Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+        Write-Host "CLEANED $root"
+    } else {
+        Write-Host "NOT-CLEANED 根目录不是脚本自己那一个：$root"
+    }
+}
 
 if ($script:Failed -gt 0) { exit 1 }
 exit 0

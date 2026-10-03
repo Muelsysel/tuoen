@@ -1,0 +1,12 @@
+globals list|3261
+npm ls -g|905
+globals list 人类输出|3197
+capture globals|3246
+capture 完整|5787
+restore plan globals|4738
+restore plan globals 人类输出|4704
+restore apply globals|7372
+restore plan globals 2|3290
+capture globals 2|3286
+shim list|15
+restore apply pip (network)|5323

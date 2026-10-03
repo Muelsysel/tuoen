@@ -1,0 +1,169 @@
+
+── 0. 构建
+  [ok]   release 二进制不比最新源码旧（-SkipBuild 的前提）  exe=21:27:05 最新源码=21:19:07 (shims.rs)
+
+── 1. 前置事实（跑之前的那份真相）
+  [ok]   机器级 PATH 可读  chars=1007 kind=String
+  [ok]   用户级 PATH 可读  chars=773 kind=String
+  [note] 跑前 HKCU\Environment 共 14 个值；用户级 Path 773 字符 sha16 a12fc582e90513a3
+  [ok]   跑前注册表里没有 NPM_CONFIG_PREFIX  user=0 machine=0
+  [ok]   跑前注册表里没有 PYTHONUSERBASE  user=0 machine=0
+  [ok]   跑前注册表里没有 PIP_USER  user=0 machine=0
+  [ok]   跑之前当前进程环境里没有 NPM_CONFIG_PREFIX  value=
+  [ok]   跑之前当前进程环境里没有 PYTHONUSERBASE  value=
+  [ok]   跑之前当前进程环境里没有 PIP_USER  value=
+  [ok]   机器侧 npm prefix 可读  prefix=C:\nvm4w\nodejs
+  [ok]   node 版本可读  node=v24.19.0
+  [note] tuoen 的 npm 根预期在 C:\Users\Muelsyse\AppData\Local\tuoen\globals\npm\v24.19.0（从 node -v 自己算的，不是抄产品的）
+  [ok]   HKCU\Environment 备份成功  values=14
+  [ok]   自证还原：原样写回之后逐字未变  values=14
+  [note] where python 的第一条：C:\Users\Muelsyse\AppData\Local\Microsoft\WindowsApps\python.exe（0 字节，App Execution Alias）
+  [ok]   where python 的第一条是 WindowsApps 里的 0 字节别名占位（真 Python 在第二条）  path=C:\Users\Muelsyse\AppData\Local\Microsoft\WindowsApps\python.exe size=0
+  [ok]   where python 至少还有第二条（真的那份 Python）  count=2
+
+── 2. `tuoen globals list`（只读，两个来源）
+  [ok]   globals list --json 退出 0  exit=0
+  [ok]   --json 有 data 信封  keys=packages roots
+  [ok]   --json 里没有 CJK（稳定不本地化）
+  [ok]   信封的 schemaVersion = 2（决策 189 的删除 + 决策 208 的 ok 语义）  schemaVersion=2
+  [ok]   信封的 ok = true（成功载荷）  ok=True
+  [ok]   信封里没有 error 键（成功载荷不出它）  keys=schemaVersion command ok data
+  [ok]   roots 里两个工具都在（空的根也要出）  count=2
+  [ok]   roots 里有 npm 的根  tool=npm
+  [ok]   roots[npm].root 非空  root=C:\Users\Muelsyse\AppData\Local\tuoen\globals\npm\v24.19.0
+  [ok]   roots[npm].source = tuoen  source=tuoen
+  [ok]   roots 里有 pip 的根  tool=pip
+  [ok]   roots[pip].root 非空  root=C:\Users\Muelsyse\AppData\Local\tuoen\globals\pip
+  [ok]   roots[pip].source = tuoen  source=tuoen
+  [ok]   npm 的根 = %LOCALAPPDATA%\tuoen\globals\npm\<node -v>（我自己算的）  product=C:\Users\Muelsyse\AppData\Local\tuoen\globals\npm\v24.19.0 mine=C:\Users\Muelsyse\AppData\Local\tuoen\globals\npm\v24.19.0
+  [ok]   我自己数出机器侧 npm 包  count=7
+  [ok]   我自己数出机器侧 pip 包  count=3
+  [ok]   机器侧 npm 行数 = 我自己数的 7  product=7 mine=7
+  [ok]   机器侧 pip 行数 = 我自己数的 3  product=3 mine=3
+  [ok]   每一行都有 source  rows=12
+  [ok]   每一行都有 tool/name/version/source 四个键  rows=12
+  [ok]   机器侧 pnpm 的 binNames 是四个命令  bins=pn,pnpm,pnpx,pnx
+  [note] tuoen 侧现在：npm 1 个、pip 1 个（这一节只读，装包在 §5）
+  [ok]   globals list（人类输出）退出 0  exit=0
+  [ok]   人类输出说得出 tuoen 的根在哪
+  [ok]   人类输出是中文
+
+── 3. `tuoen capture --only globals`（真机，只读）
+  [ok]   capture --only globals 退出 0  exit=0
+  [ok]   globals.toml 被写出来了  files=globals.toml,schema.toml
+  [ok]   globals.toml 的行里有 source 键（加性、永远出键）  keys=packages,prefix,prefix_inside_version_dir,source,tool,tool_version
+  [ok]   globals.toml 里出现的来源都在 {machine, tuoen} 里  sources=machine,tuoen
+  [note] capture 时两个来源的行数：machine=10 tuoen=2（tuoen 侧是否为空取决于这台机器跑过验收没有）
+  [ok]   globals.toml 的 npm 行数 = globals list 的 7  capture=7 list=7
+  [ok]   globals.toml 的 pip 行数 = globals list 的 3
+  [note] capture 出来的行键：packages,prefix,prefix_inside_version_dir,source,tool,tool_version
+  [ok]   globals.toml 里 npm 那行 prefix_inside_version_dir = true  rows=1 inside=True
+  [ok]   globals.toml 里 pip 那行 prefix_inside_version_dir = false  rows=1 inside=False
+  [ok]   npm 那行的 prefix = 机器自己的 npm prefix  capture=C:\nvm4w\nodejs machine=C:\nvm4w\nodejs
+  [ok]   从 pip --version 能独立反推出 pip 的 prefix  line=pip 25.0.1 from C:\Users\Muelsyse\AppData\Local\Programs\Python\Python312\Lib\site-packages\pip (python 3.12)
+  [ok]   pip 那行的 prefix = 反推出来的那个目录  capture=C:\Users\Muelsyse\AppData\Local\Programs\Python\Python312 expect=C:\Users\Muelsyse\AppData\Local\Programs\Python\Python312
+
+── 4. `tuoen shell` 的重定向（绝不写注册表）
+  [ok]   shell --exec 退出 0  exit=0
+  [ok]   子进程里 npm 的 prefix 指向 tuoen 的根  child=C:\Users\Muelsyse\AppData\Local\tuoen\globals\npm\v24.19.0 expect=C:\Users\Muelsyse\AppData\Local\tuoen\globals\npm\v24.19.0
+  [ok]   子进程里 NPM_CONFIG_PREFIX 真的设上了  out=NPM_CONFIG_PREFIX=C:\Users\Muelsyse\AppData\Local\tuoen\globals\npm\v24.19.0
+  [ok]   子进程里 PYTHONUSERBASE 指向 tuoen 的 pip 根  out=PYTHONUSERBASE=C:\Users\Muelsyse\AppData\Local\tuoen\globals\pip PIP_USER=1
+  [ok]   子进程里 PIP_USER = 1  out=PYTHONUSERBASE=C:\Users\Muelsyse\AppData\Local\tuoen\globals\pip PIP_USER=1
+  [ok]   shell 里的 pip list --user 退出 0  exit=0 err=
+  [ok]   shell 里 pip list --user 看到的包 = globals list 里 tuoen 侧的 pip 包  child=pypinyin tuoen=pypinyin
+  [ok]   跑完 shell 之后 HKCU\Environment 逐字未变  values=14
+  [ok]   注册表里仍然没有 NPM_CONFIG_PREFIX
+  [ok]   当前这个 shell 自己也没被污染
+
+── 5. 非空计划：把 pnpm 装进 tuoen 的根（离线）
+  [note] 删掉了上一轮留下的 C:\Users\Muelsyse\AppData\Local\tuoen\globals\npm\v24.19.0\node_modules\pnpm（只删这一个包，好让这一轮真的装一次）
+  [ok]   完整 capture 退出 0（决策 188 那份快照需要 configs.toml 在场）  exit=0
+  [ok]   快照里能定位到 machine 侧的 pnpm 那一行、并且只留它  snap=C:\Users\Muelsyse\AppData\Local\Temp\tuoen-acceptance-L2-27\snap-1\globals.toml
+  [ok]   写出来的 globals.toml 带 schema_version 文件头（少了它产品会判 snapshot-toml）  head=schema_version = 1 | captured_at = "2026-10-03T13:41:08Z"
+  [ok]   restore --only globals（计划）退出 0  exit=0
+  [ok]   决策 188：summary.unrestorable 只剩 configs  unrestorable=configs
+  [ok]   计划里有 globals 这一节  ids=tools,path,env,wsl,globals
+  [ok]   计划说它会改东西（would-change）  status=would-change
+  [ok]   缓存能解决 ⇒ needsNetwork = false（离线可做）  needsNetwork=False
+  [note] globals 那一节的键：actions,counts,id,needsNetwork,requiresElevation,status
+  [note] 计划载荷的键：manualActions,sections,snapshot,summary
+  [ok]   计划里有一条 globals-prefix-moved 的意图  codes=globals-prefix-moved
+  [ok]   人类输出（计划）退出 0  exit=0
+  [ok]   人类输出逐字说出"不在机器自己的 prefix"  含前缀=True 含不在=True
+  [ok]   restore --apply --offline 退出 0  exit=0
+  [ok]   载荷里有 apply  keys=apply manualActions sections snapshot summary
+  [ok]   apply.wrote = true  wrote=True
+  [ok]   apply.sections 里有 globals
+  [ok]   globals 的 outcome = applied  outcome=applied
+  [ok]   globals 的 wrote = true
+  [note] apply.sections[globals] 的键：id,outcome,packages,shimCommands,shimDir,wrote
+  [ok]   磁盘上真的有 C:\Users\Muelsyse\AppData\Local\tuoen\globals\npm\v24.19.0\node_modules\pnpm
+  [ok]   装进去的是精确版本 11.21.0  version=11.21.0
+
+── 6. 幂等：同样的快照再 plan 一次
+  [ok]   第二次 plan 退出 0  exit=0
+  [ok]   第二次是 no-change（幂等判据只比 tuoen 侧）  status=no-change
+  [ok]   装完之后 capture 里有 tuoen 来源的行  count=2
+  [ok]   tuoen 来源里有且只有一个 pnpm  rows=1
+  [ok]   tuoen 侧那个 pnpm 是 11.21.0  version=11.21.0
+  [ok]   机器来源的行数一个字都没变（决策 167）  before=10 after=10
+
+── 7. shim：只发 `.exe`（npm 包的 bin 是 .cmd/.ps1，所以它不该有 shim）
+  [ok]   shim list 退出 0  exit=0
+  [ok]   shim 目录里没有任何 .cmd / .ps1（铁律：绝不发这两个）  bad=
+  [note] shim 目录里有 5 个文件：pn.exe,pnpm.exe,pnpx.exe,pnx.exe,pypinyin.exe
+  [ok]   从装进去的 package.json 读到了 pnpm 的 bin 名（票据实测 4 个）  bins=pnpm,pnpx,pn,pnx
+  [ok]   shim 目录里有 pnpm.exe（包的 bin → .exe shim）
+  [ok]   shim 目录里有 pnpx.exe（包的 bin → .exe shim）
+  [ok]   shim 目录里有 pn.exe（包的 bin → .exe shim）
+  [ok]   shim 目录里有 pnx.exe（包的 bin → .exe shim）
+  [ok]   shim 的 `pnpm --version` 与真身逐字相同  shim=11.21.0 real=11.21.0
+  [ok]   shim 报的版本就是快照里那个精确版本 11.21.0  shim=11.21.0
+  [skip] pip 侧的 .exe shim（需要联网装 pypinyin）  (-WithNetwork 未开)
+
+── 8. 红线：setx / HKCU\Environment / nvm4w / 机器侧 prefix
+  [ok]   产品源码里没有调用 setx  hits=0
+  [ok]   本脚本里没有会执行 setx 的语句  hits=0
+  [ok]   反向验证：判据对一行真的 setx 调用会命中
+  [ok]   HKCU\Environment 跑前跑后逐字相同  before=14 after=14
+  [ok]   用户级 Path 逐字未变  sha16=a12fc582e90513a3
+  [ok]   机器级 Path 逐字未变  sha16=d0b5a0db7c9e2a6b
+  [ok]   NVM_HOME / NVM_SYMLINK 两个作用域逐字未变
+  [ok]   nvm4w 的 junction 指向未变  junction=C:\Users\Muelsyse\AppData\Local\nvm\v24.19.0
+  [ok]   nvm4w 的 settings.txt 哈希未变  sha=02f3156cdf563d43b621d37c36d36bf1adf74f915ab98f241982abcc68e00555
+  [ok]   机器自己的 npm prefix 没被碰  prefix=C:\nvm4w\nodejs
+
+── 9. 实测数据
+    globals list                            3379 ms
+    npm ls -g                                942 ms
+    globals list 人类输出                       3442 ms
+    capture globals                         3282 ms
+    capture 完整                              6265 ms
+    restore plan globals                    4858 ms
+    restore plan globals 人类输出               4830 ms
+    restore apply globals                   7329 ms
+    restore plan globals 2                  3252 ms
+    capture globals 2                       3303 ms
+    shim list                                 16 ms
+  [note] 工件目录：C:\Users\Muelsyse\AppData\Local\Temp\tuoen-acceptance-L2-27
+
+── 10. 收尾
+  [FAIL] SELF-TEST：这一条**必须**失败（一条不能失败的验收不是验收）  故意的
+
+FAILURES:
+  - SELF-TEST：这一条**必须**失败（一条不能失败的验收不是验收）
+SUMMARY checks_passed=104 checks_failed=1 checks_skipped=1 verdict=FAIL
+NOTE 跑前 HKCU\Environment 共 14 个值；用户级 Path 773 字符 sha16 a12fc582e90513a3
+NOTE tuoen 的 npm 根预期在 C:\Users\Muelsyse\AppData\Local\tuoen\globals\npm\v24.19.0（从 node -v 自己算的，不是抄产品的）
+NOTE where python 的第一条：C:\Users\Muelsyse\AppData\Local\Microsoft\WindowsApps\python.exe（0 字节，App Execution Alias）
+NOTE tuoen 侧现在：npm 1 个、pip 1 个（这一节只读，装包在 §5）
+NOTE capture 时两个来源的行数：machine=10 tuoen=2（tuoen 侧是否为空取决于这台机器跑过验收没有）
+NOTE capture 出来的行键：packages,prefix,prefix_inside_version_dir,source,tool,tool_version
+NOTE 删掉了上一轮留下的 C:\Users\Muelsyse\AppData\Local\tuoen\globals\npm\v24.19.0\node_modules\pnpm（只删这一个包，好让这一轮真的装一次）
+NOTE globals 那一节的键：actions,counts,id,needsNetwork,requiresElevation,status
+NOTE 计划载荷的键：manualActions,sections,snapshot,summary
+NOTE apply.sections[globals] 的键：id,outcome,packages,shimCommands,shimDir,wrote
+NOTE shim 目录里有 5 个文件：pn.exe,pnpm.exe,pnpx.exe,pnx.exe,pypinyin.exe
+NOTE 工件目录：C:\Users\Muelsyse\AppData\Local\Temp\tuoen-acceptance-L2-27
+ARTIFACTS C:\Users\Muelsyse\AppData\Local\Temp\tuoen-acceptance-L2-27
+CLEANED C:\Users\Muelsyse\AppData\Local\Temp\tuoen-acceptance-L2-27

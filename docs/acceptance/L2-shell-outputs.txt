@@ -1,0 +1,12 @@
+===== shell-npm-prefix.out =====
+C:\Users\Muelsyse\AppData\Local\tuoen\globals\npm\v24.19.0
+===== shell-npm-prefix.err =====
+===== shell-echo-env.out =====
+NPM_CONFIG_PREFIX=C:\Users\Muelsyse\AppData\Local\tuoen\globals\npm\v24.19.0
+===== shell-echo-env.err =====
+===== shell-echo-pip-env.out =====
+PYTHONUSERBASE=C:\Users\Muelsyse\AppData\Local\tuoen\globals\pip PIP_USER=1
+===== shell-echo-pip-env.err =====
+===== shell-pip-list-user.out =====
+[{"name": "pypinyin", "version": "0.55.0"}]
+===== shell-pip-list-user.err =====

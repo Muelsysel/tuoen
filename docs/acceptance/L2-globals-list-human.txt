@@ -1,0 +1,22 @@
+tuoen 管着的根（`%LOCALAPPDATA%\tuoen\globals`）：
+  · npm C:\Users\Muelsyse\AppData\Local\tuoen\globals\npm\v24.19.0 —— 在，1 个包
+  · pip C:\Users\Muelsyse\AppData\Local\tuoen\globals\pip —— 在，1 个包
+
+  工具  运行时版本  来源     包名              版本        bin 名
+  npm   v24.19.0    machine  @deepseek-ai/dsh  0.1.0-rc.6  dsh
+  npm   v24.19.0    machine  @openai/codex     0.160.0     codex
+  npm   v24.19.0    machine  billion-context   0.1.179     bili, bili-proxy
+  npm   v24.19.0    machine  corepack          0.35.0      corepack, pnpm, pnpx, yarn, yarnpkg
+  npm   v24.19.0    machine  npm               11.17.0     npm, npx
+  npm   v24.19.0    machine  pnpm              11.21.0     pn, pnpm, pnpx, pnx
+  npm   v24.19.0    machine  tokentracker-cli  0.87.3      tokentracker, tokentracker-cli, tokentracker-tracker, tracker
+  npm   v24.19.0    tuoen    pnpm              11.21.0     pn, pnpm, pnpx, pnx
+  pip   3.12        machine  pip               25.0.1      pip.exe, pip3.12.exe, pip3.exe
+  pip   3.12        machine  pypdf             6.19.0      ?
+  pip   3.12        machine  pypinyin          0.55.0      pypinyin.exe
+  pip   3.12        tuoen    pypinyin          0.55.0      pypinyin.exe
+
+  共 12 个包：机器自己的 10 个 / tuoen 管的 2 个。
+  （`?` = 拿不到命令名，不是「它没有命令」；那种包在 `--json` 里 `binNames` 键整个不出现。）
+
+
